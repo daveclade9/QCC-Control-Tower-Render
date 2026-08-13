@@ -1,0 +1,19 @@
+.env
+.env.*
+!.env.example
+.git
+.github
+.venv
+.deploy_venv
+.validation_venv
+.reflex_validate
+.states
+.web
+__pycache__
+*.py[cod]
+*.db
+*.log
+validation_tmp
+reflex.lock
+Setup QCC Reflex Pilot.bat
+Start QCC Reflex Pilot.bat

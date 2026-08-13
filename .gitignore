@@ -1,0 +1,13 @@
+.states
+assets/external/
+*.db
+.web
+.env
+.venv/
+.validation_venv/
+.web/
+__pycache__/
+*.py[cod]
+reflex.log
+.render-build/
+

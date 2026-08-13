@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: qcc-control-tower
+    runtime: docker
+    plan: standard
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /_health
+    envVars:
+      - key: QCC_SUPABASE_DATABASE_URL
+        sync: false
+      - key: QCC_SUPABASE_URL
+        sync: false
+      - key: QCC_SUPABASE_PUBLISHABLE_KEY
+        sync: false
