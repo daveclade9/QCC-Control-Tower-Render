@@ -379,29 +379,41 @@ def validate_app_session(session_token: str) -> dict[str, Any] | None:
 
     if not session_token or not database_url():
         return None
-    _ensure_session_table()
     now = datetime.now(timezone.utc)
-    sessions = query_frame(
-        "SELECT user_email, auth_provider, expires_at FROM qcc_auth_sessions "
-        "WHERE session_hash = %s AND revoked_at IS NULL AND expires_at > %s "
-        "LIMIT 1",
-        (_session_hash(session_token), now),
-    )
-    if sessions.empty:
-        return None
-    session = sessions.iloc[0].to_dict()
-    employee = load_active_employee(str(session.get("user_email", "")))
-    if employee is None:
-        revoke_app_session(session_token)
-        return None
+    session_hash = _session_hash(session_token)
+    # Authentication used to make several separate Supabase connections and
+    # repeat CREATE TABLE checks on every protected action. The login workflow
+    # already guarantees these tables exist, so validate the session and active
+    # employee in one indexed query and update last_seen in the same transaction.
     with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        row = connection.execute(
+            "SELECT p.user_email, p.employee_id, p.full_name, p.title, "
+            "p.user_role, p.is_active, s.auth_provider "
+            "FROM qcc_auth_sessions s "
+            "JOIN qcc_employee_login_identities i "
+            "ON LOWER(i.identity_email) = LOWER(s.user_email) "
+            "JOIN sales_user_profiles p ON p.employee_id = i.employee_id "
+            "WHERE s.session_hash = %s AND s.revoked_at IS NULL "
+            "AND s.expires_at > %s AND i.is_active = 1 AND p.is_active = 1 "
+            "LIMIT 1",
+            (session_hash, now),
+        ).fetchone()
+        if row is None:
+            return None
         connection.execute(
             "UPDATE qcc_auth_sessions SET last_seen_at = %s WHERE session_hash = %s",
-            (now, _session_hash(session_token)),
+            (now, session_hash),
         )
         connection.commit()
-    employee["auth_provider"] = str(session.get("auth_provider", ""))
-    return employee
+    return {
+        "user_email": row[0],
+        "employee_id": row[1],
+        "full_name": row[2],
+        "title": row[3],
+        "user_role": row[4],
+        "is_active": row[5],
+        "auth_provider": row[6],
+    }
 
 
 def revoke_app_session(session_token: str) -> None:

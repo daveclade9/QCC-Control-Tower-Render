@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: qcc-control-tower
+    name: qcc-control-tower-staging
     runtime: docker
     plan: standard
     region: oregon

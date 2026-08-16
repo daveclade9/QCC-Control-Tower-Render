@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import os
+import gzip
 import hashlib
+import io
 import json
 import math
+import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -25,8 +29,12 @@ except ImportError:  # Allows demo-mode validation before dependencies install.
     psycopg = None
 
 from .rules import (
+    PRODUCT_LIFECYCLE_OVERRIDES,
     RETIRED_OR_ON_HOLD_STRAINS,
+    classify_sku_type,
     gummy_variant,
+    infer_brand,
+    infer_strain,
     normalize_strain_name,
     prepare_transfer_analysis,
 )
@@ -34,9 +42,97 @@ from .rules import (
 
 load_dotenv()
 
-PILOT_CACHE_SECONDS = 300
+OPERATIONAL_CACHE_SECONDS = 1800
+SALES_CACHE_SECONDS = 1800
+QA_CACHE_SECONDS = 3600
 _DASHBOARD_CACHE: dict[str, Any] = {"loaded_at": 0.0, "payload": None}
 _DASHBOARD_CACHE_LOCK = threading.Lock()
+_SALES_DASHBOARD_CACHE: dict[str, Any] = {"loaded_at": 0.0, "payload": None}
+_SALES_DASHBOARD_CACHE_LOCK = threading.Lock()
+_OPERATIONAL_CONTEXT: dict[str, Any] = {"loaded_at": 0.0, "payload": None}
+_OPERATIONAL_CONTEXT_LOCK = threading.Lock()
+_OPERATIONAL_BUILD_LOCK = threading.Lock()
+
+
+def _invalidate_dashboard_caches() -> None:
+    for lock, cache in (
+        (_DASHBOARD_CACHE_LOCK, _DASHBOARD_CACHE),
+        (_SALES_DASHBOARD_CACHE_LOCK, _SALES_DASHBOARD_CACHE),
+        (_OPERATIONAL_CONTEXT_LOCK, _OPERATIONAL_CONTEXT),
+    ):
+        with lock:
+            cache["loaded_at"] = 0.0
+            cache["payload"] = None
+
+LAB_REQUIRED_COLUMNS = [
+    "Lab License No.", "Lab Facility", "Packaged Lic. No.",
+    "Packaged Facility", "Package", "Source Harvest Names",
+    "Source Package Labels", "Item", "Category", "Lab Testing",
+    "Test Date", "Overall", "Test Name", "Test Passed", "Result",
+    "LTE Date", "Date", "Notes",
+]
+LAB_COLUMN_MAP = {
+    "Lab License No.": "lab_license",
+    "Lab Facility": "lab_facility",
+    "Packaged Lic. No.": "packaged_license",
+    "Packaged Facility": "packaged_facility",
+    "Package": "package_tag",
+    "Source Harvest Names": "source_harvest_names",
+    "Source Package Labels": "source_package_labels",
+    "Item": "item",
+    "Category": "category",
+    "Lab Testing": "lab_testing_status",
+    "Test Date": "test_date",
+    "Overall": "overall_pass",
+    "Test Name": "test_name",
+    "Test Passed": "test_passed",
+    "Result": "result",
+    "LTE Date": "lte_date",
+    "Date": "record_date",
+    "Notes": "notes",
+}
+LAB_DB_COLUMNS = [
+    "record_key", "lab_license", "lab_facility", "packaged_license",
+    "packaged_facility", "package_tag", "source_harvest_names",
+    "source_package_labels", "item", "category", "lab_testing_status",
+    "test_date", "overall_pass", "test_name", "test_passed", "result",
+    "lte_date", "record_date", "notes", "source_filename",
+    "source_file_hash", "imported_at",
+]
+QA_LABEL_FIELDS = {
+    "package_tag": "Package Tag",
+    "brand": "Brand",
+    "sku_type": "SKU Type",
+    "source_harvest_names": "Source Harvest",
+    "source_package_labels": "Source Package(s)",
+    "item": "Item",
+    "strain": "Strain",
+    "qa_test_type": "Test Type",
+    "packaged_license": "Facility License",
+    "packaged_facility": "Facility",
+    "lab_testing_status": "QA Status",
+    "test_date": "Test Date",
+    "expiration_date": "Expiration Date",
+    "total_thc": "Total THC",
+    "total_terpenes": "Total Terpenes",
+    "lab_facility": "Testing Laboratory",
+    "category": "Category",
+    "location": "Location",
+    "record_origin": "Record Source",
+}
+DEFAULT_QA_LABEL_CONFIG = {
+    "template_name": "QCC QA Summary",
+    "scope": "Both",
+    "brand_filter": "All Brands",
+    "sku_filter": "All SKU Types",
+    "label_size": "4 x 6",
+    "title": "QCC QA / Compliance Summary",
+    "footer": "Verify current package status in Metrc before release.",
+    "fields": list(QA_LABEL_FIELDS),
+}
+
+_QA_CACHE: dict[str, Any] = {"loaded_at": 0.0, "payload": None}
+_QA_CACHE_LOCK = threading.Lock()
 
 TRANSFER_COLUMNS = [
     "record_key", "manifest", "invoice_number", "origin_license",
@@ -48,6 +144,14 @@ TRANSFER_COLUMNS = [
     "actual_shipped_uom", "actual_received", "actual_received_uom",
     "count_shipped", "count_shipped_uom", "count_received",
     "count_received_uom", "unit_weight_grams",
+]
+SALES_TRANSFER_COLUMNS = [
+    "manifest", "invoice_number", "origin_facility",
+    "destination_license", "destination_facility",
+    "destination_facility_type", "transfer_type", "created_at",
+    "received_at", "voided", "package_tag", "state", "item",
+    "item_category", "shipper_dollar_amount", "actual_shipped",
+    "actual_shipped_uom", "count_shipped", "unit_weight_grams",
 ]
 
 
@@ -66,7 +170,11 @@ def connection_status_label() -> str:
     return "Supabase configured" if database_url() else "Configuration required"
 
 
-def query_frame(query: str, parameters: tuple[Any, ...] = ()) -> pd.DataFrame:
+def query_frame(
+    query: str,
+    parameters: tuple[Any, ...] = (),
+    statement_timeout_seconds: int = 30,
+) -> pd.DataFrame:
     """Execute one backend-only read and return a DataFrame."""
     url = database_url()
     if not url:
@@ -77,21 +185,69 @@ def query_frame(query: str, parameters: tuple[Any, ...] = ()) -> pd.DataFrame:
         raise RuntimeError(
             "Install the pilot requirements before connecting to Supabase."
         )
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            with psycopg.connect(url, connect_timeout=15) as connection:
+                with connection.cursor() as cursor:
+                    timeout_seconds = max(int(statement_timeout_seconds), 1)
+                    cursor.execute(
+                        f"SET LOCAL statement_timeout = '{timeout_seconds}s'"
+                    )
+                    cursor.execute(query, parameters)
+                    if not cursor.description:
+                        return pd.DataFrame()
+                    columns = [column.name for column in cursor.description]
+                    return pd.DataFrame(cursor.fetchall(), columns=columns)
+        except Exception as error:
+            last_error = error
+            text = str(error).lower()
+            transient = (
+                isinstance(error, (psycopg.OperationalError, psycopg.InterfaceError))
+                or any(marker in text for marker in (
+                    "ssl connection has been closed", "consuming input failed",
+                    "server closed the connection", "connection reset",
+                    "connection timed out", "terminating connection",
+                ))
+            )
+            if not transient or attempt:
+                raise
+            time.sleep(0.35)
+    raise last_error or RuntimeError("Supabase query failed.")
+
+
+def streamed_query_frame(
+    query: str, parameters: tuple[Any, ...] = (), batch_size: int = 2500
+) -> pd.DataFrame:
+    """Stream a large read in bounded batches instead of one libpq result."""
+    url = database_url()
+    if not url or psycopg is None:
+        raise RuntimeError("Supabase database access is not configured.")
+    frames: list[pd.DataFrame] = []
     with psycopg.connect(url, connect_timeout=15) as connection:
-        with connection.cursor() as cursor:
+        connection.execute("SET LOCAL statement_timeout = '120s'")
+        with connection.cursor(name="qcc_sales_transfer_stream") as cursor:
             cursor.execute(query, parameters)
-            if not cursor.description:
-                return pd.DataFrame()
-            columns = [column.name for column in cursor.description]
-            return pd.DataFrame(cursor.fetchall(), columns=columns)
+            columns = [column.name for column in cursor.description or []]
+            while True:
+                rows = cursor.fetchmany(batch_size)
+                if not rows:
+                    break
+                frames.append(pd.DataFrame.from_records(rows, columns=columns))
+    return (
+        pd.concat(frames, ignore_index=True)
+        if frames else pd.DataFrame(columns=columns)
+    )
 
 
 def safe_query_frame(
-    query: str, parameters: tuple[Any, ...] = ()
+    query: str,
+    parameters: tuple[Any, ...] = (),
+    statement_timeout_seconds: int = 30,
 ) -> pd.DataFrame:
     """Allow pilot sections to remain available when an optional table is absent."""
     try:
-        return query_frame(query, parameters)
+        return query_frame(query, parameters, statement_timeout_seconds)
     except Exception as error:
         if psycopg is not None and isinstance(
             error, psycopg.errors.UndefinedTable
@@ -100,12 +256,776 @@ def safe_query_frame(
         raise
 
 
+def query_frames(
+    statements: list[tuple[str, tuple[Any, ...]]],
+    statement_timeout_seconds: int = 30,
+) -> list[pd.DataFrame]:
+    """Execute several related reads through one Supabase connection."""
+    url = database_url()
+    if not url or psycopg is None:
+        raise RuntimeError("Supabase database access is not configured.")
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            frames: list[pd.DataFrame] = []
+            with psycopg.connect(url, connect_timeout=15) as connection:
+                with connection.cursor() as cursor:
+                    timeout_seconds = max(int(statement_timeout_seconds), 1)
+                    cursor.execute(
+                        f"SET LOCAL statement_timeout = '{timeout_seconds}s'"
+                    )
+                    for query, parameters in statements:
+                        cursor.execute(query, parameters)
+                        if not cursor.description:
+                            frames.append(pd.DataFrame())
+                            continue
+                        columns = [column.name for column in cursor.description]
+                        frames.append(pd.DataFrame(cursor.fetchall(), columns=columns))
+            return frames
+        except Exception as error:
+            last_error = error
+            text = str(error).lower()
+            transient = (
+                isinstance(error, (psycopg.OperationalError, psycopg.InterfaceError))
+                or any(marker in text for marker in (
+                    "ssl connection has been closed", "consuming input failed",
+                    "server closed the connection", "connection reset",
+                    "connection timed out", "terminating connection",
+                ))
+            )
+            if not transient or attempt:
+                raise
+            time.sleep(0.35)
+    raise last_error or RuntimeError("Supabase query group failed.")
+
+
+SALES_SNAPSHOT_SCHEMA_VERSION = "qcc-sales-v1"
+SALES_ANALYSIS_COLUMNS = [
+    "manifest", "invoice_number", "created_at", "received_at", "state",
+    "destination_license", "destination_facility", "package_tag", "item",
+    "item_key", "brand", "strain", "sku_type", "shipped_units",
+    "shipper_dollar_amount", "is_demand", "is_open_shipment",
+    "is_shipment_exception", "brand_attribution_reason",
+]
+
+
+def empty_sales_analysis() -> pd.DataFrame:
+    """Return an empty but schema-complete Sales frame."""
+    return pd.DataFrame(columns=list(dict.fromkeys(SALES_ANALYSIS_COLUMNS)))
+
+
+def load_published_sales_snapshot() -> tuple[dict[str, Any], pd.DataFrame]:
+    """Read and expand the latest compact Sales snapshot from Supabase."""
+    snapshots = safe_query_frame(
+        "SELECT snapshot_id, schema_version, source_row_count, "
+        "source_latest_transfer, payload_gzip, published_at, published_by "
+        "FROM reflex_sales_snapshots ORDER BY published_at DESC LIMIT 1",
+        statement_timeout_seconds=90,
+    )
+    if snapshots.empty:
+        return {}, empty_sales_analysis()
+
+    metadata = snapshots.iloc[0].drop(labels=["payload_gzip"]).to_dict()
+    if str(metadata.get("schema_version", "")) != SALES_SNAPSHOT_SCHEMA_VERSION:
+        raise RuntimeError(
+            "The published Sales snapshot uses an unsupported schema. "
+            "Publish it again from Streamlit 81.5 or newer."
+        )
+    compressed = snapshots.iloc[0].get("payload_gzip")
+    if isinstance(compressed, memoryview):
+        compressed = compressed.tobytes()
+    payload = json.loads(gzip.decompress(bytes(compressed)).decode("utf-8"))
+    if payload.get("schema_version") != SALES_SNAPSHOT_SCHEMA_VERSION:
+        raise RuntimeError("The published Sales snapshot payload is invalid.")
+    analysis = pd.DataFrame(
+        payload.get("records", []),
+        columns=payload.get("columns") or None,
+    )
+    for column in ["created_at", "received_at", "imported_at"]:
+        if column in analysis:
+            analysis[column] = pd.to_datetime(analysis[column], errors="coerce")
+    analysis["shipment_month"] = analysis["created_at"].dt.strftime("%Y-%m")
+    analysis["transit_hours"] = (
+        analysis["received_at"] - analysis["created_at"]
+    ).dt.total_seconds() / 3600
+    for column in [
+        "shipper_dollar_amount", "receiver_dollar_amount", "actual_shipped",
+        "actual_received", "count_shipped", "count_received",
+        "unit_weight_grams", "planning_unit_weight_grams", "shipped_units",
+        "transit_hours",
+    ]:
+        if column in analysis:
+            analysis[column] = pd.to_numeric(analysis[column], errors="coerce")
+    for column in [
+        "is_finished_cpg", "is_demand", "is_open_shipment",
+        "is_shipment_exception",
+    ]:
+        if column in analysis:
+            analysis[column] = analysis[column].fillna(False).astype(bool)
+    missing = [column for column in SALES_ANALYSIS_COLUMNS if column not in analysis]
+    if missing:
+        raise RuntimeError(
+            "The published Sales snapshot is missing required fields: "
+            + ", ".join(missing)
+        )
+    return metadata, analysis
+
+
+def _initialize_qa_database_once() -> None:
+    """Create the shared QA tables used by Streamlit and Reflex."""
+    url = database_url()
+    if not url or psycopg is None:
+        raise RuntimeError("Supabase is required for the QA workspace.")
+    definitions = []
+    for column in LAB_DB_COLUMNS:
+        if column == "record_key":
+            definitions.append("record_key TEXT PRIMARY KEY")
+        elif column in {"overall_pass", "test_passed"}:
+            definitions.append(f"{column} INTEGER")
+        elif column == "result":
+            definitions.append("result DOUBLE PRECISION")
+        else:
+            definitions.append(f"{column} TEXT")
+    with psycopg.connect(url, connect_timeout=15) as connection:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS lab_result_records ("
+            + ", ".join(definitions) + ")"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lab_import_log (
+                source_file_hash TEXT PRIMARY KEY,
+                source_filename TEXT NOT NULL,
+                file_size_bytes INTEGER NOT NULL,
+                source_rows INTEGER NOT NULL,
+                stored_rows INTEGER NOT NULL,
+                inserted_rows INTEGER NOT NULL,
+                updated_rows INTEGER NOT NULL,
+                test_min TEXT,
+                test_max TEXT,
+                imported_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS qa_label_templates (
+                template_id TEXT PRIMARY KEY,
+                template_name TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                brand_filter TEXT NOT NULL DEFAULT 'All Brands',
+                sku_filter TEXT NOT NULL DEFAULT 'All SKU Types',
+                label_size TEXT NOT NULL,
+                title TEXT NOT NULL,
+                footer TEXT,
+                fields_json TEXT NOT NULL,
+                is_active INTEGER NOT NULL,
+                version INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                updated_by TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS qa_label_print_log (
+                print_id TEXT PRIMARY KEY,
+                package_tag TEXT NOT NULL,
+                source_harvest TEXT,
+                template_id TEXT NOT NULL,
+                template_version INTEGER NOT NULL,
+                output_type TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                printed_at TEXT NOT NULL,
+                printed_by TEXT
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lab_package "
+            "ON lab_result_records(package_tag)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lab_test_date "
+            "ON lab_result_records(test_date)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lab_package_latest "
+            "ON lab_result_records(packaged_license, package_tag, test_date DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lab_test_name "
+            "ON lab_result_records(test_name)"
+        )
+        now = datetime.now().astimezone().isoformat()
+        connection.execute(
+            """
+            INSERT INTO qa_label_templates (
+                template_id, template_name, scope, brand_filter, sku_filter,
+                label_size, title, footer, fields_json, is_active, version,
+                updated_at, updated_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1, 1, %s, %s)
+            ON CONFLICT(template_id) DO NOTHING
+            """,
+            (
+                "qcc-default-qa-summary",
+                DEFAULT_QA_LABEL_CONFIG["template_name"],
+                DEFAULT_QA_LABEL_CONFIG["scope"],
+                DEFAULT_QA_LABEL_CONFIG["brand_filter"],
+                DEFAULT_QA_LABEL_CONFIG["sku_filter"],
+                DEFAULT_QA_LABEL_CONFIG["label_size"],
+                DEFAULT_QA_LABEL_CONFIG["title"],
+                DEFAULT_QA_LABEL_CONFIG["footer"],
+                json.dumps(DEFAULT_QA_LABEL_CONFIG["fields"]),
+                now,
+                "QCC Control Tower",
+            ),
+        )
+        connection.commit()
+
+
+def initialize_qa_database() -> None:
+    """Create QA tables, retrying once after an idle SSL connection failure."""
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            _initialize_qa_database_once()
+            return
+        except Exception as error:
+            last_error = error
+            text = str(error).lower()
+            transient = (
+                psycopg is not None
+                and (
+                    isinstance(error, (psycopg.OperationalError, psycopg.InterfaceError))
+                    or any(marker in text for marker in (
+                        "ssl connection has been closed", "consuming input failed",
+                        "server closed the connection", "connection reset",
+                        "connection timed out", "terminating connection",
+                    ))
+                )
+            )
+            if not transient or attempt:
+                raise
+            time.sleep(0.35)
+    raise last_error or RuntimeError("Supabase QA initialization failed.")
+
+
+def _lab_boolean(value: Any) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    return int(str(value or "").strip().lower() in {
+        "1", "true", "yes", "y", "passed", "pass",
+    })
+
+
+def _sql_value(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def normalize_lab_results(
+    source_data: pd.DataFrame, filename: str, file_hash: str
+) -> pd.DataFrame:
+    missing = [name for name in LAB_REQUIRED_COLUMNS if name not in source_data]
+    if missing:
+        raise ValueError("Missing required lab columns: " + ", ".join(missing))
+    data = source_data.rename(columns=LAB_COLUMN_MAP).copy()
+    text_columns = [
+        column for column in LAB_DB_COLUMNS
+        if column not in {
+            "record_key", "overall_pass", "test_passed", "result",
+            "source_filename", "source_file_hash", "imported_at",
+        }
+    ]
+    for column in text_columns:
+        data[column] = data[column].fillna("").astype(str).str.strip()
+    data["overall_pass"] = data["overall_pass"].map(_lab_boolean)
+    data["test_passed"] = data["test_passed"].map(_lab_boolean)
+    data["result"] = pd.to_numeric(data["result"], errors="coerce")
+    for column in ["test_date", "lte_date", "record_date"]:
+        parsed = pd.to_datetime(data[column], errors="coerce")
+        data[column] = parsed.dt.strftime("%Y-%m-%dT%H:%M:%S")
+    valid = (
+        data["packaged_license"].ne("")
+        & data["package_tag"].ne("")
+        & data["test_date"].notna()
+        & data["lab_license"].ne("")
+        & data["test_name"].ne("")
+    )
+    data = data.loc[valid].copy()
+    if data.empty:
+        raise ValueError(
+            "No rows contained the required facility, package, test date, "
+            "laboratory, and test name values."
+        )
+    data["record_key"] = (
+        data["packaged_license"] + "|" + data["package_tag"] + "|"
+        + data["test_date"] + "|" + data["lab_license"] + "|"
+        + data["test_name"]
+    )
+    data["source_filename"] = filename
+    data["source_file_hash"] = file_hash
+    data["imported_at"] = datetime.now().astimezone().isoformat()
+    return data.drop_duplicates("record_key", keep="last")[LAB_DB_COLUMNS]
+
+
+def import_lab_results_bytes(filename: str, file_bytes: bytes) -> dict[str, Any]:
+    """Duplicate-safe import of one Metrc LabResultsReport CSV."""
+    initialize_qa_database()
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        previous = connection.execute(
+            "SELECT stored_rows FROM lab_import_log WHERE source_file_hash = %s",
+            (file_hash,),
+        ).fetchone()
+    if previous:
+        return {
+            "File": filename, "Status": "Already Imported",
+            "Source Rows": int(previous[0]), "Stored Rows": int(previous[0]),
+            "Inserted": 0, "Updated": 0,
+        }
+    buffer = io.BytesIO(file_bytes)
+    try:
+        source = pd.read_csv(buffer, dtype=str, low_memory=False)
+    except UnicodeDecodeError:
+        buffer.seek(0)
+        source = pd.read_csv(
+            buffer, dtype=str, low_memory=False, encoding="latin-1"
+        )
+    normalized = normalize_lab_results(source, filename, file_hash)
+    records = [
+        tuple(_sql_value(value) for value in row)
+        for row in normalized.itertuples(index=False, name=None)
+    ]
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        existing = {
+            row[0] for row in connection.execute(
+                "SELECT record_key FROM lab_result_records"
+            ).fetchall()
+        }
+        incoming = set(normalized["record_key"])
+        placeholders = ", ".join("%s" for _ in LAB_DB_COLUMNS)
+        updates = ", ".join(
+            f"{column} = EXCLUDED.{column}"
+            for column in LAB_DB_COLUMNS if column != "record_key"
+        )
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO lab_result_records ("
+                + ", ".join(LAB_DB_COLUMNS) + ") VALUES (" + placeholders
+                + ") ON CONFLICT(record_key) DO UPDATE SET " + updates,
+                records,
+            )
+        dates = pd.to_datetime(normalized["test_date"], errors="coerce")
+        connection.execute(
+            """
+            INSERT INTO lab_import_log (
+                source_file_hash, source_filename, file_size_bytes,
+                source_rows, stored_rows, inserted_rows, updated_rows,
+                test_min, test_max, imported_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(source_file_hash) DO NOTHING
+            """,
+            (
+                file_hash, filename, len(file_bytes), len(source),
+                len(normalized), len(incoming - existing),
+                len(incoming & existing),
+                dates.min().isoformat() if dates.notna().any() else None,
+                dates.max().isoformat() if dates.notna().any() else None,
+                datetime.now().astimezone().isoformat(),
+            ),
+        )
+        connection.commit()
+    with _QA_CACHE_LOCK:
+        _QA_CACHE.update({"loaded_at": 0.0, "payload": None})
+    return {
+        "File": filename, "Status": "Imported",
+        "Source Rows": len(source), "Stored Rows": len(normalized),
+        "Inserted": len(incoming - existing), "Updated": len(incoming & existing),
+    }
+
+
+def _extract_oldest_harvest_date(value: Any) -> pd.Timestamp:
+    matches = re.findall(
+        r"\b(\d{1,2})[.-](\d{1,2})[.-](\d{4})\b", str(value or "")
+    )
+    dates: list[pd.Timestamp] = []
+    for month, day, year in matches:
+        try:
+            dates.append(pd.Timestamp(year=int(year), month=int(month), day=int(day)))
+        except ValueError:
+            continue
+    return min(dates) if dates else pd.NaT
+
+
+def _classify_qa_test_type(row: pd.Series) -> str:
+    operation = str(row.get("operation", ""))
+    item = str(row.get("item", ""))
+    category = str(row.get("category", ""))
+    combined = f"{item} {category}"
+    if re.search(r"\bpre[\s-]*rolls?\b", combined, re.I):
+        return "Pre-Rolls"
+    if operation == "Cultivation":
+        return "Flower" if re.search(r"\bbuds?\s*/\s*flower\b", category, re.I) else "Other / Needs Review"
+    if re.search(r"\bvapes?\b|\bcarts?\b|\bcartridge\b|\bdisposable\b", combined, re.I):
+        return "Vapes"
+    if re.search(r"\bedibles?\b|\bgumm(?:y|ies)\b", combined, re.I):
+        return "Edibles"
+    if re.search(r"\bbuds?\s*/\s*flower\b|\bflower\b", combined, re.I):
+        return "Flower"
+    if re.search(r"\bconcentrate\b|\brosin\b|\bbadder\b|\bdiamonds?\b", combined, re.I):
+        return "Concentrates"
+    return "Other / Needs Review"
+
+
+def _infer_qa_strain(row: pd.Series) -> str:
+    """Resolve historical QA strains from inventory, item, and source fields."""
+    def text_value(value: Any) -> str:
+        return "" if value is None or pd.isna(value) else str(value).strip()
+
+    inventory_value = text_value(row.get("inventory_strain", ""))
+    invalid_values = {
+        "", "nan", "none", "<na>", "strain needs review", "needs review",
+        "bulk", "bulk flower", "flower", "packaged flower", "test sample",
+    }
+    if inventory_value.lower() not in invalid_values:
+        return normalize_strain_name(inventory_value)
+
+    item = text_value(row.get("item", ""))
+    harvest = text_value(row.get("source_harvest_names", ""))
+    source_packages = text_value(row.get("source_package_labels", ""))
+    combined = " ".join([item, harvest, source_packages])
+
+    # These common historical strains are not part of the active product-rule
+    # catalog, but must remain searchable in the QA history.
+    for name, pattern in {
+        "Ice Cream Cake": r"\bice\s+cream\s+cake\b",
+        "Fruit Stand": r"\bfruit\s+stand\b",
+    }.items():
+        if re.search(pattern, combined, re.I):
+            return name
+
+    inferred = infer_strain(combined)
+    if inferred.lower() not in invalid_values and inferred.lower() not in {
+        normalize_strain_name(combined).lower(),
+    }:
+        return inferred
+
+    # Last resort: the first harvest name, with dates and generic packaging
+    # terms removed. This retains older strains that are no longer active SKUs.
+    candidate = harvest.split(",", 1)[0].strip()
+    candidate = re.sub(
+        r"\s*[-_]\s*(?:f?\d+(?:[./-]\d+)*|batch\b.*)$", "", candidate,
+        flags=re.I,
+    )
+    candidate = re.sub(
+        r"^(?:bulk|flower|packaged|test\s+sample)\s*[-_:]?\s*", "", candidate,
+        flags=re.I,
+    )
+    candidate = re.sub(
+        r"\s+(?:bulk|flower|packaged|test\s+sample)\b.*$", "", candidate,
+        flags=re.I,
+    ).strip(" -_")
+    normalized = normalize_strain_name(candidate)
+    return normalized if normalized.lower() not in invalid_values else "Strain Needs Review"
+
+
+def _prepare_qa_packages(
+    lab_results: pd.DataFrame, inventory_packages: pd.DataFrame
+) -> pd.DataFrame:
+    if lab_results.empty:
+        return pd.DataFrame()
+    data = lab_results.copy()
+    data["test_date"] = pd.to_datetime(data["test_date"], errors="coerce")
+    data["result"] = pd.to_numeric(data["result"], errors="coerce")
+    data["operation"] = data["packaged_license"].astype(str).str[0].map(
+        {"C": "Cultivation", "M": "Manufacturing"}
+    ).fillna("Other")
+    compliance = data[
+        ~data["test_name"].astype(str).str.contains(
+            r"R\s*&\s*D|research", case=False, na=False
+        )
+    ].copy()
+    if compliance.empty:
+        return pd.DataFrame()
+    current = (
+        compliance.sort_values(["test_date", "packaged_license", "package_tag"])
+        .drop_duplicates(["packaged_license", "package_tag"], keep="last")
+        [[
+            "packaged_license", "packaged_facility", "package_tag",
+            "source_harvest_names", "source_package_labels", "item",
+            "category", "lab_testing_status", "test_date", "lab_facility",
+            "operation",
+        ]]
+        .copy()
+    )
+    status_key = current["lab_testing_status"].astype(str).str.lower().str.replace(
+        r"[^a-z]", "", regex=True
+    )
+    current["qa_outcome"] = "Pending"
+    current.loc[status_key.isin({"testpassed", "retestpassed"}), "qa_outcome"] = "Passed"
+    current.loc[status_key.isin({"testfailed", "retestfailed"}), "qa_outcome"] = "Failed"
+
+    if not inventory_packages.empty and "package_tag" in inventory_packages:
+        wanted = ["package_tag"]
+        rename: dict[str, str] = {}
+        for source, target in [
+            ("brand", "inventory_brand"),
+            ("strain", "inventory_strain"),
+            ("sku_type", "inventory_sku_type"),
+            ("expiration_date", "inventory_expiration_date"),
+        ]:
+            if source in inventory_packages:
+                wanted.append(source)
+                rename[source] = target
+        current = current.merge(
+            inventory_packages[wanted].drop_duplicates("package_tag").rename(columns=rename),
+            on="package_tag", how="left",
+        )
+    for column in [
+        "inventory_brand", "inventory_strain", "inventory_sku_type",
+        "inventory_expiration_date",
+    ]:
+        if column not in current:
+            current[column] = pd.NA
+
+    fallback_rows = current.rename(columns={"category": "item_category"}).copy()
+    fallback_rows["unit_weight_grams"] = pd.NA
+    current["sku_type"] = current["inventory_sku_type"].fillna(
+        fallback_rows.apply(classify_sku_type, axis=1)
+    )
+    current["strain"] = current.apply(_infer_qa_strain, axis=1)
+    current["strain"] = current["strain"].map(normalize_strain_name)
+    current["brand"] = current["inventory_brand"]
+    missing_brand = ~current["brand"].isin([
+        "Clade9", "Craft Kings", "Royal Smalls", "Locals Only", "Cookies", "Precious",
+    ])
+    current.loc[missing_brand, "brand"] = current.loc[missing_brand].apply(
+        lambda row: infer_brand(row.get("item"), row.get("strain"), row.get("sku_type")),
+        axis=1,
+    )
+    current["qa_test_type"] = current.apply(_classify_qa_test_type, axis=1)
+    current["expiration_date"] = pd.to_datetime(
+        current["inventory_expiration_date"], errors="coerce"
+    )
+    cultivation_missing = current["expiration_date"].isna() & current["operation"].eq("Cultivation")
+    current.loc[cultivation_missing, "expiration_date"] = current.loc[
+        cultivation_missing, "source_harvest_names"
+    ].map(_extract_oldest_harvest_date) + pd.Timedelta(days=225)
+
+    names = compliance["test_name"].astype(str).str.strip()
+    compliance["metric"] = pd.NA
+    compliance.loc[names.str.match(r"^Total THC\s*\(%\)", case=False, na=False), "metric"] = "total_thc"
+    compliance.loc[names.str.match(r"^Total Terpenes\s*\(%\)", case=False, na=False), "metric"] = "total_terpenes"
+    metrics = compliance[compliance["metric"].notna()].copy()
+    if not metrics.empty:
+        metrics = (
+            metrics.sort_values("test_date")
+            .drop_duplicates(
+                ["packaged_license", "package_tag", "test_date", "metric"],
+                keep="last",
+            )
+            .pivot(index=["packaged_license", "package_tag", "test_date"], columns="metric", values="result")
+            .reset_index()
+        )
+        current = current.merge(
+            metrics,
+            on=["packaged_license", "package_tag", "test_date"],
+            how="left",
+        )
+    for column in ["total_thc", "total_terpenes"]:
+        if column not in current:
+            current[column] = pd.NA
+    return current.sort_values("test_date", ascending=False).reset_index(drop=True)
+
+
+def _qa_record_list(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    if frame.empty:
+        return []
+    result = frame.copy()
+    for column in ["test_date", "expiration_date"]:
+        if column in result:
+            result[column] = pd.to_datetime(result[column], errors="coerce").dt.strftime("%Y-%m-%d")
+    for column in ["total_thc", "total_terpenes"]:
+        if column in result:
+            result[column] = pd.to_numeric(result[column], errors="coerce").round(3)
+    result = result.astype(object).where(pd.notna(result), None)
+    return result.to_dict("records")
+
+
+def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
+    """Load compact QA package records, templates, and import history."""
+    now = time.monotonic()
+    with _QA_CACHE_LOCK:
+        cached = _QA_CACHE.get("payload")
+        age = now - float(_QA_CACHE.get("loaded_at", 0.0))
+        if cached is not None and not force_refresh and age < QA_CACHE_SECONDS:
+            return cached
+    # Read-only QA navigation should never run DDL. The import workflow owns
+    # table initialization; normal page loads use fresh, retryable reads.
+    # Pull one current compliance row per package plus only the two potency
+    # analytes used by the dashboard. Downloading every historical analyte was
+    # blocking the Reflex event queue for several minutes.
+    qa_query = """
+        WITH compliance AS (
+            SELECT packaged_license, packaged_facility, package_tag,
+                   source_harvest_names, source_package_labels, item,
+                   category, lab_testing_status, test_date, lab_facility,
+                   test_name, result
+            FROM lab_result_records
+            WHERE COALESCE(test_name, '') !~* 'R\\s*&\\s*D|research'
+        ), latest_package AS (
+            SELECT DISTINCT ON (packaged_license, package_tag) *
+            FROM compliance
+            ORDER BY packaged_license, package_tag, test_date DESC, test_name
+        ), potency AS (
+            SELECT * FROM compliance
+            WHERE test_name ~* '^Total (THC|Terpenes)\\s*\\(%%\\)'
+        )
+        SELECT * FROM latest_package
+        UNION ALL
+        SELECT * FROM potency
+        """
+    import_query = (
+        "SELECT source_filename, source_rows, stored_rows, inserted_rows, "
+        "updated_rows, test_min, test_max, imported_at "
+        "FROM lab_import_log ORDER BY imported_at DESC"
+    )
+    template_query = (
+        "SELECT * FROM qa_label_templates WHERE is_active = 1 "
+        "ORDER BY template_name"
+    )
+    # These reads share one remote connection. The queries are compact, and
+    # avoiding three simultaneous pooler handshakes materially improves the
+    # first user's QA load without changing the cached second-user path.
+    labs, import_log, templates = query_frames(
+        [
+            (qa_query, ()),
+            (import_query, ()),
+            (template_query, ()),
+        ],
+        statement_timeout_seconds=90,
+    )
+    packages = None
+    with _OPERATIONAL_CONTEXT_LOCK:
+        context_age = time.monotonic() - float(
+            _OPERATIONAL_CONTEXT.get("loaded_at", 0.0)
+        )
+        context = (
+            _OPERATIONAL_CONTEXT.get("payload")
+            if context_age < OPERATIONAL_CACHE_SECONDS else None
+        )
+        if context:
+            packages = context.get("inventory_packages")
+    if packages is None:
+        # If the initial Inventory build is already running, reuse its package
+        # frame instead of issuing duplicate snapshot and package queries.
+        packages = load_operational_context()["inventory_packages"]
+    prepared = _prepare_qa_packages(labs, packages)
+    import_log = import_log.rename(columns={
+        "source_filename": "File", "source_rows": "Source Rows",
+        "stored_rows": "Stored Rows", "inserted_rows": "Inserted",
+        "updated_rows": "Updated", "test_min": "Test Min",
+        "test_max": "Test Max", "imported_at": "Imported At",
+    })
+    template_rows: list[dict[str, Any]] = []
+    for row in templates.to_dict("records"):
+        try:
+            fields = json.loads(str(row.get("fields_json", "[]") or "[]"))
+        except json.JSONDecodeError:
+            fields = list(DEFAULT_QA_LABEL_CONFIG["fields"])
+        if "expiration_date" not in fields:
+            fields.append("expiration_date")
+        template_rows.append({
+            "Template ID": str(row.get("template_id", "")),
+            "Template Name": str(row.get("template_name", "")),
+            "Scope": str(row.get("scope", "Both")),
+            "Brand Filter": str(row.get("brand_filter", "All Brands")),
+            "SKU Filter": str(row.get("sku_filter", "All SKU Types")),
+            "Label Size": str(row.get("label_size", "4 x 6")),
+            "Title": str(row.get("title", "QCC QA / Compliance Summary")),
+            "Footer": str(row.get("footer", "")),
+            "Fields": [field for field in fields if field in QA_LABEL_FIELDS],
+            "Version": int(row.get("version", 1) or 1),
+        })
+    payload = {
+        "packages": _qa_record_list(prepared),
+        "templates": template_rows,
+        "import_log": _qa_record_list(import_log.head(100)),
+        "record_count": int(len(prepared)),
+        "analyte_count": int(len(labs)),
+    }
+    with _QA_CACHE_LOCK:
+        _QA_CACHE.update({"loaded_at": now, "payload": payload})
+    return payload
+
+
+def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, Any]]:
+    rows = safe_query_frame(
+        "SELECT test_date, test_name, result, test_passed "
+        "FROM lab_result_records WHERE package_tag = %s "
+        "AND packaged_license = %s ORDER BY test_date DESC, test_name",
+        (package_tag, packaged_license),
+    )
+    if rows.empty:
+        return []
+    rows["test_date"] = pd.to_datetime(rows["test_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    rows["result"] = pd.to_numeric(rows["result"], errors="coerce").round(4)
+    rows["test_passed"] = rows["test_passed"].fillna(0).astype(bool).map({True: "Yes", False: "No"})
+    rows = rows.rename(columns={
+        "test_date": "Test Date", "test_name": "Test",
+        "result": "Result", "test_passed": "Passed",
+    })
+    return _qa_record_list(rows)
+
+
+def log_qa_label_download(
+    package: dict[str, Any], template: dict[str, Any], printed_by: str
+) -> None:
+    initialize_qa_database()
+    now = datetime.now().astimezone().isoformat()
+    print_id = hashlib.sha256(
+        f"{package.get('package_tag')}|{template.get('Template ID')}|{now}".encode()
+    ).hexdigest()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        connection.execute(
+            """
+            INSERT INTO qa_label_print_log (
+                print_id, package_tag, source_harvest, template_id,
+                template_version, output_type, snapshot_json, printed_at,
+                printed_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                print_id, str(package.get("package_tag", "")),
+                str(package.get("source_harvest_names", "")),
+                str(template.get("Template ID", "")),
+                int(template.get("Version", 1) or 1), "html",
+                json.dumps(package, default=str), now, printed_by,
+            ),
+        )
+        connection.commit()
+
+
 def load_transfer_rows() -> pd.DataFrame:
-    selected = ", ".join(TRANSFER_COLUMNS)
-    return query_frame(
+    selected = ", ".join(SALES_TRANSFER_COLUMNS)
+    return streamed_query_frame(
         f"SELECT {selected} FROM transfer_records "
-        "WHERE origin_facility = %s AND COALESCE(voided, 0) = 0 "
-        "ORDER BY created_at",
+        "WHERE origin_facility = %s AND COALESCE(voided, 0) = 0 AND ("
+        "(transfer_type = 'Wholesale Transfer' "
+        "AND COALESCE(destination_facility_type, '') ILIKE '%%Retailer%%' "
+        "AND state = 'Accepted' AND ("
+        "COALESCE(item, '') ILIKE ANY(ARRAY["
+        "'%%packaged%%','%%pre-roll%%','%%preroll%%','%%pre roll%%',"
+        "'%%vape%%','%%cartridge%%','%%disposable%%','%%gumm%%',"
+        "'%%edible%%','%%chocolate%%']) OR "
+        "COALESCE(item_category, '') ILIKE ANY(ARRAY["
+        "'%%packaged%%','%%raw pre-roll%%','%%concentrate (each)%%'])"
+        ")) OR state IN ('Shipped', 'Rejected', 'Returned'))",
         ("The QCC Group LLC",),
     )
 
@@ -144,6 +1064,66 @@ def load_latest_inventory_packages(snapshot_id: str) -> pd.DataFrame:
         "SELECT * FROM inventory_snapshot_packages WHERE snapshot_id = %s",
         (snapshot_id,),
     )
+
+
+def load_latest_inventory_bundle() -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame]:
+    """Load the current snapshot, SKU summary, and packages on one connection."""
+    url = database_url()
+    if not url or psycopg is None:
+        raise RuntimeError("Supabase database access is not configured.")
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            with psycopg.connect(url, connect_timeout=15) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL statement_timeout = '60s'")
+                    cursor.execute(
+                        "SELECT snapshot_id, business_date, published_at, published_by, "
+                        "package_count, sku_count FROM inventory_snapshots "
+                        "WHERE status = 'Published' ORDER BY published_at DESC LIMIT 1"
+                    )
+                    snapshot_row = cursor.fetchone()
+                    if snapshot_row is None:
+                        return {}, pd.DataFrame(), pd.DataFrame()
+                    snapshot_columns = [column.name for column in cursor.description]
+                    snapshot = dict(zip(snapshot_columns, snapshot_row))
+                    snapshot_id = snapshot["snapshot_id"]
+
+                    cursor.execute(
+                        "SELECT snapshot_id, brand, strain, sku_type, on_hand_units, "
+                        "package_count, source_license_number, source_license_type "
+                        "FROM inventory_snapshot_skus WHERE snapshot_id = %s",
+                        (snapshot_id,),
+                    )
+                    sku_columns = [column.name for column in cursor.description]
+                    inventory_skus = pd.DataFrame(
+                        cursor.fetchall(), columns=sku_columns
+                    )
+
+                    cursor.execute(
+                        "SELECT * FROM inventory_snapshot_packages WHERE snapshot_id = %s",
+                        (snapshot_id,),
+                    )
+                    package_columns = [column.name for column in cursor.description]
+                    inventory_packages = pd.DataFrame(
+                        cursor.fetchall(), columns=package_columns
+                    )
+            return snapshot, inventory_skus, inventory_packages
+        except Exception as error:
+            last_error = error
+            text = str(error).lower()
+            transient = (
+                isinstance(error, (psycopg.OperationalError, psycopg.InterfaceError))
+                or any(marker in text for marker in (
+                    "ssl connection has been closed", "consuming input failed",
+                    "server closed the connection", "connection reset",
+                    "connection timed out", "terminating connection",
+                ))
+            )
+            if not transient or attempt:
+                raise
+            time.sleep(0.35)
+    raise last_error or RuntimeError("The current Inventory snapshot could not be read.")
 
 
 def normalized_rule_text(value: Any) -> str:
@@ -270,17 +1250,19 @@ def potential_wip_for_sku(
 
 
 def load_production_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    plans = safe_query_frame(
-        "SELECT * FROM production_plans ORDER BY created_at DESC"
-    )
-    outputs = safe_query_frame(
-        "SELECT * FROM production_plan_outputs "
-        "ORDER BY plan_id, unit_weight_grams DESC"
-    )
-    sources = safe_query_frame(
-        "SELECT plan_id, package_tag, allocated_weight_grams "
-        "FROM production_plan_sources ORDER BY plan_id, package_tag"
-    )
+    plans, outputs, sources = query_frames([
+        ("SELECT * FROM production_plans ORDER BY created_at DESC", ()),
+        (
+            "SELECT * FROM production_plan_outputs "
+            "ORDER BY plan_id, unit_weight_grams DESC",
+            (),
+        ),
+        (
+            "SELECT plan_id, package_tag, allocated_weight_grams "
+            "FROM production_plan_sources ORDER BY plan_id, package_tag",
+            (),
+        ),
+    ])
     return plans, outputs, sources
 
 
@@ -523,22 +1505,30 @@ def create_reflex_production_plan(
             if not latest:
                 raise ValueError("No published inventory snapshot is available.")
             cursor.execute(
-                "SELECT * FROM inventory_snapshot_packages WHERE snapshot_id = %s",
-                (latest[0],),
+                "SELECT * FROM inventory_snapshot_packages "
+                "WHERE snapshot_id = %s AND package_tag = ANY(%s)",
+                (latest[0], tags),
             )
             packages = _cursor_frame(cursor)
-            cursor.execute("SELECT * FROM production_plans")
+            cursor.execute(
+                "SELECT plan_id, status FROM production_plans "
+                "WHERE status = ANY(%s) OR plan_id = %s",
+                (list(ACTIVE_PRODUCTION_STATUSES), plan_id),
+            )
             plans = _cursor_frame(cursor)
             cursor.execute(
                 "SELECT plan_id, package_tag, allocated_weight_grams "
-                "FROM production_plan_sources"
+                "FROM production_plan_sources WHERE package_tag = ANY(%s)",
+                (tags,),
             )
             sources = _cursor_frame(cursor)
             existing_plan = pd.DataFrame()
             if editing:
-                existing_plan = plans[
-                    plans["plan_id"].astype(str).eq(plan_id)
-                ].copy()
+                cursor.execute(
+                    "SELECT * FROM production_plans WHERE plan_id = %s LIMIT 1",
+                    (plan_id,),
+                )
+                existing_plan = _cursor_frame(cursor)
                 if existing_plan.empty:
                     raise ValueError("The production plan was not found.")
                 validation_plans = plans[
@@ -734,9 +1724,7 @@ def create_reflex_production_plan(
                     audit_values,
                 )
         connection.commit()
-    with _DASHBOARD_CACHE_LOCK:
-        _DASHBOARD_CACHE["loaded_at"] = 0.0
-        _DASHBOARD_CACHE["payload"] = None
+    _invalidate_dashboard_caches()
     return plan_id
 
 
@@ -783,9 +1771,7 @@ def delete_reflex_production_plans(
                 (existing_ids,),
             )
         connection.commit()
-    with _DASHBOARD_CACHE_LOCK:
-        _DASHBOARD_CACHE["loaded_at"] = 0.0
-        _DASHBOARD_CACHE["payload"] = None
+    _invalidate_dashboard_caches()
     return existing_ids
 
 
@@ -878,9 +1864,7 @@ def create_reflex_production_template(
                 ),
             )
         connection.commit()
-    with _DASHBOARD_CACHE_LOCK:
-        _DASHBOARD_CACHE["loaded_at"] = 0.0
-        _DASHBOARD_CACHE["payload"] = None
+    _invalidate_dashboard_caches()
     return template_id
 
 
@@ -919,7 +1903,16 @@ def apply_inventory_master(
     """Use unambiguous current SKU masters to unify historical attribution."""
     if analysis.empty or inventory_skus.empty:
         return analysis
-    result = analysis.copy()
+    # Compact Sales snapshots already contain mapped attribution. Remove any
+    # temporary mapping columns before applying the current inventory master
+    # so pandas cannot create mapped_brand_x / mapped_brand_y collisions.
+    result = analysis.copy().drop(
+        columns=[
+            "strain_key", "sku_key", "mapped_brand", "mapped_strain",
+            "mapped_sku", "mapped_sku_type",
+        ],
+        errors="ignore",
+    )
     master = inventory_skus[["brand", "strain", "sku_type"]].copy()
     master["strain_key"] = (
         master["strain"].fillna("").astype(str).str.lower().str.strip()
@@ -1063,7 +2056,7 @@ def record_list(frame: pd.DataFrame) -> list[dict[str, Any]]:
     for column in clean.columns:
         if pd.api.types.is_datetime64_any_dtype(clean[column]):
             clean[column] = clean[column].dt.strftime("%Y-%m-%d")
-    return clean.where(pd.notna(clean), None).to_dict("records")
+    return clean.astype(object).where(pd.notna(clean), None).to_dict("records")
 
 
 def build_velocity(
@@ -1075,20 +2068,25 @@ def build_velocity(
     sources: pd.DataFrame,
     all_history_demand: pd.DataFrame | None = None,
     period_days: int | None = None,
+    include_potential_wip: bool = True,
 ) -> pd.DataFrame:
     columns = [
         "Brand", "Strain", "SKU Type", "Units Shipped",
         "Avg Weekly Units", "Packages",
         "Current Units", "Weeks of Supply", "Potential Matching WIP",
         "Potential WIP Summary", "Committed WIP", "Matching Pre-WIP Weight", "Customers",
-        "Demand Status",
+        "Demand Status", "Last Shipped", "Days Since Last Shipment",
+        "Lifecycle Status", "Lifecycle Reason",
     ]
     history = all_history_demand if all_history_demand is not None else demand
     if history.empty:
         return pd.DataFrame(columns=columns)
-    history_first = history.groupby(
+    history_span = history.groupby(
         ["brand", "strain", "sku_type"], dropna=False
-    ).agg(first_shipped=("created_at", "min")).reset_index()
+    ).agg(
+        first_shipped=("created_at", "min"),
+        history_last_shipped=("created_at", "max"),
+    ).reset_index()
     grouped = demand.groupby(
         ["brand", "strain", "sku_type"], dropna=False
     ).agg(
@@ -1096,7 +2094,7 @@ def build_velocity(
         customers=("destination_license", "nunique"),
         last_shipped=("created_at", "max"),
     ).reset_index()
-    grouped = history_first.merge(
+    grouped = history_span.merge(
         grouped, on=["brand", "strain", "sku_type"], how="left"
     )
     grouped["units_shipped"] = pd.to_numeric(
@@ -1168,14 +2166,63 @@ def build_velocity(
     grouped["committed_weight_grams"] = grouped[
         "committed_weight_grams"
     ].fillna(0)
-    available_wip = available_wip_inventory(inventory_packages, plans, sources)
-    pre_wip = inventory_packages[
-        inventory_packages.get("production_stage", pd.Series(dtype=str)).eq("Pre-WIP")
-    ].copy() if not inventory_packages.empty else pd.DataFrame()
+    grouped["days_since_last_shipment"] = grouped["history_last_shipped"].apply(
+        lambda shipped: (
+            max((history_end - pd.Timestamp(shipped).date()).days, 0)
+            if pd.notna(shipped) else 99999
+        )
+    )
+
+    def lifecycle(row: pd.Series) -> tuple[str, str]:
+        key = tuple(
+            str(row.get(column, "") or "").strip().lower()
+            for column in ("brand", "strain", "sku_type")
+        )
+        override = PRODUCT_LIFECYCLE_OVERRIDES.get(key)
+        if override:
+            return override, "Manual Sales lifecycle override"
+        if str(row.get("strain", "") or "").strip().lower() in RETIRED_OR_ON_HOLD_STRAINS:
+            return "Retired", "Manually retired or placed on hold"
+        if (
+            float(row.get("current_units", 0) or 0) > 0
+            or float(row.get("committed_weight_grams", 0) or 0) > 0
+        ):
+            return "Active", "Current inventory or an active production commitment exists"
+        raw_days = row.get("days_since_last_shipment", 99999)
+        days = int(raw_days) if pd.notna(raw_days) else 99999
+        if days <= 90:
+            return "Active", "Shipped to a customer within 90 days"
+        if days <= 180:
+            return "Dormant", "Last customer shipment was 91-180 days ago"
+        return "Retirement Candidate", "No inventory or plan and no customer shipment for more than 180 days"
+
+    lifecycle_values = grouped.apply(lifecycle, axis=1)
+    grouped["lifecycle_status"] = lifecycle_values.map(lambda value: value[0])
+    grouped["lifecycle_reason"] = lifecycle_values.map(lambda value: value[1])
+    if not include_potential_wip:
+        grouped["potential_matching_wip"] = ""
+        grouped["potential_wip_summary"] = ""
+        grouped["committed_wip"] = grouped[
+            "committed_weight_grams"
+        ].apply(format_weight)
+        grouped["matching_pre_wip_weight"] = ""
+    available_wip = (
+        available_wip_inventory(inventory_packages, plans, sources)
+        if include_potential_wip else pd.DataFrame()
+    )
+    pre_wip = (
+        inventory_packages[
+            inventory_packages.get(
+                "production_stage", pd.Series(dtype=str)
+            ).eq("Pre-WIP")
+        ].copy()
+        if include_potential_wip and not inventory_packages.empty
+        else pd.DataFrame()
+    )
     potential_labels = []
     potential_summaries = []
     pre_wip_labels = []
-    for row in grouped.itertuples(index=False):
+    for row in grouped.itertuples(index=False) if include_potential_wip else []:
         matches = potential_wip_for_sku(
             available_wip, row.brand, row.strain, row.sku_type
         )
@@ -1222,12 +2269,13 @@ def build_velocity(
                 pre_match.get("calculated_weight_grams", pd.Series(dtype=float)),
                 errors="coerce",
             ).fillna(0).sum()))
-    grouped["potential_matching_wip"] = potential_labels
-    grouped["potential_wip_summary"] = potential_summaries
-    grouped["committed_wip"] = grouped[
-        "committed_weight_grams"
-    ].apply(format_weight)
-    grouped["matching_pre_wip_weight"] = pre_wip_labels
+    if include_potential_wip:
+        grouped["potential_matching_wip"] = potential_labels
+        grouped["potential_wip_summary"] = potential_summaries
+        grouped["committed_wip"] = grouped[
+            "committed_weight_grams"
+        ].apply(format_weight)
+        grouped["matching_pre_wip_weight"] = pre_wip_labels
     result = grouped.rename(columns={
         "brand": "Brand", "strain": "Strain", "sku_type": "SKU Type",
         "units_shipped": "Units Shipped",
@@ -1240,7 +2288,14 @@ def build_velocity(
         "potential_wip_summary": "Potential WIP Summary",
         "committed_wip": "Committed WIP",
         "matching_pre_wip_weight": "Matching Pre-WIP Weight",
+        "history_last_shipped": "Last Shipped",
+        "days_since_last_shipment": "Days Since Last Shipment",
+        "lifecycle_status": "Lifecycle Status",
+        "lifecycle_reason": "Lifecycle Reason",
     })[columns]
+    result["Last Shipped"] = pd.to_datetime(
+        result["Last Shipped"], errors="coerce"
+    ).dt.strftime("%Y-%m-%d").fillna("")
     for column in [
         "Units Shipped", "Avg Weekly Units", "Current Units",
         "Weeks of Supply",
@@ -1710,12 +2765,80 @@ def build_inventory_views(
     }
 
 
-def build_dashboard_data() -> dict[str, Any]:
-    transfers = load_transfer_rows()
-    snapshot, inventory_skus = load_latest_inventory_skus()
-    inventory_packages = load_latest_inventory_packages(
-        str(snapshot.get("snapshot_id", ""))
-    )
+def load_operational_context() -> dict[str, Any]:
+    """Build the shared Inventory/Production context at most once at a time."""
+    with _OPERATIONAL_BUILD_LOCK:
+        with _OPERATIONAL_CONTEXT_LOCK:
+            context_age = time.monotonic() - float(
+                _OPERATIONAL_CONTEXT.get("loaded_at", 0.0)
+            )
+            cached = (
+                _OPERATIONAL_CONTEXT.get("payload")
+                if context_age < OPERATIONAL_CACHE_SECONDS else None
+            )
+        if cached:
+            return cached
+
+        # Inventory and Production are independent. Each worker now reuses a
+        # single connection for its related reads, avoiding repeated remote
+        # DNS/TLS setup during the first user's cold start.
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            inventory_future = executor.submit(load_latest_inventory_bundle)
+            production_future = executor.submit(load_production_data)
+            templates_future = executor.submit(load_reflex_production_templates)
+            snapshot, inventory_skus, inventory_packages = inventory_future.result()
+            plans, outputs, sources = production_future.result()
+            production_templates = templates_future.result()
+        payload = {
+            "snapshot": snapshot,
+            "inventory_skus": inventory_skus,
+            "inventory_packages": inventory_packages,
+            "plans": plans,
+            "outputs": outputs,
+            "sources": sources,
+            "production_templates": production_templates,
+        }
+        with _OPERATIONAL_CONTEXT_LOCK:
+            _OPERATIONAL_CONTEXT["payload"] = payload
+            _OPERATIONAL_CONTEXT["loaded_at"] = time.monotonic()
+        return payload
+
+
+def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
+    """Build either the fast operational shell or the complete Sales payload."""
+    sales_snapshot: dict[str, Any] = {}
+    sales_error = ""
+    analysis = empty_sales_analysis()
+    if include_sales:
+        try:
+            sales_snapshot, analysis = load_published_sales_snapshot()
+            if not sales_snapshot:
+                sales_error = (
+                    "Sales data is waiting for a published snapshot. Use the "
+                    "Streamlit 81.5 Sales Snapshot publisher, then refresh."
+                )
+        except Exception as error:
+            sales_error = f"The published Sales snapshot could not be read: {error}"
+            analysis = empty_sales_analysis()
+
+        allow_raw_fallback = os.getenv(
+            "QCC_ALLOW_RAW_TRANSFER_FALLBACK", ""
+        ).strip().lower() in {"1", "true", "yes"}
+        if not sales_snapshot and allow_raw_fallback:
+            try:
+                transfers = load_transfer_rows()
+                analysis = prepare_transfer_analysis(transfers)
+                sales_error = ""
+            except Exception as error:
+                sales_error = f"Sales transfer fallback could not be read: {error}"
+    operational_context = load_operational_context()
+    snapshot = operational_context["snapshot"]
+    inventory_skus = operational_context["inventory_skus"]
+    inventory_packages = operational_context["inventory_packages"]
+    plans = operational_context["plans"]
+    outputs = operational_context["outputs"]
+    sources = operational_context["sources"]
+    production_templates = operational_context["production_templates"]
     authoritative_cpg_ready = {
         "is_finished_retail_sku", "include_in_cpg", "is_retention_sample",
         "classification_rule_version",
@@ -1737,10 +2860,72 @@ def build_dashboard_data() -> dict[str, Any]:
                 ).ge(0)
             ).sum()
         )
-    plans, outputs, sources = load_production_data()
-    production_templates = load_reflex_production_templates()
-    analysis = prepare_transfer_analysis(transfers)
-    analysis = apply_inventory_master(analysis, inventory_skus)
+    if not include_sales:
+        inventory_views = build_inventory_views(inventory_packages, plans, sources)
+        saved_plans = build_saved_plan_rows(plans, outputs, sources)
+        saved_plan_cards = build_saved_plan_cards(plans, outputs, sources)
+        calendar = [
+            {
+                "Target Date": card["Target Date"],
+                "Plan ID": card["Plan ID"],
+                "Plan Name": card["Plan Name"],
+                "Status": card["Status"],
+                "Department": card["Department"],
+                "Brand": card["Brand"],
+                "Strain": card["Strain"],
+                "SKU Type": card["SKU Type"],
+                "Output Summary": card["Output Summary"],
+            }
+            for card in saved_plan_cards if card["Target Date"]
+        ]
+        all_inventory = inventory_views.get("all_inventory", pd.DataFrame())
+        def options(column: str) -> list[str]:
+            values = (
+                all_inventory.get(column, pd.Series(dtype=str))
+                .dropna().astype(str).str.strip()
+            )
+            return sorted(value for value in set(values) if value)
+        return {
+            "metrics": {
+                "units": 0, "value": 0, "customers": 0, "manifests": 0,
+                "weighted_price": 0, "stockouts": 0, "latest_shipment": "",
+                "open_manifests": 0, "exception_manifests": 0,
+                "exception_rows": 0, "transfer_rows": 0,
+            },
+            "snapshot": {
+                "business_date": iso_date(snapshot.get("business_date")),
+                "published_at": str(snapshot.get("published_at", "")),
+                "package_count": int(native_number(snapshot.get("package_count"), 0)),
+                "sku_count": int(native_number(snapshot.get("sku_count"), 0)),
+                "detail_count": int(len(inventory_packages)),
+                "authoritative_cpg_count": authoritative_cpg_count,
+                "classification_rule_version": classification_rule_version,
+            },
+            "brands": options("Brand"), "strains": options("Strain"),
+            "sku_types": options("SKU Type"),
+            "monthly": [], "top_skus": [], "business_pulse": [],
+            "velocity": [], "velocity_windows": {"All Time": []},
+            "stockouts": [], "customers": [], "exceptions": [],
+            "transfer_data": [], "transfer_import_log": [],
+            "saved_plans": record_list(saved_plans),
+            "saved_plan_cards": saved_plan_cards,
+            "production_templates": record_list(production_templates),
+            "calendar": sorted(calendar, key=lambda row: row["Target Date"]),
+            "sales_ready": False, "sales_error": "", "sales_snapshot": {},
+            "inventory_ready": not inventory_packages.empty,
+            "authoritative_cpg_ready": authoritative_cpg_ready,
+            "all_inventory": record_list(all_inventory.round(2)),
+            "loaded_at": datetime.now().astimezone().strftime(
+                "%Y-%m-%d %I:%M %p %Z"
+            ),
+            "rule_version": (
+                f"QCC Control Tower {classification_rule_version} shared inventory rules"
+                if classification_rule_version else
+                "Publish a Version 81.4 inventory snapshot for authoritative CPG rules"
+            ),
+        }
+    if not analysis.empty:
+        analysis = apply_inventory_master(analysis, inventory_skus)
     demand = analysis[analysis["is_demand"]].copy()
     velocity = build_velocity(
         demand, inventory_skus, inventory_packages, plans, outputs, sources
@@ -1764,17 +2949,31 @@ def build_dashboard_data() -> dict[str, Any]:
                 sources,
                 all_history_demand=demand,
                 period_days=days,
+                include_potential_wip=False,
+            ).drop(columns=[
+                "Potential Matching WIP", "Potential WIP Summary",
+                "Matching Pre-WIP Weight",
+            ]).merge(
+                velocity[[
+                    "Brand", "Strain", "SKU Type",
+                    "Potential Matching WIP", "Potential WIP Summary",
+                    "Matching Pre-WIP Weight",
+                ]],
+                on=["Brand", "Strain", "SKU Type"],
+                how="left",
             ))
     else:
         velocity_windows.update({
             "1 Week": [], "30 Days": [], "90 Days": [],
         })
-    inventory_views = build_inventory_views(inventory_packages, plans, sources)
+    # The Sales background load reuses the inventory context and must not
+    # rebuild every inventory table a second time during the same login.
+    inventory_views = (
+        {} if include_sales
+        else build_inventory_views(inventory_packages, plans, sources)
+    )
     stockouts = velocity[
         velocity["Demand Status"].eq("Current Stockout")
-        & ~velocity["Strain"].fillna("").str.lower().isin(
-            RETIRED_OR_ON_HOLD_STRAINS
-        )
     ].copy()
     monthly = pd.DataFrame(columns=["Month", "Units", "Value", "Customers"])
     top_skus = pd.DataFrame(
@@ -1904,6 +3103,16 @@ def build_dashboard_data() -> dict[str, Any]:
         "exceptions": record_list(exceptions),
         "transfer_data": record_list(transfer_display.head(2000)),
         "transfer_import_log": record_list(transfer_import_log),
+        "sales_ready": bool(sales_snapshot) and not analysis.empty,
+        "sales_error": sales_error,
+        "sales_snapshot": {
+            "snapshot_id": str(sales_snapshot.get("snapshot_id", "")),
+            "published_at": str(sales_snapshot.get("published_at", "")),
+            "published_by": str(sales_snapshot.get("published_by", "")),
+            "source_row_count": int(native_number(
+                sales_snapshot.get("source_row_count"), 0
+            )),
+        },
         "inventory_ready": not inventory_packages.empty,
         "authoritative_cpg_ready": authoritative_cpg_ready,
         # All inventory workspaces are derived from one flagged package list
@@ -1922,7 +3131,7 @@ def build_dashboard_data() -> dict[str, Any]:
 
 
 def get_dashboard_data(force_refresh: bool = False) -> dict[str, Any]:
-    """Reuse one immutable five-minute payload across users.
+    """Load the fast operational shell without waiting for transfer history.
 
     Callers treat the returned collections as read-only. Returning the shared
     payload avoids a full deep copy for every login and tab change.
@@ -1931,11 +3140,25 @@ def get_dashboard_data(force_refresh: bool = False) -> dict[str, Any]:
     with _DASHBOARD_CACHE_LOCK:
         payload = _DASHBOARD_CACHE.get("payload")
         age = now - float(_DASHBOARD_CACHE.get("loaded_at", 0.0))
-        if payload is not None and not force_refresh and age < PILOT_CACHE_SECONDS:
+        if payload is not None and not force_refresh and age < OPERATIONAL_CACHE_SECONDS:
             return payload
-        payload = build_dashboard_data()
+        payload = build_dashboard_data(include_sales=False)
         _DASHBOARD_CACHE["payload"] = payload
         _DASHBOARD_CACHE["loaded_at"] = time.monotonic()
+        return payload
+
+
+def get_sales_dashboard_data(force_refresh: bool = False) -> dict[str, Any]:
+    """Load and cache transfer-dependent Sales data independently."""
+    now = time.monotonic()
+    with _SALES_DASHBOARD_CACHE_LOCK:
+        payload = _SALES_DASHBOARD_CACHE.get("payload")
+        age = now - float(_SALES_DASHBOARD_CACHE.get("loaded_at", 0.0))
+        if payload is not None and not force_refresh and age < SALES_CACHE_SECONDS:
+            return payload
+        payload = build_dashboard_data(include_sales=True)
+        _SALES_DASHBOARD_CACHE["payload"] = payload
+        _SALES_DASHBOARD_CACHE["loaded_at"] = time.monotonic()
         return payload
 
 
@@ -1954,6 +3177,9 @@ def demo_dashboard_data() -> dict[str, Any]:
             "Matching Pre-WIP Weight": "3.2 lb",
             "Customers": 42,
             "Demand Status": "Stockout Risk Within 4 Weeks",
+            "Last Shipped": str(today), "Days Since Last Shipment": 0,
+            "Lifecycle Status": "Active",
+            "Lifecycle Reason": "Current inventory exists",
         },
         {
             "Brand": "Craft Kings", "Strain": "Hybrid Blend",
@@ -1966,6 +3192,9 @@ def demo_dashboard_data() -> dict[str, Any]:
             "Matching Pre-WIP Weight": "1.1 lb",
             "Customers": 35,
             "Demand Status": "Current Stockout",
+            "Last Shipped": str(today), "Days Since Last Shipment": 0,
+            "Lifecycle Status": "Active",
+            "Lifecycle Reason": "Shipped to a customer within 90 days",
         },
     ]
     return {

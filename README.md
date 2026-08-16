@@ -1,4 +1,32 @@
-# QCC Control Tower - Reflex Inventory & Production Pilot 0.8.9
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.3.13
+
+Version 0.9.3.13 restores the Quality Assurance workspace on the verified compact
+Sales snapshot foundation. QA loads only when selected, uses retryable reads,
+and cannot force Inventory or Sales into demo mode. Inventory no longer waits
+for Sales calculations, independent reads run concurrently, Production subtabs
+do not wait on database refreshes, and QA summary/detail tables use the sortable
+grid's required row format. Potency matching accepts Metrc test-name variations
+and QA test families map to compatible finished SKU families. Direct Metrc-tag
+search now falls back to current Inventory when no COA exists and opens a
+general downloadable, browser-printable compliance summary. It
+also renders only the
+visible Sales & Demand and QA subtab, retains
+opened Sales datasets for faster repeat navigation, and adds product lifecycle
+filtering based on last customer shipment, current inventory, and committed
+production. QA reads retry once after an idle SSL disconnect, chart payloads
+exclude non-finite lab values, and the QA workspace includes a reconnect action.
+Compliance Label Search and Printing now provides direct tag/harvest search,
+guided Operation/Brand/Strain/SKU browsing, and a classified catalog of the 30
+supplied NiceLabel templates. Native `.nlbl` printing remains intentionally
+pending confirmation of the installed ZebraDesigner/NiceLabel edition.
+
+Version 0.9.0 migrates the Quality Assurance workspace from Streamlit into
+Reflex for offline parity testing. It includes Cultivation and Manufacturing
+compliance views, global Brand and Strain filtering, product-specific
+Compliance Test Type filters, pass-success measures, THC/terpene consistency,
+average-and-range tables, duplicate-safe Metrc LabResultsReport imports, and
+Compliance Label Search and Printing with the shared Supabase templates and
+print audit log.
 
 Version 0.8.9 makes Sales & Demand Planning tab transitions immediate while
 their selected datasets finish loading, places the Inventory table weight
@@ -126,9 +154,11 @@ Streamlit application.
 
 ## Shared-data safety boundary
 
-Streamlit remains the system of record for Metrc uploads, inventory snapshots,
-reservations, employee access, and administration. Reflex can create production
-plans in the same Supabase tables used by Streamlit. Plan creation revalidates
+Streamlit remains the system of record for inventory snapshots, reservations,
+and order workflows. Reflex shares employee administration, production plans,
+and Quality Assurance lab history with Streamlit through Supabase. Reflex QA
+imports use the same duplicate-safe lab tables and do not delete source data.
+Plan creation revalidates
 the latest inventory and active commitments inside a locked database
 transaction before saving.
 

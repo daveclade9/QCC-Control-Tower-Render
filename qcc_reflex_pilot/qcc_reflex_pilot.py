@@ -1,10 +1,14 @@
-"""QCC Control Tower Reflex 0.8.6 - memory-safe production workspace."""
+"""QCC Control Tower Reflex 0.9.3 - inventory, planning, and QA workspace."""
 
 from __future__ import annotations
 
 import csv
+import asyncio
 import io
 import json
+import math
+import re
+from html import escape
 from calendar import month_name
 from datetime import date, datetime, timedelta
 from typing import Any, TypedDict
@@ -22,9 +26,15 @@ from .data import (
     delete_reflex_production_plans,
     demo_dashboard_data,
     get_dashboard_data,
+    get_sales_dashboard_data,
+    import_lab_results_bytes,
+    load_qa_analytes,
+    load_qa_module_data,
     load_production_module_data,
+    log_qa_label_download,
     potential_wip_for_sku,
     PRODUCTION_PLAN_STATUSES,
+    QA_LABEL_FIELDS,
     production_recipe_type,
     production_unit_weight_grams,
 )
@@ -43,14 +53,21 @@ from .auth import (
     validate_app_session,
     verify_supabase_access_token,
 )
+from .label_catalog import NICE_LABEL_CATALOG
 
 
-PILOT_VERSION = "0.8.9"
+PILOT_VERSION = "0.9.3.13"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
 SURFACE = "#ffffff"
 BACKGROUND = "#f4f7fa"
+
+QA_ANALYTE_CATEGORIES = [
+    "All Categories", "Cannabinoids", "Terpenes", "Mycotoxins",
+    "Heavy Metals", "Pesticides", "Microbials", "Water Activity",
+    "Other / Needs Review",
+]
 
 
 CalendarEvent = TypedDict(
@@ -143,6 +160,8 @@ class DashboardState(rx.State):
     auth_title: str = ""
     auth_role: str = ""
     auth_provider: str = ""
+    auth_redirecting: bool = False
+    auth_failed: bool = False
     team_members: list[EmployeeDirectoryRow] = []
     admin_message: str = ""
     admin_error: str = ""
@@ -161,14 +180,55 @@ class DashboardState(rx.State):
     admin_additional_email: str = ""
 
     loading: bool = False
+    sales_background_loading: bool = False
     error_message: str = ""
     using_demo_data: bool = False
+    initial_data_loading: bool = False
     loaded_at: str = "Not loaded"
     rule_version: str = "QCC Control Tower 81.4 shared inventory rules"
     brand_filter: str = "All Brands"
     strain_filter: str = "All Strains"
     sku_filter: str = "All SKU Types"
     search_text: str = ""
+    qa_view: str = "cultivation"
+    # Large source collections stay backend-only. Only filtered display data
+    # is synchronized through the websocket.
+    _qa_packages: list[dict[str, Any]] = []
+    qa_templates: list[dict[str, Any]] = []
+    qa_import_log: list[dict[str, Any]] = []
+    qa_record_count: int = 0
+    qa_analyte_count: int = 0
+    qa_cultivation_test_type: str = "All Test Types"
+    qa_manufacturing_test_type: str = "All Test Types"
+    qa_cultivation_consistency_strain: str = ""
+    qa_manufacturing_consistency_strain: str = ""
+    qa_lookup_draft: str = ""
+    qa_lookup_search: str = ""
+    qa_lookup_selection: str = ""
+    qa_selected_package: dict[str, Any] = {}
+    qa_preview_open: bool = False
+    qa_selected_analytes: list[dict[str, Any]] = []
+    qa_selected_analytes_loading: bool = False
+    qa_analyte_message: str = ""
+    qa_analyte_category_filter: str = "All Categories"
+    qa_lookup_loading: bool = False
+    qa_selected_template: str = ""
+    qa_override_expiration: bool = False
+    qa_manual_expiration: str = ""
+    qa_message: str = ""
+    qa_error: str = ""
+    qa_importing: bool = False
+    qa_import_results: list[dict[str, Any]] = []
+    qa_loading: bool = False
+    qa_loaded: bool = False
+    qa_label_catalog: list[dict[str, Any]] = NICE_LABEL_CATALOG
+    qa_label_operation_filter: str = "All Operations"
+    qa_label_brand_filter: str = "All Brands"
+    qa_label_strain_filter: str = "All Strains"
+    qa_label_sku_filter: str = "All SKU Types"
+    qa_label_catalog_search: str = ""
+    qa_selected_native_template: str = ""
+    qa_recent_selections: list[dict[str, str]] = []
     inventory_stage_filter: str = "All Production Stages"
     inventory_license_filter: str = "All Licenses"
     inventory_qa_filter: str = "All QA Statuses"
@@ -229,6 +289,7 @@ class DashboardState(rx.State):
     production_save_message: str = ""
     production_save_error: str = ""
     production_saving: bool = False
+    production_data_loading: bool = False
     production_last_saved_plan_id: str = ""
     production_edit_plan_id: str = ""
     production_view: str = "build"
@@ -254,6 +315,8 @@ class DashboardState(rx.State):
     sku_planning_page_size: int = 25
     sku_planning_sort: str = "Avg Weekly Units - High to Low"
     sku_velocity_period: str = "All Time"
+    demand_lifecycle_filter: str = "Active Products Only"
+    sales_loaded_views: list[str] = []
     velocity_windows: dict[str, list[dict[str, Any]]] = {}
     saved_plan_search: str = ""
     saved_plan_status_filter: str = "All Plan Statuses"
@@ -291,7 +354,7 @@ class DashboardState(rx.State):
     calendar: list[CalendarEvent] = []
     customers: list[dict[str, Any]] = []
     exceptions: list[dict[str, Any]] = []
-    transfer_data: list[dict[str, Any]] = []
+    _transfer_data: list[dict[str, Any]] = []
     transfer_import_log: list[dict[str, Any]] = []
     cpg_inventory: list[dict[str, Any]] = []
     bulk_inventory: list[dict[str, Any]] = []
@@ -481,25 +544,47 @@ class DashboardState(rx.State):
 
     @rx.event
     def begin_google_sign_in(self):
-        self.auth_message = ""
+        self.auth_redirecting = True
+        self.auth_checked = False
+        self.auth_failed = False
+        self.auth_message = "Connecting to Google Workspace..."
+        yield
         try:
-            return rx.redirect(oauth_authorize_url("google"))
+            destination = json.dumps(oauth_authorize_url("google"))
+            yield rx.call_script(
+                f"window.setTimeout(() => window.location.assign({destination}), 450)"
+            )
         except Exception as error:
+            self.auth_checked = True
+            self.auth_redirecting = False
+            self.auth_failed = True
             self.auth_message = f"Google sign-in is not ready: {error}"
 
     @rx.event
     def begin_microsoft_sign_in(self):
-        self.auth_message = ""
+        self.auth_redirecting = True
+        self.auth_checked = False
+        self.auth_failed = False
+        self.auth_message = "Connecting to Microsoft 365..."
+        yield
         try:
-            return rx.redirect(oauth_authorize_url("azure"))
+            destination = json.dumps(oauth_authorize_url("azure"))
+            yield rx.call_script(
+                f"window.setTimeout(() => window.location.assign({destination}), 450)"
+            )
         except Exception as error:
+            self.auth_checked = True
+            self.auth_redirecting = False
+            self.auth_failed = True
             self.auth_message = f"Microsoft sign-in is not ready: {error}"
 
     @rx.event
     def complete_oauth_callback(self, fragment: str):
         """Validate Supabase's implicit-flow token and create a server session."""
         self.auth_checked = True
-        self.auth_message = ""
+        self.auth_redirecting = True
+        self.auth_failed = False
+        self.auth_message = "Verifying identity and QCC employee access..."
         try:
             values = parse_qs(str(fragment or "").lstrip("#"))
             if values.get("error_description"):
@@ -520,8 +605,20 @@ class DashboardState(rx.State):
             self.auth_session_token = create_app_session(email, provider)
             employee["auth_provider"] = provider
             self._apply_employee(employee)
-            return rx.redirect("/")
+            self.auth_message = "Sign-in verified. Loading QCC Control Tower..."
+            # Persist the secure session cookie in one state update before the
+            # route changes. Redirecting in the same update caused a brief
+            # dashboard flash followed by another authentication check.
+            yield
+            # Let the callback state update finish before the browser loads the
+            # dashboard. This gives the secure cookie time to persist and avoids
+            # briefly showing the app before sending the user through OAuth again.
+            yield rx.call_script(
+                "window.setTimeout(() => window.location.replace('/'), 650)"
+            )
         except Exception as error:
+            self.auth_redirecting = False
+            self.auth_failed = True
             self.auth_session_token = ""
             self._clear_employee()
             self.auth_message = f"Sign-in could not be completed: {error}"
@@ -541,18 +638,21 @@ class DashboardState(rx.State):
         self.brand_filter = value
         self.sku_planning_page = 1
         self.inventory_page = 1
+        self._sync_qa_consistency_filters()
 
     @rx.event
     def change_strain_filter(self, value: str):
         self.strain_filter = value
         self.sku_planning_page = 1
         self.inventory_page = 1
+        self._sync_qa_consistency_filters()
 
     @rx.event
     def change_sku_filter(self, value: str):
         self.sku_filter = value
         self.sku_planning_page = 1
         self.inventory_page = 1
+        self._sync_qa_consistency_filters()
 
     @rx.event
     def change_search_text(self, value: str):
@@ -561,6 +661,1029 @@ class DashboardState(rx.State):
         self.sku_planning_page = 1
         self.inventory_page = 1
         self.transfer_page = 1
+
+    def _apply_qa_payload(self, payload: dict[str, Any]) -> None:
+        self._qa_packages = payload.get("packages", [])
+        self.qa_templates = payload.get("templates", [])
+        self.qa_import_log = payload.get("import_log", [])
+        self.qa_record_count = int(payload.get("record_count", 0) or 0)
+        self.qa_analyte_count = int(payload.get("analyte_count", 0) or 0)
+        self.brands = sorted(set(self.brands).union(
+            str(row.get("brand", "")) for row in self._qa_packages
+            if str(row.get("brand", ""))
+        ))
+        self.strains = sorted(set(self.strains).union(
+            str(row.get("strain", "")) for row in self._qa_packages
+            if str(row.get("strain", ""))
+        ))
+        self._sync_qa_consistency_filters()
+        self.qa_loaded = True
+
+    def _sync_qa_consistency_filters(self) -> None:
+        cultivation_options = self.qa_cultivation_consistency_options
+        manufacturing_options = self.qa_manufacturing_consistency_options
+        if self.qa_cultivation_consistency_strain not in cultivation_options:
+            self.qa_cultivation_consistency_strain = (
+                cultivation_options[0] if cultivation_options else ""
+            )
+        if self.qa_manufacturing_consistency_strain not in manufacturing_options:
+            self.qa_manufacturing_consistency_strain = (
+                manufacturing_options[0] if manufacturing_options else ""
+            )
+
+    def _load_qa_payload(self, force_refresh: bool = False) -> None:
+        self._apply_qa_payload(
+            load_qa_module_data(force_refresh=force_refresh)
+        )
+
+    @rx.event(background=True)
+    async def load_qa_background(self, force_refresh: bool = False):
+        """Load QA without blocking navigation for this signed-in user."""
+        async with self:
+            if self.qa_loading:
+                return
+            self.qa_loading = True
+            self.qa_error = ""
+            self.qa_message = "Loading Quality Assurance data..."
+        try:
+            payload = await rx.run_in_thread(
+                lambda: load_qa_module_data(force_refresh=force_refresh)
+            )
+            async with self:
+                self._apply_qa_payload(payload)
+                self.qa_message = "Quality Assurance data is ready."
+        except Exception as error:
+            async with self:
+                self.qa_error = f"Quality Assurance could not be loaded: {error}"
+                self.qa_message = ""
+        finally:
+            async with self:
+                self.qa_loading = False
+
+    @rx.event
+    def change_qa_view(self, value: str):
+        self.qa_view = value
+
+    @rx.event
+    def change_qa_cultivation_test_type(self, value: str):
+        self.qa_cultivation_test_type = value
+        options = self.qa_cultivation_consistency_options
+        self.qa_cultivation_consistency_strain = options[0] if options else ""
+
+    @rx.event
+    def change_qa_manufacturing_test_type(self, value: str):
+        self.qa_manufacturing_test_type = value
+        options = self.qa_manufacturing_consistency_options
+        self.qa_manufacturing_consistency_strain = options[0] if options else ""
+
+    @rx.event
+    def change_qa_cultivation_consistency_strain(self, value: str):
+        self.qa_cultivation_consistency_strain = value
+
+    @rx.event
+    def change_qa_manufacturing_consistency_strain(self, value: str):
+        self.qa_manufacturing_consistency_strain = value
+
+    @rx.event
+    def change_qa_lookup_search(self, value: str):
+        # Typing must not evaluate or render matching database rows. The draft
+        # is submitted only when Find and Preview is pressed.
+        self.qa_lookup_draft = value
+        self.qa_message = ""
+        self.qa_error = ""
+
+    @rx.event
+    def change_qa_preview_open(self, value: bool):
+        self.qa_preview_open = value
+
+    @rx.event
+    def change_qa_label_operation_filter(self, value: str):
+        self.qa_label_operation_filter = value
+
+    @rx.event
+    def change_qa_label_brand_filter(self, value: str):
+        self.qa_label_brand_filter = value
+
+    @rx.event
+    def change_qa_label_strain_filter(self, value: str):
+        self.qa_label_strain_filter = value
+
+    @rx.event
+    def change_qa_label_sku_filter(self, value: str):
+        self.qa_label_sku_filter = value
+
+    @rx.event
+    def change_qa_label_catalog_search(self, value: str):
+        self.qa_label_catalog_search = value
+
+    @rx.event
+    def change_qa_analyte_category_filter(self, value: str):
+        self.qa_analyte_category_filter = value
+
+    @staticmethod
+    def _qa_lookup_label(row: dict[str, Any]) -> str:
+        return " | ".join([
+            str(row.get("package_tag", "")),
+            str(row.get("strain", "")),
+            str(row.get("qa_test_type", "")),
+            str(row.get("lab_testing_status", "")),
+        ])
+
+    @rx.event
+    def select_qa_lookup_record(self, value: str):
+        self.qa_lookup_selection = value
+        selected = next(
+            (row for row in self.qa_lookup_matches if self._qa_lookup_label(row) == value),
+            None,
+        )
+        self._select_qa_record(selected)
+        self.qa_preview_open = selected is not None
+        if selected is not None:
+            yield DashboardState.load_selected_qa_analytes(
+                str(selected.get("package_tag", "")),
+                str(selected.get("packaged_license", "")),
+            )
+
+    @staticmethod
+    def _inventory_qa_record(row: dict[str, Any]) -> dict[str, Any]:
+        sku_type = str(row.get("SKU Type", "") or "")
+        sku_key = sku_type.lower()
+        if re.search(r"\bpre[- ]?roll\b|\bpreroll\b", sku_key):
+            test_type = "Pre-Rolls"
+        elif re.search(r"\bvape\b|\bcartridge\b|\bdisposable\b", sku_key):
+            test_type = "Vapes"
+        elif re.search(r"\bedible\b|\bgumm(?:y|ies)\b", sku_key):
+            test_type = "Edibles"
+        elif re.search(r"\bconcentrate\b|\brosin\b|\bbadder\b|\bdiamonds?\b", sku_key):
+            test_type = "Concentrates"
+        elif re.search(r"\bflower\b|\bsmalls?\b", sku_key):
+            test_type = "Flower"
+        else:
+            test_type = "Other / Needs Review"
+        operation = (
+            "Manufacturing"
+            if test_type in {"Vapes", "Edibles", "Concentrates"}
+            or "infused" in sku_key
+            else "Cultivation"
+        )
+        qa_status = str(row.get("QA Status", "") or "")
+        return {
+            "package_tag": str(row.get("Metrc Tag", "") or ""),
+            "packaged_license": "",
+            "packaged_facility": str(
+                row.get("Current Facility", row.get("Facility", "")) or ""
+            ),
+            "brand": str(row.get("Brand", "") or ""),
+            "strain": str(row.get("Strain", "") or ""),
+            "sku_type": sku_type,
+            "qa_test_type": test_type,
+            "operation": operation,
+            "lab_testing_status": qa_status or "Status unavailable",
+            "qa_outcome": (
+                "Passed" if "pass" in qa_status.lower()
+                else "Failed" if "fail" in qa_status.lower() else "Pending"
+            ),
+            "source_harvest_names": str(row.get("Source Harvest", "") or ""),
+            "source_package_labels": "",
+            "item": str(row.get("Item", "") or ""),
+            "category": str(row.get("Category", "") or ""),
+            "location": str(row.get("Location", "") or ""),
+            "expiration_date": "",
+            "test_date": "",
+            "total_thc": None,
+            "total_terpenes": None,
+            "lab_facility": "",
+            "record_origin": "Current Inventory — no associated COA found",
+        }
+
+    @rx.event
+    def find_qa_lookup_record(self):
+        """Select the compact compliance record before loading analyte detail."""
+        self.qa_lookup_loading = True
+        self.qa_error = ""
+        self.qa_analyte_message = ""
+        yield
+        selected: dict[str, Any] | None = None
+        try:
+            search = self.qa_lookup_draft.strip()
+            if not search:
+                self.qa_error = "Enter a Metrc package tag or harvest name first."
+                return
+            matches = self._qa_lookup_rows(search.lower())
+            normalized = search.lower()
+            selected = next(
+                (
+                    row for row in matches
+                    if str(row.get("package_tag", "")).strip().lower() == normalized
+                ),
+                matches[0] if matches else None,
+            )
+            if selected is None:
+                self.qa_error = (
+                    "No compliance or current Inventory record matched that tag or harvest."
+                )
+                self.qa_message = ""
+                return
+            self.qa_lookup_selection = self._qa_lookup_label(selected)
+            self._select_qa_record(selected)
+            self.qa_preview_open = True
+            if str(selected.get("record_origin", "")).startswith("Current Inventory"):
+                self.qa_message = (
+                    "Current Inventory record found. No associated COA was found, so a "
+                    "general printable compliance summary was prepared."
+                )
+                self.qa_analyte_message = "No associated laboratory analytes were found."
+            else:
+                self.qa_message = "Compliance record found and printable summary prepared."
+                self.qa_analyte_message = "Loading the complete analyte history..."
+        except Exception as error:
+            self.qa_error = f"That compliance record could not be prepared: {error}"
+            self.qa_message = ""
+            selected = None
+        finally:
+            self.qa_lookup_loading = False
+        yield
+        if selected is not None and not str(
+            selected.get("record_origin", "")
+        ).startswith("Current Inventory"):
+            yield DashboardState.load_selected_qa_analytes(
+                str(selected.get("package_tag", "")),
+                str(selected.get("packaged_license", "")),
+            )
+
+    def _select_qa_record(self, selected: dict[str, Any] | None) -> None:
+        self.qa_analyte_category_filter = "All Categories"
+        if selected is None:
+            self.qa_selected_package = {}
+            self.qa_selected_analytes = []
+            return
+        self.qa_selected_package = dict(selected)
+        self.qa_selected_package.setdefault("record_origin", "Lab Results / COA")
+        if str(self.qa_selected_package.get("record_origin", "")).startswith(
+            "Current Inventory"
+        ):
+            self.qa_selected_analytes = []
+        else:
+            # Full analyte history is intentionally loaded by a protected
+            # background event after the preview is already visible.
+            self.qa_selected_analytes = []
+        expiration = str(selected.get("expiration_date", "") or "")
+        self.qa_override_expiration = not bool(expiration)
+        self.qa_manual_expiration = expiration
+        template_options = self.qa_template_options
+        if self.qa_selected_template not in template_options:
+            self.qa_selected_template = template_options[0] if template_options else ""
+        brand = str(selected.get("brand", ""))
+        strain = str(selected.get("strain", ""))
+        sku = str(selected.get("sku_type", selected.get("qa_test_type", "")))
+        candidates = [
+            row for row in self.qa_label_catalog
+            if str(row.get("Brand", "")) == brand
+            and str(row.get("Strain", "")) == strain
+        ]
+        exact = next(
+            (row for row in candidates if str(row.get("SKU Type", "")) == sku),
+            candidates[0] if len(candidates) == 1 else None,
+        )
+        self.qa_selected_native_template = (
+            str(exact.get("Template Name", ""))
+            if exact else "General Compliance Summary"
+        )
+        recent = {
+            "Package Tag": str(selected.get("package_tag", "")),
+            "Brand": brand,
+            "Strain": strain,
+            "SKU Type": sku,
+        }
+        self.qa_recent_selections = [
+            recent,
+            *[
+                row for row in self.qa_recent_selections
+                if row.get("Package Tag") != recent["Package Tag"]
+            ],
+        ][:8]
+
+    @rx.event
+    def select_qa_package(self, package_tag: str, packaged_license: str):
+        selected = next(
+            (
+                row for row in self.qa_lookup_matches
+                if str(row.get("package_tag", "")) == str(package_tag)
+                and str(row.get("packaged_license", "")) == str(packaged_license)
+            ),
+            None,
+        )
+        self.qa_lookup_selection = self._qa_lookup_label(selected) if selected else ""
+        self._select_qa_record(selected)
+        self.qa_preview_open = selected is not None
+        if selected is not None:
+            yield DashboardState.load_selected_qa_analytes(
+                str(selected.get("package_tag", "")),
+                str(selected.get("packaged_license", "")),
+            )
+
+    @rx.event(background=True)
+    async def load_selected_qa_analytes(
+        self, package_tag: str, packaged_license: str
+    ):
+        """Load optional analyte detail without risking the QA search event."""
+        async with self:
+            current_tag = str(self.qa_selected_package.get("package_tag", ""))
+            if not package_tag or current_tag != package_tag:
+                return
+            self.qa_selected_analytes_loading = True
+            self.qa_analyte_message = "Loading the complete analyte history..."
+        try:
+            rows = await rx.run_in_thread(
+                lambda: load_qa_analytes(package_tag, packaged_license)
+            )
+            async with self:
+                if str(self.qa_selected_package.get("package_tag", "")) == package_tag:
+                    self.qa_selected_analytes = rows
+                    self.qa_analyte_message = (
+                        f"{len(rows):,} analyte result(s) loaded."
+                        if rows else "No detailed analyte rows were found for this record."
+                    )
+        except Exception as error:
+            async with self:
+                if str(self.qa_selected_package.get("package_tag", "")) == package_tag:
+                    self.qa_selected_analytes = []
+                    self.qa_analyte_message = (
+                        "The printable compliance summary is ready, but detailed "
+                        f"analytes are temporarily unavailable: {error}"
+                    )
+        finally:
+            async with self:
+                if str(self.qa_selected_package.get("package_tag", "")) == package_tag:
+                    self.qa_selected_analytes_loading = False
+
+    @rx.event
+    def select_native_template(self, value: str):
+        self.qa_selected_native_template = value
+
+    @rx.event
+    def change_qa_selected_template(self, value: str):
+        self.qa_selected_template = value
+
+    @rx.event
+    def change_qa_override_expiration(self, value: bool):
+        self.qa_override_expiration = value
+        if value and not self.qa_manual_expiration:
+            self.qa_manual_expiration = str(
+                self.qa_selected_package.get("expiration_date", "") or ""
+            )
+
+    @rx.event
+    def change_qa_manual_expiration(self, value: str):
+        self.qa_manual_expiration = value
+
+    @rx.event
+    def refresh_qa(self):
+        self.qa_error = ""
+        self.qa_message = ""
+        yield DashboardState.load_qa_background(True)
+
+    @rx.event
+    async def import_qa_lab_files(self, files: list[rx.UploadFile]):
+        self.qa_error = ""
+        self.qa_message = ""
+        self.qa_import_results = []
+        if not self._require_active_session():
+            self.qa_error = "Your session expired. Sign in again to import lab data."
+            return
+        if not files:
+            self.qa_error = "Choose at least one Metrc LabResultsReport CSV file."
+            return
+        self.qa_importing = True
+        yield
+        results: list[dict[str, Any]] = []
+        for file in files:
+            try:
+                results.append(import_lab_results_bytes(file.name, await file.read()))
+            except Exception as error:
+                results.append({
+                    "File": file.name, "Status": "Error",
+                    "Source Rows": 0, "Stored Rows": 0,
+                    "Inserted": 0, "Updated": 0, "Details": str(error),
+                })
+        self.qa_import_results = results
+        self.qa_importing = False
+        self._load_qa_payload(force_refresh=True)
+        self.qa_message = "Lab import finished. Duplicate files were skipped safely."
+        yield rx.clear_selected_files("qa_lab_upload")
+
+    def _qa_scope_rows(self, operation: str, test_type: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for row in self._qa_packages:
+            if str(row.get("operation", "")) != operation:
+                continue
+            if test_type != "All Test Types" and str(row.get("qa_test_type", "")) != test_type:
+                continue
+            if self.brand_filter != "All Brands" and str(row.get("brand", "")) != self.brand_filter:
+                continue
+            if self.strain_filter != "All Strains" and str(row.get("strain", "")) != self.strain_filter:
+                continue
+            if (
+                self.sku_filter != "All SKU Types"
+                and not self._qa_sku_compatible(row, self.sku_filter)
+            ):
+                continue
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _qa_sku_compatible(row: dict[str, Any], selected_sku: str) -> bool:
+        """Map a compliance test family to the finished SKU family it covers."""
+        row_sku = str(row.get("sku_type", "")).strip().lower()
+        selected = str(selected_sku or "").strip().lower()
+        if not selected or selected == "all sku types" or row_sku == selected:
+            return True
+        test_type = str(row.get("qa_test_type", "")).strip().lower()
+        family_patterns = {
+            "flower": r"\bflower\b|\bsmalls?\b",
+            "pre-rolls": r"\bpre[- ]?roll\b|\bpreroll\b",
+            "vapes": r"\bvape\b|\bcartridge\b|\bdisposable\b",
+            "edibles": r"\bedible\b|\bgumm(?:y|ies)\b",
+            "concentrates": r"\bconcentrate\b|\brosin\b|\bbadder\b|\bdiamonds?\b",
+        }
+        pattern = family_patterns.get(test_type)
+        return bool(pattern and re.search(pattern, selected, re.I))
+
+    @staticmethod
+    def _qa_detail_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "Package Tag": str(row.get("package_tag", "")),
+                "Test Date": str(row.get("test_date", "")),
+                "Brand": str(row.get("brand", "")),
+                "Strain": str(row.get("strain", "")),
+                "SKU Type": str(row.get("sku_type", "")),
+                "Test Type": str(row.get("qa_test_type", "")),
+                "Status": str(row.get("qa_outcome", "")),
+                "Total THC": row.get("total_thc", ""),
+                "Total Terpenes": row.get("total_terpenes", ""),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _qa_metrics(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+        completed = [row for row in rows if row.get("qa_outcome") in {"Passed", "Failed"}]
+        passed = sum(row.get("qa_outcome") == "Passed" for row in completed)
+        failed = sum(row.get("qa_outcome") == "Failed" for row in completed)
+        pending = sum(row.get("qa_outcome") == "Pending" for row in rows)
+        rate = passed / len(completed) if completed else 0
+        return [
+            {"Label": "Pass Success Rate", "Value": f"{rate:.1%}"},
+            {"Label": "Completed Batches", "Value": f"{len(completed):,}"},
+            {"Label": "Passed", "Value": f"{passed:,}"},
+            {"Label": "Failed", "Value": f"{failed:,}"},
+            {"Label": "Pending", "Value": f"{pending:,}"},
+        ]
+
+    @staticmethod
+    def _qa_pass_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        completed = [row for row in rows if row.get("qa_outcome") in {"Passed", "Failed"}]
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in completed:
+            key = (str(row.get("qa_test_type", "")), str(row.get("strain", "")))
+            group = groups.setdefault(key, {
+                "Test Type": key[0], "Strain": key[1],
+                "Completed Batches": 0, "Passed": 0, "Failed": 0,
+            })
+            group["Completed Batches"] += 1
+            group[str(row.get("qa_outcome"))] += 1
+        result = []
+        for group in groups.values():
+            group["Pass Success Rate"] = round(
+                group["Passed"] / group["Completed Batches"] * 100, 1
+            )
+            result.append(group)
+        return sorted(result, key=lambda row: (-row["Completed Batches"], row["Strain"]))
+
+    @staticmethod
+    def _qa_potency_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        tested = [
+            row for row in rows
+            if row.get("total_thc") is not None or row.get("total_terpenes") is not None
+        ]
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in tested:
+            groups.setdefault((
+                str(row.get("qa_test_type", "")), str(row.get("strain", ""))
+            ), []).append(row)
+        result: list[dict[str, Any]] = []
+        for (test_type, strain), group in groups.items():
+            values: dict[str, list[float]] = {"thc": [], "terpenes": []}
+            for row in group:
+                for source, target in [("total_thc", "thc"), ("total_terpenes", "terpenes")]:
+                    try:
+                        value = float(row.get(source))
+                    except (TypeError, ValueError):
+                        continue
+                    if math.isfinite(value):
+                        values[target].append(value)
+            def stat(values_list: list[float], kind: str) -> float | str:
+                if not values_list:
+                    return ""
+                if kind == "avg":
+                    return round(sum(values_list) / len(values_list), 2)
+                return round(min(values_list) if kind == "min" else max(values_list), 2)
+            result.append({
+                "Test Type": test_type, "Strain": strain,
+                "Tested Batches": len({str(row.get("package_tag", "")) for row in group}),
+                "Avg Total THC": stat(values["thc"], "avg"),
+                "Min Total THC": stat(values["thc"], "min"),
+                "Max Total THC": stat(values["thc"], "max"),
+                "Avg Total Terpenes": stat(values["terpenes"], "avg"),
+                "Min Total Terpenes": stat(values["terpenes"], "min"),
+                "Max Total Terpenes": stat(values["terpenes"], "max"),
+            })
+        return sorted(result, key=lambda row: (-row["Tested Batches"], row["Strain"]))
+
+    @staticmethod
+    def _qa_table_matrix(
+        rows: list[dict[str, Any]], columns: list[str]
+    ) -> list[list[Any]]:
+        """Convert QA records to the row matrix expected by rx.data_table."""
+        return [[row.get(column, "") for column in columns] for row in rows]
+
+    @rx.var(cache=True)
+    def qa_cultivation_rows(self) -> list[dict[str, Any]]:
+        return self._qa_scope_rows("Cultivation", self.qa_cultivation_test_type)
+
+    @rx.var(cache=True)
+    def qa_manufacturing_rows(self) -> list[dict[str, Any]]:
+        return self._qa_scope_rows("Manufacturing", self.qa_manufacturing_test_type)
+
+    @rx.var(cache=True)
+    def qa_cultivation_detail(self) -> list[list[Any]]:
+        return self._qa_table_matrix(
+            self._qa_detail_rows(self.qa_cultivation_rows)[:250],
+            [
+                "Package Tag", "Test Date", "Brand", "Strain", "SKU Type",
+                "Test Type", "Status", "Total THC", "Total Terpenes",
+            ],
+        )
+
+    @rx.var(cache=True)
+    def qa_manufacturing_detail(self) -> list[list[Any]]:
+        return self._qa_table_matrix(
+            self._qa_detail_rows(self.qa_manufacturing_rows)[:250],
+            [
+                "Package Tag", "Test Date", "Brand", "Strain", "SKU Type",
+                "Test Type", "Status", "Total THC", "Total Terpenes",
+            ],
+        )
+
+    @rx.var(cache=True)
+    def qa_cultivation_metrics(self) -> list[dict[str, str]]:
+        return self._qa_metrics(self.qa_cultivation_rows)
+
+    @rx.var(cache=True)
+    def qa_manufacturing_metrics(self) -> list[dict[str, str]]:
+        return self._qa_metrics(self.qa_manufacturing_rows)
+
+    @rx.var(cache=True)
+    def qa_cultivation_pass_summary(self) -> list[list[Any]]:
+        return self._qa_table_matrix(
+            self._qa_pass_rows(self.qa_cultivation_rows),
+            [
+                "Test Type", "Strain", "Completed Batches", "Passed",
+                "Failed", "Pass Success Rate",
+            ],
+        )
+
+    @rx.var(cache=True)
+    def qa_manufacturing_pass_summary(self) -> list[list[Any]]:
+        return self._qa_table_matrix(
+            self._qa_pass_rows(self.qa_manufacturing_rows),
+            [
+                "Test Type", "Strain", "Completed Batches", "Passed",
+                "Failed", "Pass Success Rate",
+            ],
+        )
+
+    @rx.var(cache=True)
+    def qa_cultivation_potency(self) -> list[list[Any]]:
+        return self._qa_table_matrix(
+            self._qa_potency_rows(self.qa_cultivation_rows),
+            [
+                "Test Type", "Strain", "Tested Batches", "Avg Total THC",
+                "Min Total THC", "Max Total THC", "Avg Total Terpenes",
+                "Min Total Terpenes", "Max Total Terpenes",
+            ],
+        )
+
+    @rx.var(cache=True)
+    def qa_manufacturing_potency(self) -> list[list[Any]]:
+        return self._qa_table_matrix(
+            self._qa_potency_rows(self.qa_manufacturing_rows),
+            [
+                "Test Type", "Strain", "Tested Batches", "Avg Total THC",
+                "Min Total THC", "Max Total THC", "Avg Total Terpenes",
+                "Min Total Terpenes", "Max Total Terpenes",
+            ],
+        )
+
+    @staticmethod
+    def _qa_test_type_options(rows: list[dict[str, Any]], defaults: list[str]) -> list[str]:
+        present = {str(row.get("qa_test_type", "")) for row in rows}
+        return ["All Test Types", *[value for value in defaults if value in present or value == "Other / Needs Review"]]
+
+    @rx.var(cache=True)
+    def qa_cultivation_test_type_options(self) -> list[str]:
+        return self._qa_test_type_options(
+            [row for row in self._qa_packages if row.get("operation") == "Cultivation"],
+            ["Flower", "Pre-Rolls", "Other / Needs Review"],
+        )
+
+    @rx.var(cache=True)
+    def qa_manufacturing_test_type_options(self) -> list[str]:
+        return self._qa_test_type_options(
+            [row for row in self._qa_packages if row.get("operation") == "Manufacturing"],
+            ["Pre-Rolls", "Vapes", "Concentrates", "Edibles", "Flower", "Other / Needs Review"],
+        )
+
+    @staticmethod
+    def _qa_consistency_options(rows: list[dict[str, Any]]) -> list[str]:
+        return sorted({
+            str(row.get("strain", "")) for row in rows
+            if str(row.get("strain", "")).strip()
+            and any(
+                value not in {None, ""}
+                and isinstance(value, (int, float))
+                and math.isfinite(float(value))
+                for value in (row.get("total_thc"), row.get("total_terpenes"))
+            )
+        })
+
+    @rx.var(cache=True)
+    def qa_cultivation_consistency_options(self) -> list[str]:
+        return self._qa_consistency_options(self.qa_cultivation_rows)
+
+    @rx.var(cache=True)
+    def qa_manufacturing_consistency_options(self) -> list[str]:
+        return self._qa_consistency_options(self.qa_manufacturing_rows)
+
+    @staticmethod
+    def _qa_chart_rows(rows: list[dict[str, Any]], strain: str) -> list[dict[str, Any]]:
+        def finite(value: Any) -> float | None:
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return round(number, 3) if math.isfinite(number) else None
+
+        result = []
+        for row in rows:
+            if str(row.get("strain", "")) != strain:
+                continue
+            chart_row = {
+                "Test Date": str(row.get("test_date", "")),
+                "Total THC": finite(row.get("total_thc")),
+                "Total Terpenes": finite(row.get("total_terpenes")),
+            }
+            if chart_row["Total THC"] is not None or chart_row["Total Terpenes"] is not None:
+                result.append(chart_row)
+        return sorted(result, key=lambda row: row["Test Date"])
+
+    @rx.var(cache=True)
+    def qa_cultivation_chart(self) -> list[dict[str, Any]]:
+        return self._qa_chart_rows(
+            self.qa_cultivation_rows, self.qa_cultivation_consistency_strain
+        )
+
+    @rx.var(cache=True)
+    def qa_manufacturing_chart(self) -> list[dict[str, Any]]:
+        return self._qa_chart_rows(
+            self.qa_manufacturing_rows, self.qa_manufacturing_consistency_strain
+        )
+
+    @rx.var(cache=True)
+    def qa_lookup_matches(self) -> list[dict[str, Any]]:
+        return self._qa_lookup_rows(self.qa_lookup_search.strip().lower())
+
+    def _qa_lookup_rows(self, search: str = "") -> list[dict[str, Any]]:
+        """Return submitted-search or browse rows from normalized state data."""
+        rows = self._qa_packages
+        if search:
+            rows = [
+                row for row in rows
+                if search in str(row.get("package_tag", "")).lower()
+                or search in str(row.get("source_harvest_names", "")).lower()
+                or search in str(row.get("source_package_labels", "")).lower()
+            ]
+            existing_tags = {
+                str(row.get("package_tag", "")).strip().lower() for row in rows
+            }
+            inventory_matches = [
+                self._inventory_qa_record(row)
+                for row in self.all_inventory
+                if (
+                    search in str(row.get("Metrc Tag", "")).lower()
+                    or search in str(row.get("Source Harvest", "")).lower()
+                )
+                and str(row.get("Metrc Tag", "")).strip().lower()
+                not in existing_tags
+            ]
+            rows = [*rows, *inventory_matches]
+        elif any(value != default for value, default in (
+            (self.qa_label_operation_filter, "All Operations"),
+            (self.qa_label_brand_filter, "All Brands"),
+            (self.qa_label_strain_filter, "All Strains"),
+            (self.qa_label_sku_filter, "All SKU Types"),
+        )):
+            rows = [
+                row for row in rows
+                if (
+                    self.qa_label_operation_filter == "All Operations"
+                    or str(row.get("operation", "")) == self.qa_label_operation_filter
+                )
+                and (
+                    self.qa_label_brand_filter == "All Brands"
+                    or str(row.get("brand", "")) == self.qa_label_brand_filter
+                )
+                and (
+                    self.qa_label_strain_filter == "All Strains"
+                    or str(row.get("strain", "")) == self.qa_label_strain_filter
+                )
+                and (
+                    self.qa_label_sku_filter == "All SKU Types"
+                    or str(row.get("sku_type", row.get("qa_test_type", ""))) == self.qa_label_sku_filter
+                )
+            ]
+        else:
+            return []
+        return rows[:100]
+
+    @rx.var(cache=True)
+    def qa_label_operation_options(self) -> list[str]:
+        return ["All Operations", *sorted({
+            str(row.get("operation", row.get("Operation", "")))
+            for row in [*self._qa_packages, *self.qa_label_catalog]
+            if str(row.get("operation", row.get("Operation", "")))
+        })]
+
+    @rx.var(cache=True)
+    def qa_label_brand_options(self) -> list[str]:
+        return ["All Brands", *sorted({
+            str(row.get("brand", row.get("Brand", "")))
+            for row in [*self._qa_packages, *self.qa_label_catalog]
+            if str(row.get("brand", row.get("Brand", "")))
+            and (
+                self.qa_label_operation_filter == "All Operations"
+                or str(row.get("operation", row.get("Operation", ""))) == self.qa_label_operation_filter
+            )
+        })]
+
+    @rx.var(cache=True)
+    def qa_label_strain_options(self) -> list[str]:
+        return ["All Strains", *sorted({
+            str(row.get("strain", row.get("Strain", "")))
+            for row in [*self._qa_packages, *self.qa_label_catalog]
+            if str(row.get("strain", row.get("Strain", "")))
+            and (
+                self.qa_label_brand_filter == "All Brands"
+                or str(row.get("brand", row.get("Brand", ""))) == self.qa_label_brand_filter
+            )
+        })]
+
+    @rx.var(cache=True)
+    def qa_label_sku_options(self) -> list[str]:
+        return ["All SKU Types", *sorted({
+            str(row.get("sku_type", row.get("qa_test_type", row.get("SKU Type", ""))))
+            for row in [*self._qa_packages, *self.qa_label_catalog]
+            if str(row.get("sku_type", row.get("qa_test_type", row.get("SKU Type", ""))))
+            and (
+                self.qa_label_strain_filter == "All Strains"
+                or str(row.get("strain", row.get("Strain", ""))) == self.qa_label_strain_filter
+            )
+        })]
+
+    @rx.var(cache=True)
+    def qa_filtered_label_catalog(self) -> list[dict[str, Any]]:
+        search = self.qa_label_catalog_search.strip().lower()
+        rows = []
+        for row in self.qa_label_catalog:
+            if (
+                self.qa_label_operation_filter != "All Operations"
+                and row.get("Operation") != self.qa_label_operation_filter
+            ):
+                continue
+            if self.qa_label_brand_filter != "All Brands" and row.get("Brand") != self.qa_label_brand_filter:
+                continue
+            if self.qa_label_strain_filter != "All Strains" and row.get("Strain") != self.qa_label_strain_filter:
+                continue
+            if self.qa_label_sku_filter != "All SKU Types" and row.get("SKU Type") != self.qa_label_sku_filter:
+                continue
+            if search and search not in " ".join(str(value or "") for value in row.values()).lower():
+                continue
+            rows.append(row)
+        return rows
+
+    @rx.var(cache=True)
+    def qa_native_template_options(self) -> list[str]:
+        return [str(row.get("Template Name", "")) for row in self.qa_filtered_label_catalog]
+
+    @rx.var(cache=True)
+    def qa_lookup_options(self) -> list[str]:
+        return [self._qa_lookup_label(row) for row in self.qa_lookup_matches]
+
+    @rx.var(cache=True)
+    def qa_template_options(self) -> list[str]:
+        operation = str(self.qa_selected_package.get("operation", ""))
+        return [
+            str(row.get("Template Name", "")) for row in self.qa_templates
+            if str(row.get("Scope", "Both")) in {"Both", operation}
+        ]
+
+    @rx.var(cache=True)
+    def qa_label_preview(self) -> list[dict[str, str]]:
+        if not self.qa_selected_package:
+            return []
+        template = next(
+            (row for row in self.qa_templates if row.get("Template Name") == self.qa_selected_template),
+            self.qa_templates[0] if self.qa_templates else {},
+        )
+        record = dict(self.qa_selected_package)
+        if self.qa_override_expiration:
+            record["expiration_date"] = self.qa_manual_expiration
+        preview = []
+        fields = template.get("Fields", list(QA_LABEL_FIELDS))
+        if str(record.get("record_origin", "")).startswith("Current Inventory"):
+            fields = [
+                "package_tag", "brand", "strain", "sku_type", "item",
+                "category", "location", "source_harvest_names",
+                "lab_testing_status", "record_origin",
+            ]
+        for field in fields:
+            value = record.get(field, "")
+            if field in {"total_thc", "total_terpenes"} and value not in {None, ""}:
+                try:
+                    value = f"{float(value):.2f}%"
+                except (TypeError, ValueError):
+                    pass
+            preview.append({"Field": QA_LABEL_FIELDS.get(field, field), "Value": str(value or "")})
+        return preview
+
+    @rx.var(cache=True)
+    def qa_selected_analyte_rows(self) -> list[list[str]]:
+        """Classify, filter, and matrix-normalize detailed analyte results."""
+        columns = ["Category", "Test Date", "Test", "Result", "Passed"]
+        return [
+            ["" if row.get(column) is None else str(row.get(column, "")) for column in columns]
+            for row in self.qa_categorized_analytes
+            if (
+                self.qa_analyte_category_filter == "All Categories"
+                or row.get("Category") == self.qa_analyte_category_filter
+            )
+        ]
+
+    @staticmethod
+    def _qa_analyte_category(test_name: Any) -> str:
+        """Map a laboratory test name into a stable compliance family."""
+        name = str(test_name or "").strip().lower()
+        if re.search(r"water\s*activity|moisture(?:\s*content)?", name):
+            return "Water Activity"
+        if re.search(r"aflatoxin|ochratoxin|mycotoxin", name):
+            return "Mycotoxins"
+        if re.search(
+            r"\b(?:arsenic|cadmium|chromium|lead|mercury)\b|heavy\s*metals?",
+            name,
+        ):
+            return "Heavy Metals"
+        if re.search(
+            r"aspergillus|salmonella|shiga|e\.?\s*coli|coliform|"
+            r"yeast|mold|microbial|aerobic|enterobacter",
+            name,
+        ):
+            return "Microbials"
+        if re.search(
+            r"pesticide|insecticide|fungicide|abamectin|acephate|acequinocyl|"
+            r"ancymidol|ethephon|flurprimidol|phosmet|piperonyl\s*butoxide|"
+            r"acetamiprid|aldicarb|azoxystrobin|bifenazate|bifenthrin|boscalid|"
+            r"carbaryl|carbofuran|chlorantraniliprole|chlorphenapyr|chlorpyrifos|"
+            r"clofentezine|cyfluthrin|cyhalothrin|cypermethrin|daminozide|"
+            r"dichlorvos|diazinon|dimethoate|etofenprox|etoxazole|fenhexamid|"
+            r"fenoxycarb|fenpyroximate|fipronil|flonicamid|fludioxonil|"
+            r"hexythiazox|imazalil|imidacloprid|kresoxim|malathion|metalaxyl|"
+            r"methiocarb|methomyl|mevinphos|myclobutanil|naled|oxamyl|"
+            r"paclobutrazol|parathion|permethrin|phenothrin|propiconazole|"
+            r"propoxur|pyraclostrobin|pyrethrin|pyridaben|spinetoram|spinosad|"
+            r"spiromesifen|spirotetramat|spiroxamine|tebuconazole|tebufenozide|"
+            r"tetrachlorvinphos|thiacloprid|thiamethoxam|trifloxystrobin",
+            name,
+        ):
+            return "Pesticides"
+        if re.search(
+            r"\b(?:thc|thca|thcv|thcva|cbd|cbda|cbdv|cbg|cbga|cbn|cbc|cbca)\b|"
+            r"cannabinoid",
+            name,
+        ):
+            return "Cannabinoids"
+        if re.search(
+            r"terpene|myrcene|limonene|pinene|caryophyllene|linalool|humulene|"
+            r"terpinolene|ocimene|bisabolol|camphene|borneol|eucalyptol|"
+            r"farnesene|geraniol|guaiol|nerolidol|pulegone|sabinene|terpineol",
+            name,
+        ):
+            return "Terpenes"
+        return "Other / Needs Review"
+
+    @rx.var(cache=True)
+    def qa_categorized_analytes(self) -> list[dict[str, Any]]:
+        return [
+            {**row, "Category": self._qa_analyte_category(row.get("Test", ""))}
+            for row in self.qa_selected_analytes
+        ]
+
+    @rx.var(cache=True)
+    def qa_analyte_category_counts(self) -> list[dict[str, Any]]:
+        counts = {category: 0 for category in QA_ANALYTE_CATEGORIES[1:]}
+        for row in self.qa_categorized_analytes:
+            category = str(row.get("Category", "Other / Needs Review"))
+            counts[category] = counts.get(category, 0) + 1
+        return [
+            {"Category": category, "Count": count}
+            for category, count in counts.items() if count
+        ]
+
+    @rx.var(cache=True)
+    def qa_filtered_analyte_count(self) -> int:
+        return len(self.qa_selected_analyte_rows)
+
+    @rx.var(cache=True)
+    def qa_general_compliance_summary(self) -> list[list[Any]]:
+        if not self.qa_selected_package:
+            return []
+        record = self.qa_selected_package
+        coa_status = (
+            "No associated COA found — general inventory summary"
+            if str(record.get("record_origin", "")).startswith("Current Inventory")
+            else "Associated lab/COA record found"
+        )
+        values = [
+            ("Metrc Tag", record.get("package_tag", "")),
+            ("Brand", record.get("brand", "")),
+            ("Strain", record.get("strain", "")),
+            ("SKU Type", record.get("sku_type", "")),
+            ("Item", record.get("item", "")),
+            ("Source Harvest", record.get("source_harvest_names", "")),
+            ("QA Status", record.get("lab_testing_status", "")),
+            ("COA Status", coa_status),
+            ("Test Date", record.get("test_date", "")),
+            ("Expiration Date", record.get("expiration_date", "")),
+            ("Total THC", record.get("total_thc", "")),
+            ("Total Terpenes", record.get("total_terpenes", "")),
+            ("Selected Label", self.qa_selected_native_template),
+        ]
+        return [[label, "" if value is None else str(value)] for label, value in values]
+
+    @rx.event
+    def download_qa_label(self):
+        if not self.qa_selected_package:
+            self.qa_error = "Select a package or harvest record first."
+            return
+        template = next(
+            (row for row in self.qa_templates if row.get("Template Name") == self.qa_selected_template),
+            self.qa_templates[0] if self.qa_templates else {},
+        )
+        record = dict(self.qa_selected_package)
+        if self.qa_override_expiration:
+            record["expiration_date"] = self.qa_manual_expiration
+        rows = []
+        for label, value in self.qa_general_compliance_summary:
+            if not str(value or "").strip():
+                continue
+            rows.append(
+                "<div class='row'><span class='label'>" + escape(str(label))
+                + "</span><span class='value'>" + escape(str(value)) + "</span></div>"
+            )
+        width, height = "4in", "6in"
+        html = (
+            "<!doctype html><html><head><meta charset='utf-8'><style>"
+            f"@page{{size:{width} {height};margin:0}}"
+            f"html,body{{margin:0;width:{width};height:{height};overflow:hidden;"
+            "font-family:Arial,sans-serif;color:#111}}"
+            f".card{{width:{width};height:{height};overflow:hidden;box-sizing:border-box;"
+            "padding:.15in;border:1px solid #999;break-inside:avoid;page-break-inside:avoid}}"
+            "h1{font-size:16px;margin:0 0 6px}.row{display:grid;grid-template-columns:1.05in 1fr;"
+            "gap:6px;border-top:1px solid #ddd;padding:3px 0;line-height:1.15}"
+            ".label{font-size:8px;font-weight:bold;text-transform:uppercase;color:#555}"
+            ".value{font-size:10px;overflow-wrap:anywhere}.footer{margin-top:6px;font-size:7px;color:#555}"
+            "</style></head><body><div class='card'><h1>QCC Compliance Summary</h1>"
+            + "".join(rows) + "<div class='footer'>"
+            + escape(str(template.get("Footer", "Verify current package status in Metrc before release.")))
+            + "</div></div></body></html>"
+        )
+        log_qa_label_download(record, template, self.auth_email or self.auth_name)
+        self.qa_message = "Printable QA label generated and recorded in the audit log."
+        self.qa_error = ""
+        return rx.download(
+            data=html.encode("utf-8"),
+            filename=f"qa_label_{record.get('package_tag', 'record')}.html",
+        )
 
     @rx.event
     def change_inventory_stage_filter(self, value: str):
@@ -822,11 +1945,14 @@ class DashboardState(rx.State):
 
     @rx.event
     def load_dashboard(self):
-        self.auth_checked = True
+        self.auth_checked = False
         self.auth_configured = auth_is_configured()
-        self.auth_message = ""
+        self.auth_failed = False
+        self.auth_message = "Checking your secure QCC session..."
+        yield
         if not self.auth_configured:
             self._clear_employee()
+            self.auth_checked = True
             self.auth_message = (
                 "Authentication setup is incomplete. Add the Supabase project URL, "
                 "publishable key, and public app URL to .env."
@@ -838,14 +1964,28 @@ class DashboardState(rx.State):
             employee = None
             self.auth_message = f"The secure session could not be checked: {error}"
         if employee is None:
+            self.auth_redirecting = False
             self._clear_employee()
+            self.auth_checked = True
             return
         self._apply_employee(employee)
+        self.auth_redirecting = False
+        self.auth_checked = True
+        self.auth_message = ""
         if self.auth_role == "Admin":
             try:
                 self._refresh_team_directory()
             except Exception as error:
                 self.admin_error = f"Team & Access could not be loaded: {error}"
+        if database_url():
+            # Inventory, Sales, and QA are independent published snapshots.
+            # Start one protected concurrent warm-up instead of making the
+            # first signed-in user wait for three sequential database loads.
+            self.loading = True
+            self.error_message = ""
+            yield
+            yield DashboardState.load_initial_data_background
+            return
         self.loading = True
         self.error_message = ""
         yield
@@ -914,7 +2054,7 @@ class DashboardState(rx.State):
         self.calendar = payload["calendar"]
         self.customers = payload.get("customers", [])
         self.exceptions = payload.get("exceptions", [])
-        self.transfer_data = payload.get("transfer_data", [])
+        self._transfer_data = payload.get("transfer_data", [])
         self.transfer_import_log = payload.get("transfer_import_log", [])
         self.cpg_inventory = payload.get("cpg_inventory", [])
         self.bulk_inventory = payload.get("bulk_inventory", [])
@@ -928,6 +2068,132 @@ class DashboardState(rx.State):
         self._set_initial_calendar_month()
         self._initialize_production_target()
         self.loading = False
+        yield DashboardState.load_sales_background
+
+    @rx.event(background=True)
+    async def load_initial_data_background(self):
+        """Warm Inventory, Sales, and QA concurrently for the first user."""
+        async with self:
+            if self.initial_data_loading:
+                return
+            self.initial_data_loading = True
+            self.loading = True
+            self.sales_background_loading = True
+            self.qa_loading = True
+            self.qa_message = "Loading Quality Assurance data..."
+
+        inventory_task = asyncio.create_task(
+            rx.run_in_thread(get_dashboard_data)
+        )
+
+        async def named_load(name: str, loader):
+            try:
+                return name, await rx.run_in_thread(loader), None
+            except Exception as error:
+                return name, None, error
+
+        auxiliary_tasks = [
+            asyncio.create_task(named_load("sales", get_sales_dashboard_data)),
+            asyncio.create_task(named_load("qa", load_qa_module_data)),
+        ]
+        try:
+            try:
+                payload = await inventory_task
+            except Exception as error:
+                async with self:
+                    payload = demo_dashboard_data()
+                    self.using_demo_data = True
+                    self.error_message = (
+                        "Supabase Inventory could not be read. Demo data is displayed. "
+                        f"Backend detail: {error}"
+                    )
+                    self._apply_payload(payload)
+                    self.loading = False
+            else:
+                async with self:
+                    self._apply_payload(payload)
+                    self.using_demo_data = False
+                    self.loading = False
+
+            for completed in asyncio.as_completed(auxiliary_tasks):
+                name, payload, error = await completed
+                async with self:
+                    if name == "sales":
+                        if error is None and payload is not None:
+                            self._apply_sales_payload(payload)
+                        else:
+                            self.error_message = (
+                                "Sales history is temporarily unavailable. Inventory, "
+                                f"Production, and QA remain available. Detail: {error}"
+                            )
+                        self.sales_background_loading = False
+                    elif name == "qa":
+                        if error is None and payload is not None:
+                            self._apply_qa_payload(payload)
+                            self.qa_message = "Quality Assurance data is ready."
+                            self.qa_error = ""
+                        else:
+                            self.qa_error = (
+                                f"Quality Assurance could not be loaded: {error}"
+                            )
+                            self.qa_message = ""
+                        self.qa_loading = False
+        finally:
+            async with self:
+                self.loading = False
+                self.sales_background_loading = False
+                self.qa_loading = False
+                self.initial_data_loading = False
+
+    def _apply_sales_payload(self, payload: dict[str, Any]) -> None:
+        """Apply transfer-dependent data without resending Inventory state."""
+        self.loaded_at = payload["loaded_at"]
+        metrics = payload["metrics"]
+        self.units_metric = f"{float(metrics['units']):,.0f}"
+        self.value_metric = f"${float(metrics['value']):,.0f}"
+        self.customers_metric = f"{int(metrics['customers']):,}"
+        self.manifests_metric = f"{int(metrics.get('manifests', 0)):,}"
+        self.weighted_price_metric = (
+            f"${float(metrics.get('weighted_price', 0)):,.2f}"
+        )
+        self.stockouts_metric = f"{int(metrics['stockouts']):,}"
+        self.open_manifests_metric = f"{int(metrics.get('open_manifests', 0)):,}"
+        self.exception_manifests_metric = f"{int(metrics.get('exception_manifests', 0)):,}"
+        self.exception_rows_metric = f"{int(metrics.get('exception_rows', 0)):,}"
+        self.transfer_rows_metric = f"{int(metrics.get('transfer_rows', 0)):,}"
+        self.latest_shipment = metrics.get("latest_shipment") or "—"
+        self.brands = payload.get("brands", self.brands)
+        self.strains = payload.get("strains", self.strains)
+        self.sku_types = payload.get("sku_types", self.sku_types)
+        # Keep the first Sales update compact. Large view-specific tables are
+        # copied from the server cache only when that subtab is opened.
+        self.business_pulse = payload.get("business_pulse", [])
+        self.velocity = payload.get("velocity", [])
+        self._apply_optional_module_payload(payload)
+        if payload.get("sales_error"):
+            self.error_message = str(payload["sales_error"])
+
+    @rx.event(background=True)
+    async def load_sales_background(self):
+        """Warm Sales history without blocking Inventory, QA, or navigation."""
+        async with self:
+            if self.sales_background_loading or not database_url():
+                return
+            self.sales_background_loading = True
+        try:
+            payload = await rx.run_in_thread(get_sales_dashboard_data)
+            async with self:
+                self._apply_sales_payload(payload)
+                self.using_demo_data = False
+        except Exception as error:
+            async with self:
+                self.error_message = (
+                    "Sales history is temporarily unavailable. Inventory, "
+                    f"Production, and QA remain available. Detail: {error}"
+                )
+        finally:
+            async with self:
+                self.sales_background_loading = False
 
     @rx.event
     def refresh(self):
@@ -947,10 +2213,12 @@ class DashboardState(rx.State):
                     "Demo mode: add QCC_SUPABASE_DATABASE_URL to .env to "
                     "read the shared QCC database."
                 )
+            self.sales_loaded_views = []
             self._apply_payload(payload)
         except Exception as error:
             self.error_message = f"Refresh failed: {error}"
         self.loading = False
+        yield DashboardState.load_sales_background
 
     def _apply_payload(self, payload: dict[str, Any]) -> None:
         self.loaded_at = payload["loaded_at"]
@@ -1007,7 +2275,7 @@ class DashboardState(rx.State):
         self.calendar = payload["calendar"]
         self.customers = payload.get("customers", [])
         self.exceptions = payload.get("exceptions", [])
-        self.transfer_data = payload.get("transfer_data", [])
+        self._transfer_data = payload.get("transfer_data", [])
         self.transfer_import_log = payload.get("transfer_import_log", [])
         self.cpg_inventory = payload.get("cpg_inventory", [])
         self.bulk_inventory = payload.get("bulk_inventory", [])
@@ -1022,19 +2290,20 @@ class DashboardState(rx.State):
         self._initialize_production_target()
 
     def _apply_optional_module_payload(self, payload: dict[str, Any]) -> None:
-        """Keep only the selected workspace's large datasets in user state."""
-        self.monthly = []
-        self.top_skus = []
-        self.stockouts = []
-        self.saved_plans = []
-        self.saved_plan_cards = []
-        self.production_templates = []
-        self.calendar = []
-        self.customers = []
-        self.exceptions = []
-        self.transfer_data = []
-        self.transfer_import_log = []
-        self.velocity_windows = {}
+        """Hydrate one Sales view and retain it for fast session navigation."""
+        if not self.sales_loaded_views:
+            self.monthly = []
+            self.top_skus = []
+            self.stockouts = []
+            self.saved_plans = []
+            self.saved_plan_cards = []
+            self.production_templates = []
+            self.calendar = []
+            self.customers = []
+            self.exceptions = []
+            self._transfer_data = []
+            self.transfer_import_log = []
+            self.velocity_windows = {}
 
         # The executive action queue and business pulse remain immediately
         # available. They are comparatively small and avoid a second load when
@@ -1043,6 +2312,8 @@ class DashboardState(rx.State):
         self.velocity = payload.get("velocity", [])
 
         if self.workspace_view != "sales_demand":
+            return
+        if self.sales_demand_view in self.sales_loaded_views:
             return
         if self.sales_demand_view == "overview":
             self.monthly = payload.get("monthly", [])
@@ -1068,8 +2339,12 @@ class DashboardState(rx.State):
         elif self.sales_demand_view == "exceptions":
             self.exceptions = payload.get("exceptions", [])
         elif self.sales_demand_view == "transfers":
-            self.transfer_data = payload.get("transfer_data", [])
+            self._transfer_data = payload.get("transfer_data", [])
             self.transfer_import_log = payload.get("transfer_import_log", [])
+
+        self.sales_loaded_views = [
+            *self.sales_loaded_views, self.sales_demand_view
+        ]
 
         available_plan_ids = {
             str(row.get("Plan ID", "")) for row in self.saved_plan_cards
@@ -1936,6 +3211,27 @@ class DashboardState(rx.State):
         self._reset_production_builder()
         self.production_action_message = "Plan amendment cancelled."
 
+    def _remove_deleted_production_plans(self, plan_ids: list[str]) -> None:
+        """Remove confirmed deletes immediately without rebuilding the app."""
+        deleted = {str(plan_id) for plan_id in plan_ids}
+        self.saved_plan_cards = [
+            row for row in self.saved_plan_cards
+            if str(row.get("Plan ID", "")) not in deleted
+        ]
+        self.saved_plans = [
+            row for row in self.saved_plans
+            if str(row.get("Plan ID", "")) not in deleted
+        ]
+        self.calendar = [
+            row for row in self.calendar
+            if str(row.get("Plan ID", "")) not in deleted
+        ]
+        self.production_selected_plan_ids = [
+            plan_id for plan_id in self.production_selected_plan_ids
+            if plan_id not in deleted
+        ]
+        self._rebuild_calendar()
+
     @rx.event
     def delete_production_plan(self, plan_id: str):
         if not self._require_active_session():
@@ -1949,17 +3245,15 @@ class DashboardState(rx.State):
             if self.production_edit_plan_id == plan_id:
                 self.production_edit_plan_id = ""
                 self._reset_production_builder()
-            self._apply_payload(get_dashboard_data(force_refresh=True))
-            self.production_selected_plan_ids = [
-                value for value in self.production_selected_plan_ids
-                if value not in deleted_ids
-            ]
+            self._remove_deleted_production_plans(deleted_ids)
             self.production_action_message = (
                 f"Production plan deleted and its WIP released: {plan_id}"
             )
         except Exception as error:
             self.production_action_error = f"Plan could not be deleted: {error}"
         self.loading = False
+        if not self.production_action_error:
+            yield DashboardState.refresh_production_data_background
 
     @rx.event
     def toggle_saved_plan_selection(self, plan_id: str, selected: bool):
@@ -2002,14 +3296,16 @@ class DashboardState(rx.State):
             if self.production_edit_plan_id in deleted_ids:
                 self.production_edit_plan_id = ""
                 self._reset_production_builder()
+            self._remove_deleted_production_plans(deleted_ids)
             self.production_selected_plan_ids = []
-            self._apply_payload(get_dashboard_data(force_refresh=True))
             self.production_action_message = (
                 f"Deleted {len(deleted_ids):,} production plan(s) and released their WIP."
             )
         except Exception as error:
             self.production_action_error = f"Plans could not be deleted: {error}"
         self.loading = False
+        if not self.production_action_error:
+            yield DashboardState.refresh_production_data_background
 
     @rx.event
     def create_template_from_plan(self, plan_id: str):
@@ -2124,9 +3420,6 @@ class DashboardState(rx.State):
 
     @rx.event
     def save_production_plan(self):
-        if not self._require_active_session():
-            self.production_save_error = "Your session expired. Sign in again."
-            return
         if self.production_saving:
             return
         self.production_save_error = ""
@@ -2138,6 +3431,13 @@ class DashboardState(rx.State):
             )
             return
         self.production_saving = True
+        self.production_action_message = "Saving production plan to Supabase..."
+        # Push the visible progress state before beginning the database write.
+        yield
+        if not self._require_active_session():
+            self.production_save_error = "Your session expired. Sign in again."
+            self.production_saving = False
+            return
         yield rx.toast.loading(
             "Saving production plan to Supabase...",
             id="qcc-production-save",
@@ -2203,6 +3503,8 @@ class DashboardState(rx.State):
             )
         finally:
             self.production_saving = False
+        if self.production_last_saved_plan_id:
+            yield DashboardState.refresh_production_data_background
 
     @rx.event
     def view_saved_production_plan(self):
@@ -2219,19 +3521,35 @@ class DashboardState(rx.State):
     @rx.event
     def change_production_view(self, value: str):
         self.production_view = value
-        if value not in {"saved", "calendar"}:
-            return
-        try:
-            production = load_production_module_data()
-            self.saved_plans = production["saved_plans"]
-            self.saved_plan_cards = production["saved_plan_cards"]
-            self.production_templates = production["production_templates"]
-            self.calendar = production["calendar"]
+        if value == "calendar":
             self._set_initial_calendar_month()
+
+    def _apply_production_payload(self, production: dict[str, Any]) -> None:
+        self.saved_plans = production.get("saved_plans", [])
+        self.saved_plan_cards = production.get("saved_plan_cards", [])
+        self.production_templates = production.get("production_templates", [])
+        self.calendar = production.get("calendar", [])
+        self._set_initial_calendar_month()
+
+    @rx.event(background=True)
+    async def refresh_production_data_background(self):
+        """Refresh saved plans without holding up Production tab navigation."""
+        async with self:
+            if self.production_data_loading:
+                return
+            self.production_data_loading = True
+        try:
+            production = await rx.run_in_thread(load_production_module_data)
+            async with self:
+                self._apply_production_payload(production)
         except Exception as error:
-            self.production_action_error = (
-                f"Saved production plans could not be refreshed: {error}"
-            )
+            async with self:
+                self.production_action_error = (
+                    f"Saved production plans could not be refreshed: {error}"
+                )
+        finally:
+            async with self:
+                self.production_data_loading = False
 
     @rx.event
     def download_production_calendar(self):
@@ -2319,7 +3637,20 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def filtered_velocity(self) -> list[dict[str, Any]]:
-        return [row for row in self.velocity if self._matches(row)]
+        return [
+            row for row in self.velocity
+            if self._matches(row) and self._matches_lifecycle(row)
+        ]
+
+    def _matches_lifecycle(self, row: dict[str, Any]) -> bool:
+        status = str(row.get("Lifecycle Status", "Active") or "Active")
+        if self.demand_lifecycle_filter == "Active Products Only":
+            return status == "Active"
+        if self.demand_lifecycle_filter == "Active + Dormant":
+            return status in {"Active", "Dormant"}
+        if self.demand_lifecycle_filter == "Include Retirement Candidates":
+            return status in {"Active", "Dormant", "Retirement Candidate"}
+        return True
 
     @rx.var(cache=True)
     def filtered_velocity_count(self) -> str:
@@ -2377,6 +3708,11 @@ class DashboardState(rx.State):
         self.sku_planning_page = 1
 
     @rx.event
+    def change_demand_lifecycle_filter(self, value: str):
+        self.demand_lifecycle_filter = value
+        self.sku_planning_page = 1
+
+    @rx.event
     def change_saved_plan_search(self, value: str):
         self.saved_plan_search = value
 
@@ -2403,51 +3739,45 @@ class DashboardState(rx.State):
         # The selected module's optional data is applied in a second state
         # update, so a large sales table cannot hold up the tab transition.
         yield
-        try:
-            payload = (
-                get_dashboard_data() if database_url()
-                else demo_dashboard_data()
-            )
-            self._apply_optional_module_payload(payload)
+        if value in self.sales_loaded_views:
             if value == "production":
                 self._set_initial_calendar_month()
                 self._initialize_production_target()
-        except Exception as error:
-            self.error_message = f"This module could not be loaded: {error}"
+            return
+        yield DashboardState.load_sales_background
 
     @rx.event
     def change_workspace_view(self, value: str):
         self.workspace_view = value
-        if value != "sales_demand":
-            # The browser changes the visible workspace immediately. Release
-            # large optional Sales datasets without re-reading Supabase.
-            self._apply_optional_module_payload({
-                "business_pulse": self.business_pulse,
-                "velocity": self.velocity,
-            })
+        if value == "qa":
+            if not self.qa_loaded and not self.qa_loading:
+                yield DashboardState.load_qa_background(False)
             return
-        try:
-            payload = (
-                get_dashboard_data() if database_url()
-                else demo_dashboard_data()
-            )
-            self._apply_optional_module_payload(payload)
-        except Exception as error:
-            self.error_message = f"This workspace could not be loaded: {error}"
+        if value != "sales_demand":
+            return
+        if self.sales_demand_view in self.sales_loaded_views:
+            return
+        yield DashboardState.load_sales_background
 
     @rx.event
     def start_production_from_sku(
         self, brand: str, strain: str, sku_type: str
     ):
+        """Open Production Planning without mutating shared Inventory filters.
+
+        SKU Planning already has the compact Sales snapshot in memory. The
+        previous handler performed another synchronous database read after it
+        changed the global Brand/Strain/SKU filters. A transient database
+        failure therefore left every Inventory table stuck on the selected
+        product and surfaced Reflex's generic administrator error. Navigation
+        is now immediate and optional Production data warms independently.
+        """
         self.production_brand = str(brand or "")
         self.production_strain = str(strain or "")
         self.production_sku = str(sku_type or "")
         self.production_edit_plan_id = ""
         self.production_template_choice = "No Template"
         self._reset_production_builder()
-        self.brand_filter = self.production_brand
-        self.strain_filter = self.production_strain
-        self.sku_filter = self.production_sku
         self.production_action_message = (
             "Product target loaded from SKU Planning & Coverage. "
             "Choose the WIP lots to commit."
@@ -2455,16 +3785,21 @@ class DashboardState(rx.State):
         self.production_action_error = ""
         self.sales_demand_view = "production"
         self.production_view = "build"
-        payload = (
-            get_dashboard_data() if database_url()
-            else demo_dashboard_data()
-        )
-        self._apply_optional_module_payload(payload)
-        self._set_initial_calendar_month()
+        # Render the selected target before warming the larger Saved Plans and
+        # Calendar collections. The background loader catches database errors,
+        # so this click can no longer poison the active user session.
+        yield
+        if "production" not in self.sales_loaded_views:
+            yield DashboardState.load_sales_background
+        else:
+            self._set_initial_calendar_month()
 
     @rx.var(cache=True)
     def filtered_stockouts(self) -> list[dict[str, Any]]:
-        return [row for row in self.stockouts if self._matches(row)]
+        return [
+            row for row in self.stockouts
+            if self._matches(row) and self._matches_lifecycle(row)
+        ]
 
     @rx.var(cache=True)
     def filtered_saved_plans(self) -> list[dict[str, Any]]:
@@ -2512,7 +3847,7 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def filtered_transfer_data(self) -> list[dict[str, Any]]:
-        return [row for row in self.transfer_data if self._matches(row)]
+        return [row for row in self._transfer_data if self._matches(row)]
 
     def _filtered_inventory(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         filtered = []
@@ -3445,6 +4780,8 @@ class DashboardState(rx.State):
             str(row.get("Committed WIP", "") or ""),
             str(row.get("Matching Pre-WIP Weight", "") or ""),
             f"{float(row.get('Customers', 0) or 0):,.0f}", str(row.get("Demand Status", "") or ""),
+            str(row.get("Last Shipped", "") or ""),
+            str(row.get("Lifecycle Status", "") or ""),
         ] for row in self.filtered_velocity]
 
     @rx.var(cache=True)
@@ -3456,6 +4793,8 @@ class DashboardState(rx.State):
             row.get("Current Units", 0),
             round(float(row.get("Weeks of Supply", 0) or 0), 1),
             row.get("Demand Status", ""),
+            row.get("Last Shipped", ""),
+            row.get("Lifecycle Status", ""),
             "Confirm availability and prioritize production",
         ] for row in self.filtered_stockouts]
 
@@ -4005,7 +5344,7 @@ def filters() -> rx.Component:
                 rx.box(
                     rx.heading("Global Filters", size="4"),
                     rx.text(
-                        "These selections apply across Sales & Demand Planning and Inventory.",
+                        "All selections apply to Sales & Demand Planning and Inventory; Brand and Strain also filter Quality Assurance.",
                         size="1",
                         color=MUTED,
                     ),
@@ -4283,16 +5622,34 @@ def stockouts_panel() -> rx.Component:
             width="100%",
             spacing="3",
         ),
-        rx.text(
-            "Retired and on-hold strains are excluded. Current inventory comes "
-            "from the latest published Streamlit snapshot.",
-            color=MUTED,
+        rx.card(
+            rx.flex(
+                rx.box(
+                    rx.text("Product Lifecycle", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        [
+                            "Active Products Only", "Active + Dormant",
+                            "Include Retirement Candidates", "Include All Products",
+                        ],
+                        value=DashboardState.demand_lifecycle_filter,
+                        on_change=DashboardState.change_demand_lifecycle_filter,
+                        width="280px",
+                    ),
+                ),
+                rx.text(
+                    "Active is the default. Lifecycle uses last customer shipment, current inventory, and committed production; Seasonal and Retired remain manual decisions.",
+                    color=MUTED, max_width="760px",
+                ),
+                align="end", gap="4", wrap="wrap", width="100%",
+            ),
+            width="100%", border_left=f"5px solid {ACCENT}",
         ),
         data_grid(
             DashboardState.stockout_rows,
             [
                 "Brand", "Strain", "SKU Type", "Avg Weekly Units",
                 "Current Units", "Weeks of Supply", "Demand Status",
+                "Last Shipped", "Lifecycle Status",
                 "Recommended Action",
             ],
         ),
@@ -4365,6 +5722,8 @@ def sku_planning_action_row(row: rx.Var) -> rx.Component:
         sku_planning_cell(row["Matching Pre-WIP Weight"], "200px"),
         sku_planning_cell(row["Customers"].to_string(), "105px"),
         sku_planning_cell(row["Demand Status"], "225px"),
+        sku_planning_cell(row["Last Shipped"], "125px"),
+        sku_planning_cell(row["Lifecycle Status"], "175px"),
     )
 
 
@@ -4374,7 +5733,7 @@ def sku_planning_action_table() -> rx.Component:
         "Avg Weekly Units", "Packages",
         "Current Units", "Weeks of Supply", "Potential Matching WIP",
         "Committed WIP", "Matching Pre-WIP Weight", "Customers",
-        "Demand Status",
+        "Demand Status", "Last Shipped", "Lifecycle Status",
     ]
     return rx.box(
         rx.table.root(
@@ -4402,7 +5761,7 @@ def sku_planning_action_table() -> rx.Component:
             ),
             size="1",
             variant="surface",
-            width="2320px",
+            width="2620px",
         ),
         width="100%",
         overflow_x="auto",
@@ -4489,6 +5848,18 @@ def sku_planning_panel() -> rx.Component:
                     ],
                     value=DashboardState.sku_planning_sort,
                     on_change=DashboardState.change_sku_planning_sort,
+                    width="260px",
+                ),
+            ),
+            rx.box(
+                rx.text("Product lifecycle", size="1", weight="bold", color=MUTED),
+                rx.select(
+                    [
+                        "Active Products Only", "Active + Dormant",
+                        "Include Retirement Candidates", "Include All Products",
+                    ],
+                    value=DashboardState.demand_lifecycle_filter,
+                    on_change=DashboardState.change_demand_lifecycle_filter,
                     width="260px",
                 ),
             ),
@@ -5461,6 +6832,27 @@ def production_builder_panel() -> rx.Component:
             on_change=DashboardState.change_production_plan_notes,
             placeholder="Production notes", width="100%",
         ),
+        rx.cond(
+            DashboardState.production_saving,
+            rx.callout(
+                rx.hstack(
+                    rx.spinner(size="2"),
+                    rx.vstack(
+                        rx.text("Saving production plan...", weight="bold"),
+                        rx.text(
+                            "Please keep this page open. Confirmation will appear when the plan is saved.",
+                            size="2",
+                        ),
+                        spacing="1",
+                        align="start",
+                    ),
+                    gap="3",
+                    align="center",
+                ),
+                color_scheme="orange",
+                width="100%",
+            ),
+        ),
         rx.button(
             rx.cond(
                 DashboardState.production_saving,
@@ -6096,19 +7488,756 @@ def sales_demand_workspace() -> rx.Component:
                 class_name="qcc-tabs",
                 width="100%",
             ),
-            rx.tabs.content(overview_panel(), value="overview", padding_top="1.25rem"),
-            rx.tabs.content(stockouts_panel(), value="stockouts", padding_top="1.25rem"),
-            rx.tabs.content(sku_planning_panel(), value="planning", padding_top="1.25rem"),
-            rx.tabs.content(production_planning_panel(), value="production", padding_top="1.25rem"),
-            rx.tabs.content(customers_panel(), value="customers", padding_top="1.25rem"),
-            rx.tabs.content(exceptions_panel(), value="exceptions", padding_top="1.25rem"),
-            rx.tabs.content(transfer_data_panel(), value="transfers", padding_top="1.25rem"),
             value=DashboardState.sales_demand_view,
             on_change=DashboardState.change_sales_demand_view,
             width="100%",
         ),
+        rx.box(
+            rx.match(
+                DashboardState.sales_demand_view,
+                ("overview", overview_panel()),
+                ("stockouts", stockouts_panel()),
+                ("planning", sku_planning_panel()),
+                ("production", production_planning_panel()),
+                ("customers", customers_panel()),
+                ("exceptions", exceptions_panel()),
+                ("transfers", transfer_data_panel()),
+                overview_panel(),
+            ),
+            width="100%", padding_top="1.25rem",
+        ),
         width="100%",
         spacing="4",
+    )
+
+
+def qa_metric_tile(item: rx.Var) -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.text(item["Label"], size="1", color=MUTED, weight="bold"),
+            rx.heading(item["Value"], size="6", color=DARK),
+            spacing="1", align="start",
+        ),
+        border_top=f"4px solid {ACCENT}",
+        min_width="180px",
+    )
+
+
+QA_PASS_COLUMNS = [
+    "Test Type", "Strain", "Completed Batches", "Passed", "Failed",
+    "Pass Success Rate",
+]
+QA_POTENCY_COLUMNS = [
+    "Test Type", "Strain", "Tested Batches", "Avg Total THC",
+    "Min Total THC", "Max Total THC", "Avg Total Terpenes",
+    "Min Total Terpenes", "Max Total Terpenes",
+]
+QA_DETAIL_COLUMNS = [
+    "Package Tag", "Test Date", "Brand", "Strain", "SKU Type", "Test Type",
+    "Status", "Total THC", "Total Terpenes",
+]
+
+
+def qa_operation_panel(
+    operation: str,
+    test_type: rx.Var,
+    test_type_options: rx.Var,
+    test_type_handler: Any,
+    metrics: rx.Var,
+    pass_rows: rx.Var,
+    potency_rows: rx.Var,
+    consistency_strain: rx.Var,
+    consistency_options: rx.Var,
+    consistency_handler: Any,
+    chart_rows: rx.Var,
+    detail_rows: rx.Var,
+) -> rx.Component:
+    return rx.vstack(
+        rx.card(
+            rx.flex(
+                rx.box(
+                    rx.heading("Compliance Filter", size="4", color=DARK),
+                    rx.text(
+                        "Separate historical results by the actual product type tested.",
+                        size="1", color=MUTED,
+                    ),
+                ),
+                rx.spacer(),
+                rx.box(
+                    rx.text("Compliance Test Type", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        test_type_options,
+                        value=test_type,
+                        on_change=test_type_handler,
+                        width="290px",
+                    ),
+                ),
+                align="end", gap="4", wrap="wrap", width="100%",
+            ),
+            width="100%", border_top=f"5px solid {ACCENT}",
+        ),
+        rx.cond(
+            test_type == "Flower",
+            rx.callout(
+                "Flower includes raw/bulk and packaged flower because the passed flower test remains valid after packaging.",
+                icon="info", color_scheme="blue", width="100%",
+            ),
+        ),
+        rx.cond(
+            test_type == "Other / Needs Review",
+            rx.callout(
+                "These packages could not be confidently assigned to a primary compliance product type.",
+                icon="triangle_alert", color_scheme="orange", width="100%",
+            ),
+        ),
+        rx.grid(
+            rx.foreach(metrics, qa_metric_tile),
+            columns=rx.breakpoints(initial="1", sm="2", lg="5"),
+            gap="3", width="100%",
+        ),
+        rx.text(
+            "Each package counts once. A package that passes after retesting counts as one passed batch; pending and R&D tests are excluded from the completed denominator.",
+            size="1", color=MUTED,
+        ),
+        rx.heading("Pass Success by Strain", size="4", color=DARK),
+        rx.cond(
+            pass_rows.length() > 0,
+            readable_grid(pass_rows, QA_PASS_COLUMNS, "430px"),
+            rx.callout(
+                "No completed QA batches match the active global and compliance filters.",
+                icon="circle_help", width="100%",
+            ),
+        ),
+        rx.heading("Total THC and Total Terpene Consistency", size="4", color=DARK),
+        rx.cond(
+            consistency_options.length() > 0,
+            rx.vstack(
+                rx.box(
+                    rx.text("Consistency Strain", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        consistency_options,
+                        value=consistency_strain,
+                        on_change=consistency_handler,
+                        width="310px",
+                    ),
+                ),
+                rx.grid(
+                    rx.card(
+                        rx.text("Total THC by Test Date", weight="bold", color=DARK),
+                        rx.recharts.line_chart(
+                            rx.recharts.cartesian_grid(stroke_dasharray="3 3"),
+                            rx.recharts.x_axis(data_key="Test Date"),
+                            rx.recharts.y_axis(),
+                            rx.recharts.graphing_tooltip(),
+                            rx.recharts.line(
+                                data_key="Total THC", stroke="#14969b", stroke_width=3,
+                                connect_nulls=True,
+                            ),
+                            data=chart_rows, height=300, width="100%",
+                        ),
+                    ),
+                    rx.card(
+                        rx.text("Total Terpenes by Test Date", weight="bold", color=DARK),
+                        rx.recharts.line_chart(
+                            rx.recharts.cartesian_grid(stroke_dasharray="3 3"),
+                            rx.recharts.x_axis(data_key="Test Date"),
+                            rx.recharts.y_axis(),
+                            rx.recharts.graphing_tooltip(),
+                            rx.recharts.line(
+                                data_key="Total Terpenes", stroke="#7c3aed", stroke_width=3,
+                                connect_nulls=True,
+                            ),
+                            data=chart_rows, height=300, width="100%",
+                        ),
+                    ),
+                    columns=rx.breakpoints(initial="1", lg="2"),
+                    gap="4", width="100%",
+                ),
+                width="100%", spacing="3",
+            ),
+            rx.callout(
+                "No Total THC or Total Terpenes results match these filters.",
+                icon="circle_help", width="100%",
+            ),
+        ),
+        rx.heading("Average and Range by Strain", size="4", color=DARK),
+        rx.cond(
+            potency_rows.length() > 0,
+            readable_grid(potency_rows, QA_POTENCY_COLUMNS, "500px"),
+            rx.callout("No potency ranges are available.", icon="circle_help"),
+        ),
+        rx.heading("Matching Package Records", size="4", color=DARK),
+        rx.cond(
+            detail_rows.length() > 0,
+            readable_grid(detail_rows, QA_DETAIL_COLUMNS, "560px"),
+            rx.callout(
+                "No package records match the active Brand, Strain, SKU Type, and compliance filters.",
+                icon="circle_help",
+                width="100%",
+            ),
+        ),
+        width="100%", spacing="4",
+    )
+
+
+def qa_import_panel() -> rx.Component:
+    return rx.accordion.root(
+        rx.accordion.item(
+            value="qa-import",
+            header=rx.flex(
+                rx.box(
+                    rx.text("Import Metrc Lab Result CSV Files", weight="bold", color=DARK),
+                    rx.text(
+                        "Cultivation and Manufacturing files share one duplicate-safe Supabase history.",
+                        size="1", color=MUTED,
+                    ),
+                ),
+                rx.spacer(),
+                rx.badge(
+                    DashboardState.qa_analyte_count.to_string() + " analyte rows",
+                    color_scheme="teal",
+                ),
+                align="center", width="100%",
+            ),
+            content=rx.vstack(
+                rx.upload(
+                    rx.vstack(
+                        rx.icon("upload", size=28, color=ACCENT),
+                        rx.text("Drag LabResultsReport CSV files here or click to select"),
+                        rx.button("Choose CSV Files", variant="outline"),
+                        spacing="2", align="center",
+                    ),
+                    id="qa_lab_upload",
+                    accept={"text/csv": [".csv"], "application/vnd.ms-excel": [".csv"]},
+                    multiple=True,
+                    max_files=20,
+                    border=f"2px dashed {ACCENT}",
+                    border_radius="12px",
+                    padding="2rem",
+                    width="100%",
+                ),
+                rx.flex(
+                    rx.foreach(rx.selected_files("qa_lab_upload"), rx.badge),
+                    gap="2", wrap="wrap", width="100%",
+                ),
+                rx.flex(
+                    rx.button(
+                        "Import Selected Files",
+                        on_click=DashboardState.import_qa_lab_files(
+                            rx.upload_files(upload_id="qa_lab_upload")
+                        ),
+                        loading=DashboardState.qa_importing,
+                        background=ACCENT, color="white",
+                    ),
+                    rx.button(
+                        "Clear Selection",
+                        on_click=rx.clear_selected_files("qa_lab_upload"),
+                        variant="outline",
+                    ),
+                    gap="3",
+                ),
+                rx.cond(
+                    DashboardState.qa_import_results.length() > 0,
+                    readable_grid(
+                        DashboardState.qa_import_results,
+                        ["File", "Status", "Source Rows", "Stored Rows", "Inserted", "Updated", "Details"],
+                        "300px",
+                    ),
+                ),
+                rx.heading("Recent Lab Import History", size="3"),
+                readable_grid(
+                    DashboardState.qa_import_log,
+                    ["File", "Source Rows", "Stored Rows", "Inserted", "Updated", "Test Min", "Test Max", "Imported At"],
+                    "300px",
+                ),
+                width="100%", spacing="3",
+            ),
+        ),
+        type="single", collapsible=True, width="100%", variant="soft",
+    )
+
+
+def qa_lookup_result_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["package_tag"], min_width="230px"),
+        rx.table.cell(row["brand"], min_width="130px"),
+        rx.table.cell(row["strain"], min_width="170px"),
+        rx.table.cell(row["sku_type"], min_width="190px"),
+        rx.table.cell(row["lab_testing_status"], min_width="130px"),
+        rx.table.cell(
+            rx.button(
+                "Select",
+                on_click=DashboardState.select_qa_package(
+                    row["package_tag"], row["packaged_license"]
+                ),
+                background=ACCENT, color="white", size="1",
+            )
+        ),
+    )
+
+
+def qa_catalog_result_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["Template Name"], min_width="270px", font_weight="600"),
+        rx.table.cell(row["Brand"], min_width="130px"),
+        rx.table.cell(row["Strain"], min_width="170px"),
+        rx.table.cell(row["SKU Type"], min_width="210px"),
+        rx.table.cell(row["Operation"], min_width="130px"),
+        rx.table.cell(rx.badge(row["Confidence"], color_scheme="teal"), min_width="120px"),
+        rx.table.cell(
+            rx.button(
+                "Use Template",
+                on_click=DashboardState.select_native_template(row["Template Name"]),
+                variant="outline", size="1",
+            ),
+            min_width="125px",
+        ),
+    )
+
+
+def qa_compliance_summary_item(row: rx.Var[list[str]]) -> rx.Component:
+    return rx.box(
+        rx.text(row[0], size="1", weight="bold", color=MUTED),
+        rx.text(row[1], size="2", weight="medium", color=DARK, white_space="normal"),
+        padding="0.45rem 0.55rem",
+        border="1px solid #d8e0e8",
+        border_radius="8px",
+        background="#f8fafc",
+        min_width="0",
+    )
+
+
+def qa_analyte_category_badge(row: rx.Var) -> rx.Component:
+    return rx.badge(
+        row["Category"].to_string() + ": " + row["Count"].to_string(),
+        color_scheme="teal",
+        variant="soft",
+        size="2",
+    )
+
+
+def qa_compliance_summary_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("General Compliance Label Summary"),
+            rx.dialog.description(
+                "A quick printable summary of the selected Metrc package. "
+                "The COA status below shows whether laboratory results were found."
+            ),
+            rx.callout(
+                "Selected compliance label: "
+                + DashboardState.qa_selected_native_template,
+                icon="tag", color_scheme="teal", width="100%",
+            ),
+            rx.grid(
+                rx.foreach(
+                    DashboardState.qa_general_compliance_summary,
+                    qa_compliance_summary_item,
+                ),
+                columns=rx.breakpoints(initial="1", sm="2"),
+                gap="2",
+                width="100%",
+            ),
+            rx.text(
+                "The downloaded HTML summary can be opened in any browser and "
+                "printed with the browser's Print command.",
+                size="1", color=MUTED,
+            ),
+            rx.flex(
+                rx.button(
+                    "Download / Print Summary",
+                    on_click=DashboardState.download_qa_label,
+                    background=ACCENT, color="white",
+                ),
+                rx.dialog.close(
+                    rx.button("Close", variant="outline")
+                ),
+                gap="3", justify="end", width="100%",
+            ),
+            max_width="760px", width="calc(100vw - 32px)",
+        ),
+        open=DashboardState.qa_preview_open,
+        on_open_change=DashboardState.change_qa_preview_open,
+    )
+
+
+def qa_label_panel() -> rx.Component:
+    return rx.vstack(
+        qa_compliance_summary_dialog(),
+        rx.heading("Compliance Label Search and Printing", size="5", color=DARK),
+        rx.text(
+            "Search a package tag or harvest, verify its compliance result, and download the approved printable summary.",
+            color=MUTED,
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("1. Direct Package or Harvest Search", size="4", color=DARK),
+                rx.flex(
+                    rx.input(
+                        value=DashboardState.qa_lookup_draft,
+                        on_change=DashboardState.change_qa_lookup_search,
+                        placeholder="Enter a Package tag or Harvest",
+                        flex="1", min_width="280px", size="3",
+                    ),
+                    rx.button(
+                        "Find and Preview",
+                        on_click=DashboardState.find_qa_lookup_record,
+                        loading=DashboardState.qa_lookup_loading,
+                        background=ACCENT, color="white", size="3",
+                    ),
+                    gap="3", wrap="wrap", width="100%",
+                ),
+                rx.text(
+                    "Use this when the Metrc tag or harvest is already known. If "
+                    "no COA exists, the current Inventory record will generate a "
+                    "general printable compliance summary.",
+                    color=MUTED, size="1",
+                ),
+                rx.cond(
+                    DashboardState.qa_message != "",
+                    rx.callout(
+                        DashboardState.qa_message, icon="circle-check",
+                        color_scheme="teal", width="100%",
+                    ),
+                ),
+                rx.cond(
+                    DashboardState.qa_error != "",
+                    rx.callout(
+                        DashboardState.qa_error, icon="triangle-alert",
+                        color_scheme="red", width="100%",
+                    ),
+                ),
+                width="100%", spacing="2",
+            ),
+            width="100%", border_top=f"5px solid {ACCENT}",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("2. Browse Compliance Records", size="4", color=DARK),
+                rx.text(
+                    "Narrow the current Metrc and lab records instead of scrolling through one long dropdown.",
+                    color=MUTED,
+                ),
+                rx.grid(
+                    rx.box(
+                        rx.text("Operation", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            DashboardState.qa_label_operation_options,
+                            value=DashboardState.qa_label_operation_filter,
+                            on_change=DashboardState.change_qa_label_operation_filter,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Brand", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            DashboardState.qa_label_brand_options,
+                            value=DashboardState.qa_label_brand_filter,
+                            on_change=DashboardState.change_qa_label_brand_filter,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Strain", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            DashboardState.qa_label_strain_options,
+                            value=DashboardState.qa_label_strain_filter,
+                            on_change=DashboardState.change_qa_label_strain_filter,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("SKU Type", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            DashboardState.qa_label_sku_options,
+                            value=DashboardState.qa_label_sku_filter,
+                            on_change=DashboardState.change_qa_label_sku_filter,
+                            width="100%",
+                        ),
+                    ),
+                    columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+                    gap="3", width="100%",
+                ),
+                rx.cond(
+                    DashboardState.qa_lookup_matches.length() > 0,
+                    rx.box(
+                        rx.table.root(
+                            rx.table.header(
+                                rx.table.row(*[
+                                    rx.table.column_header_cell(column)
+                                    for column in ["Package Tag", "Brand", "Strain", "SKU Type", "QA Status", "Action"]
+                                ])
+                            ),
+                            rx.table.body(rx.foreach(DashboardState.qa_lookup_matches, qa_lookup_result_row)),
+                            size="1", variant="surface", width="100%",
+                        ),
+                        width="100%", overflow_x="auto", max_height="420px", overflow_y="auto",
+                    ),
+                    rx.callout(
+                        "Enter a direct search or choose at least one browse filter.",
+                        icon="search", width="100%",
+                    ),
+                ),
+                width="100%", spacing="3",
+            ),
+            width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.heading("3. Approved COA Label Template Catalog", size="4", color=DARK),
+                        rx.text(
+                            "Thirty finite NiceLabel designs classified from the supplied filenames.",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.input(
+                        value=DashboardState.qa_label_catalog_search,
+                        on_change=DashboardState.change_qa_label_catalog_search,
+                        placeholder="Search label templates",
+                        width="290px",
+                    ),
+                    align="end", gap="3", wrap="wrap", width="100%",
+                ),
+                rx.box(
+                    rx.table.root(
+                        rx.table.header(
+                            rx.table.row(*[
+                                rx.table.column_header_cell(column)
+                                for column in ["Template", "Brand", "Strain", "SKU Type", "Operation", "Confidence", "Action"]
+                            ])
+                        ),
+                        rx.table.body(rx.foreach(DashboardState.qa_filtered_label_catalog, qa_catalog_result_row)),
+                        size="1", variant="surface", width="100%",
+                    ),
+                    width="100%", overflow_x="auto", max_height="460px", overflow_y="auto",
+                ),
+                rx.cond(
+                    DashboardState.qa_selected_native_template != "",
+                    rx.callout(
+                        "Selected native template: " + DashboardState.qa_selected_native_template,
+                        icon="tag", color_scheme="teal", width="100%",
+                    ),
+                ),
+                rx.callout(
+                    "The catalog can be selected now. Direct printing into encrypted .nlbl files will be connected after the installed ZebraDesigner/NiceLabel edition is confirmed.",
+                    icon="info", color_scheme="blue", width="100%",
+                ),
+                width="100%", spacing="3",
+            ),
+            width="100%",
+        ),
+        rx.cond(
+            DashboardState.qa_selected_package.length() > 0,
+            rx.vstack(
+                rx.grid(
+                    metric_card(
+                        "Package", DashboardState.qa_selected_package["package_tag"].to_string(),
+                        "Selected Metrc compliance record",
+                    ),
+                    metric_card(
+                        "Test Type", DashboardState.qa_selected_package["qa_test_type"].to_string(),
+                        "Product family tested",
+                    ),
+                    metric_card(
+                        "QA Status", DashboardState.qa_selected_package["lab_testing_status"].to_string(),
+                        "Current compliance result",
+                    ),
+                    columns=rx.breakpoints(initial="1", sm="3"),
+                    gap="3", width="100%",
+                ),
+                rx.box(
+                    rx.text("Printable Label Template", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        DashboardState.qa_template_options,
+                        value=DashboardState.qa_selected_template,
+                        on_change=DashboardState.change_qa_selected_template,
+                        width="360px",
+                    ),
+                ),
+                rx.flex(
+                    rx.switch(
+                        checked=DashboardState.qa_override_expiration,
+                        on_change=DashboardState.change_qa_override_expiration,
+                    ),
+                    rx.text("Manually Override Expiration Date", weight="bold"),
+                    align="center", gap="2",
+                ),
+                rx.cond(
+                    DashboardState.qa_override_expiration,
+                    rx.box(
+                        rx.text("Expiration Date", size="1", weight="bold", color=MUTED),
+                        rx.input(
+                            type="date",
+                            value=DashboardState.qa_manual_expiration,
+                            on_change=DashboardState.change_qa_manual_expiration,
+                            width="250px",
+                        ),
+                    ),
+                    rx.text(
+                        "Calculated expiration: "
+                        + DashboardState.qa_selected_package["expiration_date"].to_string(),
+                        size="1", color=MUTED,
+                    ),
+                ),
+                rx.button(
+                    "Download / Print Compliance Summary",
+                    on_click=DashboardState.download_qa_label,
+                    background=ACCENT, color="white", size="3",
+                ),
+                rx.heading("All Compliance Analytes", size="4"),
+                rx.cond(
+                    DashboardState.qa_analyte_message != "",
+                    rx.callout(
+                        DashboardState.qa_analyte_message,
+                        icon="info", color_scheme="blue", width="100%",
+                    ),
+                ),
+                rx.flex(
+                    rx.box(
+                        rx.text("Analyte Category", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            QA_ANALYTE_CATEGORIES,
+                            value=DashboardState.qa_analyte_category_filter,
+                            on_change=DashboardState.change_qa_analyte_category_filter,
+                            width="260px",
+                        ),
+                    ),
+                    rx.text(
+                        "Showing "
+                        + DashboardState.qa_filtered_analyte_count.to_string()
+                        + " of "
+                        + DashboardState.qa_selected_analytes.length().to_string()
+                        + " analytes",
+                        size="2", color=MUTED,
+                    ),
+                    align="end", gap="4", wrap="wrap", width="100%",
+                ),
+                rx.flex(
+                    rx.foreach(
+                        DashboardState.qa_analyte_category_counts,
+                        qa_analyte_category_badge,
+                    ),
+                    gap="2", wrap="wrap", width="100%",
+                ),
+                readable_grid(
+                    DashboardState.qa_selected_analyte_rows,
+                    ["Category", "Test Date", "Test", "Result", "Passed"],
+                    "520px",
+                ),
+                width="100%", spacing="4",
+            ),
+        ),
+        width="100%", spacing="4",
+    )
+
+
+def qa_panel() -> rx.Component:
+    return rx.vstack(
+        rx.flex(
+            rx.box(
+                rx.heading("Quality Assurance", size="6", color=DARK),
+                rx.text(
+                    "Shared cultivation and manufacturing compliance performance, potency consistency, and label printing.",
+                    color=MUTED,
+                ),
+            ),
+            rx.spacer(),
+            rx.badge(
+                DashboardState.qa_record_count.to_string() + " current package records",
+                color_scheme="teal", size="3",
+            ),
+            rx.button(
+                "Reconnect & Reload QA", on_click=DashboardState.refresh_qa,
+                variant="outline", loading=DashboardState.qa_loading,
+            ),
+            align="center", gap="3", wrap="wrap", width="100%",
+        ),
+        rx.cond(
+            DashboardState.qa_message != "",
+            rx.callout(
+                DashboardState.qa_message,
+                icon="circle_check", color_scheme="green", width="100%",
+            ),
+        ),
+        rx.cond(
+            DashboardState.qa_error != "",
+            rx.callout(
+                DashboardState.qa_error,
+                icon="triangle_alert", color_scheme="red", width="100%",
+            ),
+        ),
+        qa_import_panel(),
+        rx.text(
+            "The global Brand and Strain filters above apply to both operational QA views.",
+            size="1", color=MUTED,
+        ),
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger("Cultivation", value="cultivation"),
+                rx.tabs.trigger("Manufacturing", value="manufacturing"),
+                rx.tabs.trigger(
+                    "Compliance Label Search & Printing", value="labels"
+                ),
+                class_name="qcc-tabs",
+                width="100%",
+            ),
+            value=DashboardState.qa_view,
+            on_change=DashboardState.change_qa_view,
+            width="100%",
+        ),
+        rx.box(
+            rx.match(
+                DashboardState.qa_view,
+                ("cultivation", qa_operation_panel(
+                    "Cultivation",
+                    DashboardState.qa_cultivation_test_type,
+                    DashboardState.qa_cultivation_test_type_options,
+                    DashboardState.change_qa_cultivation_test_type,
+                    DashboardState.qa_cultivation_metrics,
+                    DashboardState.qa_cultivation_pass_summary,
+                    DashboardState.qa_cultivation_potency,
+                    DashboardState.qa_cultivation_consistency_strain,
+                    DashboardState.qa_cultivation_consistency_options,
+                    DashboardState.change_qa_cultivation_consistency_strain,
+                    DashboardState.qa_cultivation_chart,
+                    DashboardState.qa_cultivation_detail,
+                )),
+                ("manufacturing", qa_operation_panel(
+                    "Manufacturing",
+                    DashboardState.qa_manufacturing_test_type,
+                    DashboardState.qa_manufacturing_test_type_options,
+                    DashboardState.change_qa_manufacturing_test_type,
+                    DashboardState.qa_manufacturing_metrics,
+                    DashboardState.qa_manufacturing_pass_summary,
+                    DashboardState.qa_manufacturing_potency,
+                    DashboardState.qa_manufacturing_consistency_strain,
+                    DashboardState.qa_manufacturing_consistency_options,
+                    DashboardState.change_qa_manufacturing_consistency_strain,
+                    DashboardState.qa_manufacturing_chart,
+                    DashboardState.qa_manufacturing_detail,
+                )),
+                ("labels", qa_label_panel()),
+                qa_operation_panel(
+                    "Cultivation",
+                    DashboardState.qa_cultivation_test_type,
+                    DashboardState.qa_cultivation_test_type_options,
+                    DashboardState.change_qa_cultivation_test_type,
+                    DashboardState.qa_cultivation_metrics,
+                    DashboardState.qa_cultivation_pass_summary,
+                    DashboardState.qa_cultivation_potency,
+                    DashboardState.qa_cultivation_consistency_strain,
+                    DashboardState.qa_cultivation_consistency_options,
+                    DashboardState.change_qa_cultivation_consistency_strain,
+                    DashboardState.qa_cultivation_chart,
+                    DashboardState.qa_cultivation_detail,
+                ),
+            ),
+            width="100%", padding_top="1rem", padding_bottom="6rem",
+        ),
+        width="100%", spacing="4",
     )
 
 
@@ -6420,7 +8549,7 @@ def protected_dashboard() -> rx.Component:
                 rx.box(
                     rx.heading("QCC Control Tower", size="8", color=DARK),
                     rx.text(
-                        f"Reflex Inventory & Production Pilot · Version {PILOT_VERSION}",
+                        f"Reflex Inventory, Production & QA · Version {PILOT_VERSION}",
                         color=MUTED,
                     ),
                 ),
@@ -6479,6 +8608,7 @@ def protected_dashboard() -> rx.Component:
                     rx.tabs.trigger("Executive Dashboard", value="executive"),
                     rx.tabs.trigger("Sales & Demand Planning", value="sales_demand"),
                     rx.tabs.trigger("Inventory", value="inventory"),
+                    rx.tabs.trigger("Quality Assurance", value="qa"),
                     rx.cond(
                         DashboardState.is_administrator,
                         rx.tabs.trigger("Administration", value="administration"),
@@ -6489,6 +8619,7 @@ def protected_dashboard() -> rx.Component:
                 rx.tabs.content(executive_dashboard_panel(), value="executive", padding_top="1.25rem"),
                 rx.tabs.content(sales_demand_workspace(), value="sales_demand", padding_top="1.25rem"),
                 rx.tabs.content(inventory_panel(), value="inventory", padding_top="1.25rem"),
+                rx.tabs.content(qa_panel(), value="qa", padding_top="1.25rem"),
                 rx.tabs.content(
                     rx.cond(
                         DashboardState.is_administrator,
@@ -6551,6 +8682,8 @@ def login_page() -> rx.Component:
                         on_click=DashboardState.begin_google_sign_in,
                         width="100%",
                         size="3",
+                        loading=DashboardState.auth_redirecting,
+                        disabled=DashboardState.auth_redirecting,
                         class_name="qcc-login-button",
                     ),
                     rx.button(
@@ -6560,6 +8693,8 @@ def login_page() -> rx.Component:
                         width="100%",
                         size="3",
                         variant="outline",
+                        loading=DashboardState.auth_redirecting,
+                        disabled=DashboardState.auth_redirecting,
                         class_name="qcc-login-button",
                     ),
                     width="100%",
@@ -6595,9 +8730,34 @@ def login_page() -> rx.Component:
 
 def dashboard() -> rx.Component:
     return rx.cond(
-        DashboardState.authenticated,
-        protected_dashboard(),
-        login_page(),
+        DashboardState.auth_checked,
+        rx.cond(
+            DashboardState.authenticated,
+            protected_dashboard(),
+            login_page(),
+        ),
+        rx.center(
+            rx.vstack(
+                rx.spinner(size="3"),
+                rx.heading("Connecting securely", size="5"),
+                rx.text(
+                    rx.cond(
+                        DashboardState.auth_message != "",
+                        DashboardState.auth_message,
+                        "Checking your QCC employee session...",
+                    ),
+                    color=MUTED,
+                    text_align="center",
+                ),
+                align="center",
+                spacing="4",
+                padding="2.5rem",
+                class_name="qcc-login-card",
+            ),
+            min_height="100vh",
+            padding="1.5rem",
+            class_name="qcc-clade9-app qcc-login-page",
+        ),
     )
 
 
@@ -6609,11 +8769,20 @@ def auth_callback_page() -> rx.Component:
             rx.text("Verifying your identity and QCC employee access...", color=MUTED),
             rx.cond(
                 DashboardState.auth_message != "",
-                rx.callout(
-                    DashboardState.auth_message,
-                    icon="triangle_alert",
-                    color_scheme="red",
-                    width="100%",
+                rx.cond(
+                    DashboardState.auth_failed,
+                    rx.callout(
+                        DashboardState.auth_message,
+                        icon="triangle_alert",
+                        color_scheme="red",
+                        width="100%",
+                    ),
+                    rx.callout(
+                        DashboardState.auth_message,
+                        icon="info",
+                        color_scheme="blue",
+                        width="100%",
+                    ),
                 ),
             ),
             rx.button("Return to Sign In", on_click=rx.redirect("/"), variant="soft"),
@@ -6643,7 +8812,7 @@ app = rx.App(
 app.add_page(
     dashboard,
     route="/",
-    title="QCC Control Tower - Reflex Inventory & Production Pilot",
+    title="QCC Control Tower - Reflex Inventory, Production & QA",
     on_load=DashboardState.load_dashboard,
 )
 app.add_page(

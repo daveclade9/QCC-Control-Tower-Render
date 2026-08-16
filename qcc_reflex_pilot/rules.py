@@ -89,6 +89,11 @@ RETIRED_OR_ON_HOLD_STRAINS = {
     "pre-98 bubba", "rpg #34", "rpg #42",
 }
 
+# Manual exceptions take precedence over shipment-age recommendations. Add a
+# normalized ``(brand, strain, sku_type)`` tuple here when Sales confirms that
+# a product is intentionally seasonal or permanently retired.
+PRODUCT_LIFECYCLE_OVERRIDES: dict[tuple[str, str, str], str] = {}
+
 
 def contains_text(value: Any, search_terms: list[str]) -> bool:
     text = str(value or "").lower()

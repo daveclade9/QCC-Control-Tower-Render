@@ -5,6 +5,7 @@ assets/external/
 .env
 .venv/
 .validation_venv/
+.testvenv/
 .web/
 __pycache__/
 *.py[cod]
