@@ -1,6 +1,8 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.4.3
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.4.4
 
-Version 0.9.4.3 dates accepted retail deliveries by Metrc's Received At value
+Version 0.9.4.4 adds a persistent Supabase retailer-location directory,
+coordinate-first mapping, and a downloadable location-review list. Accepted
+retail deliveries remain dated by Metrc's Received At value
 and adds a toggle for outbound transfers that remain Shipped and have not yet
 been accepted. The two states stay visually and analytically separate.
 

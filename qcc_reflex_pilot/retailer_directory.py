@@ -31,21 +31,22 @@ def _load_locations() -> list[dict[str, Any]]:
 CLADE9_LOCATIONS = _load_locations()
 
 
-def _normalized(value: Any) -> str:
+def normalized_retailer_name(value: Any) -> str:
+    """Return a stable retailer-name key for database and Metrc matching."""
     text = str(value or "").lower().replace("&", " and ")
     return " ".join(re.findall(r"[a-z0-9]+", text))
 
 
 def _significant_tokens(value: Any) -> set[str]:
     return {
-        token for token in _normalized(value).split()
+        token for token in normalized_retailer_name(value).split()
         if token not in _GENERIC_WORDS
     }
 
 
 def find_clade9_location(retailer_name: str) -> dict[str, Any]:
     """Return the strongest safe name match from the Clade9 locator."""
-    normalized_name = _normalized(retailer_name)
+    normalized_name = normalized_retailer_name(retailer_name)
     query_tokens = _significant_tokens(retailer_name)
     if not normalized_name:
         return {}
@@ -54,7 +55,7 @@ def find_clade9_location(retailer_name: str) -> dict[str, Any]:
     best_score = 0.0
     for location in CLADE9_LOCATIONS:
         candidate_name = str(location.get("name", ""))
-        normalized_candidate = _normalized(candidate_name)
+        normalized_candidate = normalized_retailer_name(candidate_name)
         candidate_tokens = _significant_tokens(candidate_name)
         score = 0.0
         if normalized_name == normalized_candidate:

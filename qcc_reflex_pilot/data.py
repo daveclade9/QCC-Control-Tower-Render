@@ -38,6 +38,7 @@ from .rules import (
     normalize_strain_name,
     prepare_transfer_analysis,
 )
+from .retailer_directory import CLADE9_LOCATIONS
 
 
 load_dotenv()
@@ -52,6 +53,10 @@ _SALES_DASHBOARD_CACHE_LOCK = threading.Lock()
 _OPERATIONAL_CONTEXT: dict[str, Any] = {"loaded_at": 0.0, "payload": None}
 _OPERATIONAL_CONTEXT_LOCK = threading.Lock()
 _OPERATIONAL_BUILD_LOCK = threading.Lock()
+_RETAILER_LOCATION_INIT_LOCK = threading.Lock()
+_RETAILER_LOCATION_INITIALIZED = False
+_RETAILER_LOCATION_CACHE: dict[str, Any] = {"loaded_at": 0.0, "rows": None}
+_RETAILER_LOCATION_CACHE_LOCK = threading.Lock()
 
 
 def _invalidate_dashboard_caches() -> None:
@@ -254,6 +259,133 @@ def safe_query_frame(
         ):
             return pd.DataFrame()
         raise
+
+
+def _directory_retailer_location_rows() -> list[dict[str, Any]]:
+    """Convert the bundled Clade9 directory into the shared location schema."""
+    return [
+        {
+            "location_id": f"clade9:{row.get('source_id', index)}",
+            "destination_license": "",
+            "metrc_business_name": "",
+            "public_store_name": str(row.get("name", "")).strip(),
+            "street_address": str(row.get("address", "")).strip(),
+            "locality": str(row.get("locality", "")).strip(),
+            "phone": str(row.get("phone", "")).strip(),
+            "website": str(row.get("website", "")).strip(),
+            "latitude": None,
+            "longitude": None,
+            "location_status": "Directory Seed",
+            "verified": False,
+            "notes": "",
+            "source": "Clade9 Store Locator",
+            "source_id": str(row.get("source_id", "")).strip(),
+        }
+        for index, row in enumerate(CLADE9_LOCATIONS, start=1)
+    ]
+
+
+def _initialize_retailer_locations_database_once() -> None:
+    """Create and safely seed the persistent retailer-location directory."""
+    url = database_url()
+    if not url or psycopg is None:
+        raise RuntimeError("Supabase is required for the retailer directory.")
+    with psycopg.connect(url, connect_timeout=15) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS qcc_retailer_locations (
+                location_id TEXT PRIMARY KEY,
+                destination_license TEXT,
+                metrc_business_name TEXT NOT NULL DEFAULT '',
+                public_store_name TEXT NOT NULL DEFAULT '',
+                street_address TEXT NOT NULL DEFAULT '',
+                locality TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL DEFAULT '',
+                website TEXT NOT NULL DEFAULT '',
+                latitude DOUBLE PRECISION,
+                longitude DOUBLE PRECISION,
+                location_status TEXT NOT NULL DEFAULT 'Not Reviewed',
+                verified BOOLEAN NOT NULL DEFAULT FALSE,
+                notes TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                source_id TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_qcc_retailer_locations_license "
+            "ON qcc_retailer_locations(destination_license) "
+            "WHERE destination_license IS NOT NULL "
+            "AND BTRIM(destination_license) <> ''"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_qcc_retailer_locations_name "
+            "ON qcc_retailer_locations(public_store_name)"
+        )
+        seed_rows = _directory_retailer_location_rows()
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO qcc_retailer_locations (
+                    location_id, destination_license, metrc_business_name,
+                    public_store_name, street_address, locality, phone,
+                    website, latitude, longitude, location_status, verified,
+                    notes, source, source_id
+                ) VALUES (
+                    %(location_id)s, NULLIF(%(destination_license)s, ''),
+                    %(metrc_business_name)s, %(public_store_name)s,
+                    %(street_address)s, %(locality)s, %(phone)s, %(website)s,
+                    %(latitude)s, %(longitude)s, %(location_status)s,
+                    %(verified)s, %(notes)s, %(source)s, %(source_id)s
+                )
+                ON CONFLICT(location_id) DO NOTHING
+                """,
+                seed_rows,
+            )
+        connection.commit()
+
+
+def initialize_retailer_locations_database() -> None:
+    """Initialize the shared location table once per application process."""
+    global _RETAILER_LOCATION_INITIALIZED
+    if _RETAILER_LOCATION_INITIALIZED:
+        return
+    with _RETAILER_LOCATION_INIT_LOCK:
+        if _RETAILER_LOCATION_INITIALIZED:
+            return
+        _initialize_retailer_locations_database_once()
+        _RETAILER_LOCATION_INITIALIZED = True
+
+
+def load_retailer_locations(force_refresh: bool = False) -> list[dict[str, Any]]:
+    """Load the small shared retailer directory without delaying core Sales."""
+    now = time.monotonic()
+    with _RETAILER_LOCATION_CACHE_LOCK:
+        cached = _RETAILER_LOCATION_CACHE.get("rows")
+        age = now - float(_RETAILER_LOCATION_CACHE.get("loaded_at", 0.0))
+        if cached is not None and not force_refresh and age < SALES_CACHE_SECONDS:
+            return cached
+    try:
+        initialize_retailer_locations_database()
+        frame = query_frame(
+            "SELECT location_id, COALESCE(destination_license, '') AS "
+            "destination_license, metrc_business_name, public_store_name, "
+            "street_address, locality, phone, website, latitude, longitude, "
+            "location_status, verified, notes, source, source_id, updated_at "
+            "FROM qcc_retailer_locations ORDER BY public_store_name",
+            statement_timeout_seconds=15,
+        )
+        rows = record_list(frame)
+    except Exception:
+        # Retail mapping is optional. The bundled directory keeps the Sales
+        # workspace available even if this new table cannot be created yet.
+        rows = _directory_retailer_location_rows()
+    with _RETAILER_LOCATION_CACHE_LOCK:
+        _RETAILER_LOCATION_CACHE["rows"] = rows
+        _RETAILER_LOCATION_CACHE["loaded_at"] = time.monotonic()
+    return rows
 
 
 def query_frames(
@@ -2988,6 +3120,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
             "velocity": [], "velocity_windows": {"All Time": []},
             "stockouts": [], "customers": [], "exceptions": [],
             "retail_delivery_history": [],
+            "retailer_locations": [],
             "transfer_data": [], "transfer_import_log": [],
             "saved_plans": record_list(saved_plans),
             "saved_plan_cards": saved_plan_cards,
@@ -3120,6 +3253,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
     ]
     customers = build_customer_summary(analysis)
     retail_delivery_history = build_retail_delivery_history(analysis)
+    retailer_locations = load_retailer_locations()
     exceptions = build_shipment_exceptions(analysis)
     transfer_display = build_transfer_display(analysis)
     transfer_import_log = load_transfer_import_log()
@@ -3184,6 +3318,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         "calendar": sorted(calendar, key=lambda row: row["Target Date"]),
         "customers": record_list(customers),
         "retail_delivery_history": record_list(retail_delivery_history),
+        "retailer_locations": retailer_locations,
         "exceptions": record_list(exceptions),
         "transfer_data": record_list(transfer_display.head(2000)),
         "transfer_import_log": record_list(transfer_import_log),
@@ -3322,6 +3457,7 @@ def demo_dashboard_data() -> dict[str, Any]:
         "calendar": [],
         "customers": [],
         "retail_delivery_history": [],
+        "retailer_locations": _directory_retailer_location_rows(),
         "exceptions": [],
         "transfer_data": [],
         "transfer_import_log": [],

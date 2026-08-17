@@ -54,10 +54,13 @@ from .auth import (
     verify_supabase_access_token,
 )
 from .label_catalog import NICE_LABEL_CATALOG
-from .retailer_directory import find_clade9_location
+from .retailer_directory import (
+    find_clade9_location,
+    normalized_retailer_name,
+)
 
 
-PILOT_VERSION = "0.9.4.3"
+PILOT_VERSION = "0.9.4.4"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -72,7 +75,7 @@ QA_ANALYTE_CATEGORIES = [
 
 
 def _retail_map_document(
-    stores: list[dict[str, str]], starting_address: str
+    stores: list[dict[str, Any]], starting_address: str
 ) -> str:
     """Build the self-contained multi-marker retail availability map."""
     store_json = json.dumps(stores, ensure_ascii=True).replace("<", "\\u003c")
@@ -144,6 +147,12 @@ function render(rows){
     return `<div class="shop"><h3>${clean(row.retailer)}</h3>${distance}<p>${clean(row.address)}</p><p>${clean(row.date_label)}: ${clean(row.last_delivery)}</p><a target="_blank" rel="noopener" href="${directionsUrl(row)}">Directions to this shop</a></div>`;
   }).join('');
 }
+function addStore(store,point,origin,mapped){
+  const row={...store,...point,distance:origin?miles(origin,point):null};
+  mapped.push(row); bounds.push([point.lat,point.lng]);
+  const distance=row.distance==null?'':`<p><strong>${row.distance.toFixed(1)} miles from the starting location</strong></p>`;
+  L.marker([point.lat,point.lng]).addTo(map).bindPopup(`<h3>${clean(row.retailer)}</h3>${distance}<p>${clean(row.address)}</p><p><a target="_blank" rel="noopener" href="${directionsUrl(row)}">Directions</a></p>`);
+}
 async function load(){
   if(!stores.length){statusNode.textContent='No matching retailer locations are available.';return;}
   let origin=null;
@@ -156,24 +165,31 @@ async function load(){
     }
   }
   const mapped=[];
-  for(let index=0;index<stores.length;index++){
-    const store=stores[index];
-    statusNode.textContent=`Locating matching shop ${index+1} of ${stores.length}…`;
+  const unresolved=[];
+  for(const store of stores){
+    const hasSavedCoordinates=store.latitude!==null&&store.latitude!==''&&store.longitude!==null&&store.longitude!=='';
+    const lat=Number(store.latitude),lng=Number(store.longitude);
+    if(hasSavedCoordinates&&Number.isFinite(lat)&&Number.isFinite(lng)&&Math.abs(lat)<=90&&Math.abs(lng)<=180){
+      addStore(store,{lat,lng},origin,mapped);
+    }else{unresolved.push(store);}
+  }
+  render([...mapped].sort((a,b)=>(a.distance??99999)-(b.distance??99999)||a.retailer.localeCompare(b.retailer)));
+  const fallback=unresolved.slice(0,15);
+  for(let index=0;index<fallback.length;index++){
+    const store=fallback[index];
+    statusNode.textContent=`Mapping saved locations and checking address ${index+1} of ${fallback.length}…`;
     try{
       const point=await geocode(store.route_address,true);
-      if(point){
-        const row={...store,...point,distance:origin?miles(origin,point):null};
-        mapped.push(row); bounds.push([point.lat,point.lng]);
-        const distance=row.distance==null?'':`<p><strong>${row.distance.toFixed(1)} miles from the starting location</strong></p>`;
-        L.marker([point.lat,point.lng]).addTo(map).bindPopup(`<h3>${clean(row.retailer)}</h3>${distance}<p>${clean(row.address)}</p><p><a target="_blank" rel="noopener" href="${directionsUrl(row)}">Directions</a></p>`);
-      }
+      if(point)addStore(store,point,origin,mapped);
     }catch(error){}
     render([...mapped].sort((a,b)=>(a.distance??99999)-(b.distance??99999)||a.retailer.localeCompare(b.retailer)));
   }
   if(bounds.length)map.fitBounds(bounds,{padding:[28,28],maxZoom:13});
-  if(originQuery&&!origin){statusNode.textContent='The starting address could not be located. Matching shops are shown without distances.';}
-  else if(origin){statusNode.textContent=`${mapped.length} matching shops located and sorted by straight-line distance.`;}
-  else{statusNode.textContent=`${mapped.length} matching shops located. Enter a starting address to calculate distance.`;}
+  const needsReview=Math.max(0,stores.length-mapped.length);
+  const reviewText=needsReview?` ${needsReview} still need location review.`:'';
+  if(originQuery&&!origin){statusNode.textContent=`The starting address could not be located. ${mapped.length} matching shops are shown without distances.${reviewText}`;}
+  else if(origin){statusNode.textContent=`${mapped.length} matching shops located and sorted by straight-line distance.${reviewText}`;}
+  else{statusNode.textContent=`${mapped.length} matching shops located. Enter a starting address to calculate distance.${reviewText}`;}
 }
 load();
 </script>
@@ -210,6 +226,26 @@ EmployeeDirectoryRow = TypedDict(
         "Login Emails": str,
         "Phone": str,
         "Contact Email": str,
+    },
+)
+RetailMapLocation = TypedDict(
+    "RetailMapLocation",
+    {
+        "Retailer": str,
+        "Destination License": str,
+        "Address": str,
+        "Latest Metrc Date": str,
+        "Date Label": str,
+        "Website": str,
+        "Map URL": str,
+        "Route Address": str,
+        "Latitude": float | None,
+        "Longitude": float | None,
+        "Match Method": str,
+        "Coordinate Status": str,
+        "Verified": bool,
+        "Location Status": str,
+        "Notes": str,
     },
 )
 CalendarDay = TypedDict(
@@ -476,6 +512,7 @@ class DashboardState(rx.State):
     calendar: list[CalendarEvent] = []
     customers: list[dict[str, Any]] = []
     retail_delivery_history: list[dict[str, Any]] = []
+    retailer_locations: list[dict[str, Any]] = []
     exceptions: list[dict[str, Any]] = []
     _transfer_data: list[dict[str, Any]] = []
     transfer_import_log: list[dict[str, Any]] = []
@@ -2216,6 +2253,7 @@ class DashboardState(rx.State):
         self.retail_delivery_history = payload.get(
             "retail_delivery_history", []
         )
+        self.retailer_locations = payload.get("retailer_locations", [])
         self.exceptions = payload.get("exceptions", [])
         self._transfer_data = payload.get("transfer_data", [])
         self.transfer_import_log = payload.get("transfer_import_log", [])
@@ -2332,6 +2370,9 @@ class DashboardState(rx.State):
         # copied from the server cache only when that subtab is opened.
         self.business_pulse = payload.get("business_pulse", [])
         self.velocity = payload.get("velocity", [])
+        self.retailer_locations = payload.get(
+            "retailer_locations", self.retailer_locations
+        )
         self._apply_optional_module_payload(payload)
         if payload.get("sales_error"):
             self.error_message = str(payload["sales_error"])
@@ -2504,6 +2545,7 @@ class DashboardState(rx.State):
             self.retail_delivery_history = payload.get(
                 "retail_delivery_history", []
             )
+            self.retailer_locations = payload.get("retailer_locations", [])
         elif self.sales_demand_view == "exceptions":
             self.exceptions = payload.get("exceptions", [])
         elif self.sales_demand_view == "transfers":
@@ -4161,19 +4203,74 @@ class DashboardState(rx.State):
         rows = self._retail_aggregate_records()
         return str(rows[0].get("Latest Metrc Date", "—")) if rows else "—"
 
-    def _retail_map_locations(self) -> list[dict[str, str]]:
-        """Return one map-ready row for every matching retailer."""
-        locations: dict[str, dict[str, str]] = {}
+    def _retailer_location_match(
+        self, destination_license: str, retailer: str
+    ) -> tuple[dict[str, Any], str]:
+        """Match a Metrc destination to its saved location record."""
+        license_key = destination_license.strip().upper()
+        name_key = normalized_retailer_name(retailer)
+        by_source: dict[str, dict[str, Any]] = {}
+        for location in self.retailer_locations:
+            source_id = str(location.get("source_id", "")).strip()
+            if source_id:
+                by_source[source_id] = location
+            saved_license = str(
+                location.get("destination_license", "")
+            ).strip().upper()
+            if license_key and saved_license == license_key:
+                return location, "Destination License"
+        for location in self.retailer_locations:
+            saved_names = {
+                normalized_retailer_name(location.get("metrc_business_name", "")),
+                normalized_retailer_name(location.get("public_store_name", "")),
+            }
+            if name_key and name_key in saved_names:
+                return location, "Exact Store Name"
+        directory_match = find_clade9_location(retailer)
+        if directory_match:
+            source_id = str(directory_match.get("source_id", "")).strip()
+            saved = by_source.get(source_id)
+            if saved:
+                return saved, "Clade9 Directory"
+            return {
+                "public_store_name": directory_match.get("name", ""),
+                "street_address": directory_match.get("address", ""),
+                "locality": directory_match.get("locality", ""),
+                "website": directory_match.get("website", ""),
+                "source": "Clade9 Store Locator",
+                "source_id": source_id,
+            }, "Clade9 Directory"
+        return {}, "No Match"
+
+    @staticmethod
+    def _valid_coordinate(value: Any, maximum: float) -> float | None:
+        try:
+            coordinate = float(value)
+        except (TypeError, ValueError):
+            return None
+        return coordinate if math.isfinite(coordinate) and abs(coordinate) <= maximum else None
+
+    def _retail_map_locations(self) -> list[RetailMapLocation]:
+        """Return one coordinate-aware map row for every matching retailer."""
+        locations: dict[str, RetailMapLocation] = {}
         for row in self._retail_aggregate_records():
             retailer = str(row.get("Retailer", "")).strip()
+            destination_license = str(
+                row.get("Destination License", "")
+            ).strip()
             if not retailer:
                 continue
             delivery_date = str(row.get("Latest Metrc Date", ""))
-            current = locations.get(retailer)
+            location_key = destination_license or normalized_retailer_name(retailer)
+            current = locations.get(location_key)
             if current and current["Latest Metrc Date"] >= delivery_date:
                 continue
-            match = find_clade9_location(retailer)
-            street_address = str(match.get("address", "")).strip()
+            match, match_method = self._retailer_location_match(
+                destination_license, retailer
+            )
+            street_address = str(
+                match.get("street_address", match.get("address", ""))
+            ).strip()
             locality = str(match.get("locality", "")).strip()
             address_is_complete = bool(
                 re.search(r"\b(?:NJ|New Jersey)\b", street_address, re.I)
@@ -4184,23 +4281,71 @@ class DashboardState(rx.State):
             )
             if not address:
                 address = str(match.get("full_address", "")).strip()
-            query = quote_plus(address or f"{retailer}, New Jersey")
-            locations[retailer] = {
+            latitude = self._valid_coordinate(match.get("latitude"), 90)
+            longitude = self._valid_coordinate(match.get("longitude"), 180)
+            has_coordinates = latitude is not None and longitude is not None
+            route_address = address or f"{retailer}, New Jersey"
+            map_query = (
+                f"{latitude},{longitude}" if has_coordinates else route_address
+            )
+            locations[location_key] = {
                 "Retailer": retailer,
+                "Destination License": destination_license,
                 "Address": address or "Address not matched in the Clade9 directory",
                 "Latest Metrc Date": delivery_date,
                 "Date Label": (
                     "Sent at" if self.retail_show_pending else "Received at"
                 ),
                 "Website": str(match.get("website", "")).strip(),
-                "Map URL": f"https://www.google.com/maps/search/?api=1&query={query}",
-                "Route Address": address or f"{retailer}, New Jersey",
+                "Map URL": (
+                    "https://www.google.com/maps/search/?api=1&query="
+                    + quote_plus(map_query)
+                ),
+                "Route Address": route_address,
+                "Latitude": latitude,
+                "Longitude": longitude,
+                "Match Method": match_method,
+                "Coordinate Status": (
+                    "Saved Coordinates" if has_coordinates
+                    else "Address Only" if address else "Needs Address"
+                ),
+                "Verified": bool(match.get("verified", False)),
+                "Location Status": str(match.get("location_status", "")),
+                "Notes": str(match.get("notes", "")),
             }
         return sorted(locations.values(), key=lambda item: item["Retailer"].lower())
 
     @rx.var(cache=True)
-    def retail_map_location_cards(self) -> list[dict[str, str]]:
+    def retail_map_location_cards(self) -> list[RetailMapLocation]:
         return self._retail_map_locations()
+
+    @rx.var(cache=True)
+    def retail_location_review_rows(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "Destination License": row["Destination License"],
+                "Metrc Customer": row["Retailer"],
+                "Matched Address": row["Address"],
+                "Latitude": row["Latitude"] if row["Latitude"] is not None else "",
+                "Longitude": row["Longitude"] if row["Longitude"] is not None else "",
+                "Coordinate Status": row["Coordinate Status"],
+                "Match Method": row["Match Method"],
+                "Verified": row["Verified"],
+                "Location Status": row["Location Status"],
+                "Notes": row["Notes"],
+            }
+            for row in self._retail_map_locations()
+        ]
+
+    @rx.event
+    def download_retail_location_review(self):
+        return rx.download(
+            data=self._csv_bytes(self.retail_location_review_rows),
+            filename=(
+                "qcc_retailer_location_review_"
+                f"{date.today().isoformat()}.csv"
+            ),
+        )
 
     @rx.var(cache=True)
     def retail_map_src_doc(self) -> str:
@@ -4211,8 +4356,10 @@ class DashboardState(rx.State):
                 "route_address": row["Route Address"],
                 "last_delivery": row["Latest Metrc Date"],
                 "date_label": row["Date Label"],
+                "latitude": row["Latitude"],
+                "longitude": row["Longitude"],
             }
-            for row in self._retail_map_locations()[:15]
+            for row in self._retail_map_locations()
         ]
         return _retail_map_document(rows, self.retail_start_address.strip())
 
@@ -4221,12 +4368,21 @@ class DashboardState(rx.State):
         count = len(self._retail_map_locations())
         if count == 0:
             return "No matching retailer locations are available to map."
-        if count > 15:
+        mapped = sum(
+            row.get("Coordinate Status") == "Saved Coordinates"
+            for row in self._retail_map_locations()
+        )
+        unresolved = count - mapped
+        if unresolved:
             return (
-                f"{count:,} retailers match. The map displays the first 15 "
-                "alphabetically; the complete result set remains listed below."
+                f"{count:,} retailers match. {mapped:,} have saved coordinates. "
+                f"The map temporarily checks up to 15 of the {unresolved:,} "
+                "address-only records; download the review list to complete them."
             )
-        return f"The map displays all {count:,} matching retailer locations."
+        return (
+            f"The map immediately displays all {count:,} matching retailer "
+            "locations from saved coordinates."
+        )
 
     @rx.var(cache=True)
     def retail_activity_heading(self) -> str:
@@ -7390,6 +7546,10 @@ def retail_location_card(store: rx.Var) -> rx.Component:
                 store["Date Label"] + ": " + store["Latest Metrc Date"],
                 size="1", color=MUTED,
             ),
+            rx.text(
+                store["Coordinate Status"] + " · " + store["Match Method"],
+                size="1", color=MUTED,
+            ),
             rx.hstack(
                 rx.link(
                     rx.button("Open Map", size="2", variant="outline"),
@@ -7501,11 +7661,22 @@ def retail_availability_panel() -> rx.Component:
         ),
         rx.card(
             rx.vstack(
-                rx.heading("Matching Shops Near an Address", size="4"),
+                rx.flex(
+                    rx.heading("Matching Shops Near an Address", size="4"),
+                    rx.spacer(),
+                    rx.button(
+                        "Download Location Review CSV",
+                        on_click=DashboardState.download_retail_location_review,
+                        variant="outline",
+                    ),
+                    align="center", gap="3", wrap="wrap", width="100%",
+                ),
                 rx.text(
                     "Every shop matching the date-window and product filters is "
-                    "shown as its own marker. Enter an address to sort the shops and "
-                    "show the approximate distance to each.",
+                    "shown as its own marker when saved coordinates are available. "
+                    "Enter an address to sort the shops and show the approximate "
+                    "distance to each. The review download identifies any records "
+                    "that still need an address or coordinates.",
                     color=MUTED,
                 ),
                 rx.flex(

@@ -1,5 +1,20 @@
 # QCC Control Tower 0.9.4 - Staging Release Notes
 
+## 0.9.4.4 Persistent Retailer Locations
+
+- Adds an idempotent Supabase `qcc_retailer_locations` table seeded from the
+  bundled Clade9 directory without overwriting reviewed records.
+- Matches saved locations by Metrc destination license first, then exact store
+  name, then the existing safe Clade9-directory matcher.
+- Displays every filtered retailer with saved latitude and longitude
+  immediately; address lookup remains a limited fallback while missing
+  coordinates are being completed.
+- Adds a **Download Location Review CSV** action showing Metrc license, customer
+  name, matched address, coordinate status, match method, verification status,
+  and notes.
+- Keeps retailer-location failures isolated so Inventory, Sales, Production,
+  and QA continue loading if the optional directory table is unavailable.
+
 ## 0.9.4.2 Nearby-Shop Map
 
 - Replaces the multi-stop route with one availability map containing a marker
