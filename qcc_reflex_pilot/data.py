@@ -2525,6 +2525,60 @@ def build_customer_summary(analysis: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+def build_retail_delivery_history(analysis: pd.DataFrame) -> pd.DataFrame:
+    """Build a compact, complete four-week retailer delivery data set.
+
+    The browser receives daily SKU/customer aggregates rather than raw package
+    rows. This keeps the new map workspace responsive while still allowing the
+    user to switch between one, two, three, and four-week windows instantly.
+    """
+    columns = [
+        "Delivery Date", "Destination License", "Customer", "Brand",
+        "Strain", "SKU Type", "Units Shipped", "Packages", "Manifests",
+    ]
+    demand = analysis[analysis["is_demand"]].copy()
+    if demand.empty:
+        return pd.DataFrame(columns=columns)
+
+    demand["created_at"] = pd.to_datetime(
+        demand["created_at"], errors="coerce"
+    )
+    demand = demand[demand["created_at"].notna()].copy()
+    if demand.empty:
+        return pd.DataFrame(columns=columns)
+
+    anchor = demand["created_at"].max().normalize()
+    demand = demand[demand["created_at"].ge(
+        anchor - pd.Timedelta(days=27)
+    )].copy()
+    demand["delivery_date"] = demand["created_at"].dt.normalize()
+    history = demand.groupby(
+        [
+            "delivery_date", "destination_license", "destination_facility",
+            "brand", "strain", "sku_type",
+        ],
+        dropna=False,
+    ).agg(
+        units_shipped=("shipped_units", "sum"),
+        packages=("package_tag", "nunique"),
+        manifests=("manifest", "nunique"),
+    ).reset_index().rename(columns={
+        "delivery_date": "Delivery Date",
+        "destination_license": "Destination License",
+        "destination_facility": "Customer",
+        "brand": "Brand", "strain": "Strain", "sku_type": "SKU Type",
+        "units_shipped": "Units Shipped", "packages": "Packages",
+        "manifests": "Manifests",
+    })
+    history["Delivery Date"] = history["Delivery Date"].apply(iso_date)
+    history["Units Shipped"] = pd.to_numeric(
+        history["Units Shipped"], errors="coerce"
+    ).fillna(0).round(2)
+    return history[columns].sort_values(
+        ["Delivery Date", "Units Shipped"], ascending=[False, False]
+    ).reset_index(drop=True)
+
+
 def build_shipment_exceptions(analysis: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Manifest", "State", "Destination License", "Customer", "Created",
@@ -2906,6 +2960,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
             "monthly": [], "top_skus": [], "business_pulse": [],
             "velocity": [], "velocity_windows": {"All Time": []},
             "stockouts": [], "customers": [], "exceptions": [],
+            "retail_delivery_history": [],
             "transfer_data": [], "transfer_import_log": [],
             "saved_plans": record_list(saved_plans),
             "saved_plan_cards": saved_plan_cards,
@@ -3037,6 +3092,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         if card["Target Date"]
     ]
     customers = build_customer_summary(analysis)
+    retail_delivery_history = build_retail_delivery_history(analysis)
     exceptions = build_shipment_exceptions(analysis)
     transfer_display = build_transfer_display(analysis)
     transfer_import_log = load_transfer_import_log()
@@ -3100,6 +3156,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         "production_templates": record_list(production_templates),
         "calendar": sorted(calendar, key=lambda row: row["Target Date"]),
         "customers": record_list(customers),
+        "retail_delivery_history": record_list(retail_delivery_history),
         "exceptions": record_list(exceptions),
         "transfer_data": record_list(transfer_display.head(2000)),
         "transfer_import_log": record_list(transfer_import_log),
@@ -3237,6 +3294,7 @@ def demo_dashboard_data() -> dict[str, Any]:
         "production_templates": [],
         "calendar": [],
         "customers": [],
+        "retail_delivery_history": [],
         "exceptions": [],
         "transfer_data": [],
         "transfer_import_log": [],

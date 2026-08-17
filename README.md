@@ -1,4 +1,11 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.3.13
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.4
+
+Version 0.9.4 adds a Sales-focused Retail Availability workspace for finding
+retailers that received selected QCC products during the last one to four weeks.
+It includes product and retailer filters, delivery metrics, a selected-retailer
+Google Maps lookup backed by the Clade9 New Jersey store directory, and a
+complete recent-delivery table. The feature remains separate from
+production-oriented SKU Planning & Coverage.
 
 Version 0.9.3.13 restores the Quality Assurance workspace on the verified compact
 Sales snapshot foundation. QA loads only when selected, uses retryable reads,

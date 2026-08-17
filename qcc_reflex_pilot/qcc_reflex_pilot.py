@@ -12,7 +12,7 @@ from html import escape
 from calendar import month_name
 from datetime import date, datetime, timedelta
 from typing import Any, TypedDict
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote_plus
 
 import reflex as rx
 import pandas as pd
@@ -54,9 +54,10 @@ from .auth import (
     verify_supabase_access_token,
 )
 from .label_catalog import NICE_LABEL_CATALOG
+from .retailer_directory import find_clade9_location
 
 
-PILOT_VERSION = "0.9.3.13"
+PILOT_VERSION = "0.9.4"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -320,6 +321,11 @@ class DashboardState(rx.State):
     velocity_windows: dict[str, list[dict[str, Any]]] = {}
     saved_plan_search: str = ""
     saved_plan_status_filter: str = "All Plan Statuses"
+    retail_timeframe: str = "4 Weeks"
+    retail_brand_filter: str = "All Brands"
+    retail_strain_filter: str = "All Strains"
+    retail_sku_filter: str = "All SKU Types"
+    retail_customer_filter: str = "All Retailers"
 
     units_metric: str = "0"
     value_metric: str = "$0"
@@ -353,6 +359,7 @@ class DashboardState(rx.State):
     production_templates: list[dict[str, Any]] = []
     calendar: list[CalendarEvent] = []
     customers: list[dict[str, Any]] = []
+    retail_delivery_history: list[dict[str, Any]] = []
     exceptions: list[dict[str, Any]] = []
     _transfer_data: list[dict[str, Any]] = []
     transfer_import_log: list[dict[str, Any]] = []
@@ -661,6 +668,26 @@ class DashboardState(rx.State):
         self.sku_planning_page = 1
         self.inventory_page = 1
         self.transfer_page = 1
+
+    @rx.event
+    def change_retail_timeframe(self, value: str):
+        self.retail_timeframe = value
+
+    @rx.event
+    def change_retail_brand_filter(self, value: str):
+        self.retail_brand_filter = value
+
+    @rx.event
+    def change_retail_strain_filter(self, value: str):
+        self.retail_strain_filter = value
+
+    @rx.event
+    def change_retail_sku_filter(self, value: str):
+        self.retail_sku_filter = value
+
+    @rx.event
+    def change_retail_customer_filter(self, value: str):
+        self.retail_customer_filter = value
 
     def _apply_qa_payload(self, payload: dict[str, Any]) -> None:
         self._qa_packages = payload.get("packages", [])
@@ -2053,6 +2080,9 @@ class DashboardState(rx.State):
         self.production_templates = payload.get("production_templates", [])
         self.calendar = payload["calendar"]
         self.customers = payload.get("customers", [])
+        self.retail_delivery_history = payload.get(
+            "retail_delivery_history", []
+        )
         self.exceptions = payload.get("exceptions", [])
         self._transfer_data = payload.get("transfer_data", [])
         self.transfer_import_log = payload.get("transfer_import_log", [])
@@ -2300,6 +2330,7 @@ class DashboardState(rx.State):
             self.production_templates = []
             self.calendar = []
             self.customers = []
+            self.retail_delivery_history = []
             self.exceptions = []
             self._transfer_data = []
             self.transfer_import_log = []
@@ -2336,6 +2367,10 @@ class DashboardState(rx.State):
                 self.calendar = payload.get("calendar", [])
         elif self.sales_demand_view == "customers":
             self.customers = payload.get("customers", [])
+        elif self.sales_demand_view == "retail":
+            self.retail_delivery_history = payload.get(
+                "retail_delivery_history", []
+            )
         elif self.sales_demand_view == "exceptions":
             self.exceptions = payload.get("exceptions", [])
         elif self.sales_demand_view == "transfers":
@@ -3840,6 +3875,204 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def filtered_customers(self) -> list[dict[str, Any]]:
         return [row for row in self.customers if self._matches(row)]
+
+    def _filtered_retail_deliveries(self) -> list[dict[str, Any]]:
+        dated_rows: list[tuple[date, dict[str, Any]]] = []
+        for row in self.retail_delivery_history:
+            try:
+                delivery_date = date.fromisoformat(
+                    str(row.get("Delivery Date", ""))[:10]
+                )
+            except ValueError:
+                continue
+            dated_rows.append((delivery_date, row))
+        if not dated_rows:
+            return []
+        anchor = max(item[0] for item in dated_rows)
+        weeks = {
+            "1 Week": 1, "2 Weeks": 2, "3 Weeks": 3, "4 Weeks": 4,
+        }.get(self.retail_timeframe, 4)
+        start = anchor - timedelta(days=weeks * 7 - 1)
+        filtered: list[dict[str, Any]] = []
+        for delivery_date, row in dated_rows:
+            if delivery_date < start:
+                continue
+            if (
+                self.retail_brand_filter != "All Brands"
+                and str(row.get("Brand", "")) != self.retail_brand_filter
+            ):
+                continue
+            if (
+                self.retail_strain_filter != "All Strains"
+                and str(row.get("Strain", "")) != self.retail_strain_filter
+            ):
+                continue
+            if (
+                self.retail_sku_filter != "All SKU Types"
+                and str(row.get("SKU Type", "")) != self.retail_sku_filter
+            ):
+                continue
+            if (
+                self.retail_customer_filter != "All Retailers"
+                and str(row.get("Customer", "")) != self.retail_customer_filter
+            ):
+                continue
+            filtered.append(row)
+        return filtered
+
+    def _retail_aggregate_records(self) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, ...], dict[str, Any]] = {}
+        for row in self._filtered_retail_deliveries():
+            key = (
+                str(row.get("Destination License", "")),
+                str(row.get("Customer", "")),
+                str(row.get("Brand", "")),
+                str(row.get("Strain", "")),
+                str(row.get("SKU Type", "")),
+            )
+            delivery_date = str(row.get("Delivery Date", ""))
+            record = grouped.setdefault(key, {
+                "Destination License": key[0], "Retailer": key[1],
+                "Brand": key[2], "Strain": key[3], "SKU Type": key[4],
+                "Units Shipped": 0.0, "Packages": 0, "Manifests": 0,
+                "First Delivery": delivery_date, "Last Delivery": delivery_date,
+            })
+            record["Units Shipped"] += float(row.get("Units Shipped", 0) or 0)
+            record["Packages"] += int(row.get("Packages", 0) or 0)
+            record["Manifests"] += int(row.get("Manifests", 0) or 0)
+            record["First Delivery"] = min(
+                str(record["First Delivery"]), delivery_date
+            )
+            record["Last Delivery"] = max(
+                str(record["Last Delivery"]), delivery_date
+            )
+        records = list(grouped.values())
+        for record in records:
+            record["Units Shipped"] = round(
+                float(record["Units Shipped"]), 2
+            )
+        records.sort(key=lambda row: (
+            str(row.get("Last Delivery", "")),
+            float(row.get("Units Shipped", 0) or 0),
+        ), reverse=True)
+        return records
+
+    @rx.var(cache=True)
+    def retail_timeframe_options(self) -> list[str]:
+        return ["1 Week", "2 Weeks", "3 Weeks", "4 Weeks"]
+
+    def _retail_options(self, column: str, all_label: str) -> list[str]:
+        return [all_label, *sorted({
+            str(row.get(column, "")).strip()
+            for row in self.retail_delivery_history
+            if str(row.get(column, "")).strip()
+        })]
+
+    @rx.var(cache=True)
+    def retail_brand_options(self) -> list[str]:
+        return self._retail_options("Brand", "All Brands")
+
+    @rx.var(cache=True)
+    def retail_strain_options(self) -> list[str]:
+        return self._retail_options("Strain", "All Strains")
+
+    @rx.var(cache=True)
+    def retail_sku_options(self) -> list[str]:
+        return self._retail_options("SKU Type", "All SKU Types")
+
+    @rx.var(cache=True)
+    def retail_customer_options(self) -> list[str]:
+        return self._retail_options("Customer", "All Retailers")
+
+    @rx.var(cache=True)
+    def retail_availability_rows(self) -> list[list[Any]]:
+        columns = [
+            "Retailer", "Destination License", "Brand", "Strain", "SKU Type",
+            "Units Shipped", "Packages", "Manifests", "First Delivery",
+            "Last Delivery",
+        ]
+        return [
+            [row.get(column, "") for column in columns]
+            for row in self._retail_aggregate_records()
+        ]
+
+    @rx.var(cache=True)
+    def retail_retailers_metric(self) -> str:
+        retailers = {
+            str(row.get("Retailer", ""))
+            for row in self._retail_aggregate_records()
+            if str(row.get("Retailer", ""))
+        }
+        return f"{len(retailers):,}"
+
+    @rx.var(cache=True)
+    def retail_units_metric(self) -> str:
+        units = sum(
+            float(row.get("Units Shipped", 0) or 0)
+            for row in self._retail_aggregate_records()
+        )
+        return f"{units:,.0f}"
+
+    @rx.var(cache=True)
+    def retail_skus_metric(self) -> str:
+        return f"{len(self._retail_aggregate_records()):,}"
+
+    @rx.var(cache=True)
+    def retail_latest_delivery(self) -> str:
+        rows = self._retail_aggregate_records()
+        return str(rows[0].get("Last Delivery", "—")) if rows else "—"
+
+    def _retail_map_name(self) -> str:
+        if self.retail_customer_filter != "All Retailers":
+            return self.retail_customer_filter
+        rows = self._retail_aggregate_records()
+        return str(rows[0].get("Retailer", "")) if rows else ""
+
+    @rx.var(cache=True)
+    def retail_map_title(self) -> str:
+        name = self._retail_map_name()
+        return name or "New Jersey"
+
+    def _retail_location_match(self) -> dict[str, Any]:
+        return find_clade9_location(self._retail_map_name())
+
+    @rx.var(cache=True)
+    def retail_store_address(self) -> str:
+        match = self._retail_location_match()
+        return str(match.get("full_address", ""))
+
+    @rx.var(cache=True)
+    def retail_store_website(self) -> str:
+        match = self._retail_location_match()
+        return str(match.get("website", ""))
+
+    @rx.var(cache=True)
+    def retail_location_note(self) -> str:
+        address = str(self._retail_location_match().get("full_address", ""))
+        if address:
+            return f"Clade9 store locator address: {address}"
+        return (
+            "No reliable Clade9 directory match was found for this retailer. "
+            "The map is using its Metrc retailer name instead."
+        )
+
+    @rx.var(cache=True)
+    def retail_map_url(self) -> str:
+        name = self._retail_map_name()
+        address = str(self._retail_location_match().get("full_address", ""))
+        query = quote_plus(address or (
+            f"{name}, New Jersey" if name else "New Jersey"
+        ))
+        return f"https://www.google.com/maps?q={query}&output=embed"
+
+    @rx.var(cache=True)
+    def retail_map_external_url(self) -> str:
+        name = self._retail_map_name()
+        address = str(self._retail_location_match().get("full_address", ""))
+        query = quote_plus(address or (
+            f"{name}, New Jersey" if name else "New Jersey"
+        ))
+        return f"https://www.google.com/maps/search/?api=1&query={query}"
 
     @rx.var(cache=True)
     def filtered_exceptions(self) -> list[dict[str, Any]]:
@@ -6957,6 +7190,147 @@ def customers_panel() -> rx.Component:
     )
 
 
+def retail_availability_panel() -> rx.Component:
+    return rx.vstack(
+        rx.box(
+            rx.heading("Where to Find QCC Products", size="5"),
+            rx.text(
+                "Find retailers that received selected QCC products during the "
+                "last one to four weeks.",
+                color=MUTED,
+            ),
+            width="100%",
+        ),
+        rx.callout(
+            "This view shows recent QCC deliveries. It does not guarantee that "
+            "a retailer still has the product in stock. Call the retailer to confirm.",
+            icon="info", color_scheme="blue", width="100%",
+        ),
+        rx.flex(
+            rx.box(
+                rx.text("Delivery Window", size="1", color=MUTED, weight="bold"),
+                rx.select(
+                    DashboardState.retail_timeframe_options,
+                    value=DashboardState.retail_timeframe,
+                    on_change=DashboardState.change_retail_timeframe,
+                    width="170px",
+                ),
+            ),
+            rx.box(
+                rx.text("Brand", size="1", color=MUTED, weight="bold"),
+                rx.select(
+                    DashboardState.retail_brand_options,
+                    value=DashboardState.retail_brand_filter,
+                    on_change=DashboardState.change_retail_brand_filter,
+                    width="210px",
+                ),
+            ),
+            rx.box(
+                rx.text("Strain", size="1", color=MUTED, weight="bold"),
+                rx.select(
+                    DashboardState.retail_strain_options,
+                    value=DashboardState.retail_strain_filter,
+                    on_change=DashboardState.change_retail_strain_filter,
+                    width="220px",
+                ),
+            ),
+            rx.box(
+                rx.text("SKU Type", size="1", color=MUTED, weight="bold"),
+                rx.select(
+                    DashboardState.retail_sku_options,
+                    value=DashboardState.retail_sku_filter,
+                    on_change=DashboardState.change_retail_sku_filter,
+                    width="220px",
+                ),
+            ),
+            rx.box(
+                rx.text("Retailer / Map", size="1", color=MUTED, weight="bold"),
+                rx.select(
+                    DashboardState.retail_customer_options,
+                    value=DashboardState.retail_customer_filter,
+                    on_change=DashboardState.change_retail_customer_filter,
+                    width="280px",
+                ),
+            ),
+            align="end", gap="3", wrap="wrap", width="100%",
+        ),
+        rx.grid(
+            metric_card(
+                "Retailers", DashboardState.retail_retailers_metric,
+                "Matching recent delivery activity",
+            ),
+            metric_card(
+                "Units Shipped", DashboardState.retail_units_metric,
+                "Across the selected window",
+            ),
+            metric_card(
+                "Retailer / SKU Matches", DashboardState.retail_skus_metric,
+                "Filtered product combinations",
+            ),
+            metric_card(
+                "Latest Delivery", DashboardState.retail_latest_delivery,
+                "Newest matching shipment date",
+            ),
+            columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+            gap="4", width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.hstack(
+                    rx.box(
+                        rx.text("Selected Retailer Map", size="1", color=MUTED, weight="bold"),
+                        rx.heading(DashboardState.retail_map_title, size="4"),
+                    ),
+                    rx.spacer(),
+                    rx.cond(
+                        DashboardState.retail_store_website != "",
+                        rx.link(
+                            rx.button("Retailer Website", variant="outline"),
+                            href=DashboardState.retail_store_website,
+                            target="_blank",
+                        ),
+                    ),
+                    rx.link(
+                        rx.button("Open in Google Maps", variant="outline"),
+                        href=DashboardState.retail_map_external_url,
+                        target="_blank",
+                    ),
+                    width="100%", align="center", wrap="wrap",
+                ),
+                rx.el.iframe(
+                    src=DashboardState.retail_map_url,
+                    title="Selected retailer map",
+                    width="100%", height="420px",
+                    border="0", border_radius="10px",
+                    loading="lazy",
+                ),
+                rx.text(
+                    DashboardState.retail_location_note,
+                    size="1", color=MUTED,
+                ),
+                rx.link(
+                    "Location source: Clade9 Store Locator",
+                    href="https://clade9.com/locations/",
+                    target="_blank", size="1",
+                ),
+                width="100%", spacing="3",
+            ),
+            width="100%",
+        ),
+        rx.heading("Recent Retail Deliveries", size="4"),
+        data_grid(
+            DashboardState.retail_availability_rows,
+            [
+                "Retailer", "Destination License", "Brand", "Strain", "SKU Type",
+                "Units Shipped", "Packages", "Manifests", "First Delivery",
+                "Last Delivery",
+            ],
+            "560px",
+        ),
+        width="100%", spacing="4",
+    )
+
+
 def exceptions_panel() -> rx.Component:
     return rx.vstack(
         rx.grid(
@@ -7483,8 +7857,9 @@ def sales_demand_workspace() -> rx.Component:
                 rx.tabs.trigger("SKU Planning & Coverage", value="planning"),
                 rx.tabs.trigger("Production Planning", value="production"),
                 rx.tabs.trigger("Customers", value="customers"),
-                rx.tabs.trigger("Shipment Exceptions", value="exceptions"),
+                rx.tabs.trigger("Retail Availability", value="retail"),
                 rx.tabs.trigger("Transfer Data", value="transfers"),
+                rx.tabs.trigger("Shipment Exceptions", value="exceptions"),
                 class_name="qcc-tabs",
                 width="100%",
             ),
@@ -7500,8 +7875,9 @@ def sales_demand_workspace() -> rx.Component:
                 ("planning", sku_planning_panel()),
                 ("production", production_planning_panel()),
                 ("customers", customers_panel()),
-                ("exceptions", exceptions_panel()),
+                ("retail", retail_availability_panel()),
                 ("transfers", transfer_data_panel()),
+                ("exceptions", exceptions_panel()),
                 overview_panel(),
             ),
             width="100%", padding_top="1.25rem",
