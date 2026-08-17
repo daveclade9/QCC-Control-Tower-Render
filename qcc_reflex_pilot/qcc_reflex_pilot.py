@@ -57,7 +57,7 @@ from .label_catalog import NICE_LABEL_CATALOG
 from .retailer_directory import find_clade9_location
 
 
-PILOT_VERSION = "0.9.4.1"
+PILOT_VERSION = "0.9.4.2"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -69,6 +69,119 @@ QA_ANALYTE_CATEGORIES = [
     "Heavy Metals", "Pesticides", "Microbials", "Water Activity",
     "Other / Needs Review",
 ]
+
+
+def _retail_map_document(
+    stores: list[dict[str, str]], starting_address: str
+) -> str:
+    """Build the self-contained multi-marker retail availability map."""
+    store_json = json.dumps(stores, ensure_ascii=True).replace("<", "\\u003c")
+    origin_json = json.dumps(starting_address, ensure_ascii=True).replace(
+        "<", "\\u003c"
+    )
+    document = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    *{box-sizing:border-box} body{margin:0;font-family:Arial,sans-serif;color:#111827;background:#fff}
+    #layout{display:grid;grid-template-columns:minmax(0,2fr) minmax(260px,1fr);height:560px}
+    #map{min-height:360px} #side{overflow:auto;border-left:1px solid #dbe5ec;padding:14px;background:#f8fafc}
+    #status{font-size:13px;color:#64748b;margin:0 0 12px}.shop{background:#fff;border:1px solid #dbe5ec;border-radius:9px;padding:10px;margin-bottom:9px}
+    .shop h3{font-size:14px;margin:0 0 5px}.shop p{font-size:12px;color:#64748b;margin:3px 0;line-height:1.35}
+    .distance{font-weight:700;color:#0f766e!important}.shop a{display:inline-block;margin-top:6px;color:#0f766e;font-size:12px;font-weight:700;text-decoration:none}
+    .leaflet-popup-content h3{margin:0 0 5px;font-size:14px}.leaflet-popup-content p{margin:3px 0;font-size:12px}
+    @media(max-width:720px){#layout{grid-template-columns:1fr;grid-template-rows:360px auto;height:auto}#side{border-left:0;border-top:1px solid #dbe5ec;max-height:360px}}
+  </style>
+</head>
+<body>
+<div id="layout"><div id="map"></div><aside id="side"><p id="status">Preparing matching shop map…</p><div id="shops"></div></aside></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const stores=__STORE_DATA__;
+const originQuery=__ORIGIN_DATA__;
+const statusNode=document.getElementById('status');
+const shopsNode=document.getElementById('shops');
+const map=L.map('map',{scrollWheelZoom:false}).setView([40.15,-74.55],8);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+const bounds=[];
+const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+let lastLookupAt=0;
+const clean=value=>String(value||'').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+async function geocode(query,useCache=false){
+  if(!query)return null;
+  const cacheKey='qcc-retail-geo:'+query.toLowerCase();
+  if(useCache){
+    try{const cached=localStorage.getItem(cacheKey);if(cached)return JSON.parse(cached);}catch(error){}
+  }
+  const wait=Math.max(0,1050-(Date.now()-lastLookupAt));
+  if(wait)await pause(wait);
+  const url='https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&q='+encodeURIComponent(query);
+  lastLookupAt=Date.now();
+  const response=await fetch(url,{headers:{'Accept':'application/json','Accept-Language':'en-US'}});
+  if(!response.ok)throw new Error('Address lookup failed');
+  const result=await response.json();
+  if(!result.length)return null;
+  const point={lat:Number(result[0].lat),lng:Number(result[0].lon)};
+  if(useCache){try{localStorage.setItem(cacheKey,JSON.stringify(point));}catch(error){}}
+  return point;
+}
+function miles(a,b){
+  const rad=value=>value*Math.PI/180, earth=3958.8;
+  const dLat=rad(b.lat-a.lat),dLng=rad(b.lng-a.lng);
+  const value=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLng/2)**2;
+  return 2*earth*Math.asin(Math.sqrt(value));
+}
+function directionsUrl(store){
+  const base='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(store.route_address);
+  return originQuery?base+'&origin='+encodeURIComponent(originQuery):base;
+}
+function render(rows){
+  shopsNode.innerHTML=rows.map(row=>{
+    const distance=row.distance==null?'':`<p class="distance">${row.distance.toFixed(1)} miles away</p>`;
+    return `<div class="shop"><h3>${clean(row.retailer)}</h3>${distance}<p>${clean(row.address)}</p><p>Last matching delivery: ${clean(row.last_delivery)}</p><a target="_blank" rel="noopener" href="${directionsUrl(row)}">Directions to this shop</a></div>`;
+  }).join('');
+}
+async function load(){
+  if(!stores.length){statusNode.textContent='No matching retailer locations are available.';return;}
+  let origin=null;
+  if(originQuery){
+    statusNode.textContent='Locating the starting address…';
+    try{origin=await geocode(originQuery,false);}catch(error){origin=null;}
+    if(origin){
+      L.circleMarker([origin.lat,origin.lng],{radius:9,color:'#0f766e',fillColor:'#14b8a6',fillOpacity:1}).addTo(map).bindPopup('<strong>Starting location</strong><br>'+clean(originQuery));
+      bounds.push([origin.lat,origin.lng]);
+    }
+  }
+  const mapped=[];
+  for(let index=0;index<stores.length;index++){
+    const store=stores[index];
+    statusNode.textContent=`Locating matching shop ${index+1} of ${stores.length}…`;
+    try{
+      const point=await geocode(store.route_address,true);
+      if(point){
+        const row={...store,...point,distance:origin?miles(origin,point):null};
+        mapped.push(row); bounds.push([point.lat,point.lng]);
+        const distance=row.distance==null?'':`<p><strong>${row.distance.toFixed(1)} miles from the starting location</strong></p>`;
+        L.marker([point.lat,point.lng]).addTo(map).bindPopup(`<h3>${clean(row.retailer)}</h3>${distance}<p>${clean(row.address)}</p><p><a target="_blank" rel="noopener" href="${directionsUrl(row)}">Directions</a></p>`);
+      }
+    }catch(error){}
+    render([...mapped].sort((a,b)=>(a.distance??99999)-(b.distance??99999)||a.retailer.localeCompare(b.retailer)));
+  }
+  if(bounds.length)map.fitBounds(bounds,{padding:[28,28],maxZoom:13});
+  if(originQuery&&!origin){statusNode.textContent='The starting address could not be located. Matching shops are shown without distances.';}
+  else if(origin){statusNode.textContent=`${mapped.length} matching shops located and sorted by straight-line distance.`;}
+  else{statusNode.textContent=`${mapped.length} matching shops located. Enter a starting address to calculate distance.`;}
+}
+load();
+</script>
+</body>
+</html>"""
+    return document.replace("__STORE_DATA__", store_json).replace(
+        "__ORIGIN_DATA__", origin_json
+    )
 
 
 CalendarEvent = TypedDict(
@@ -326,6 +439,7 @@ class DashboardState(rx.State):
     retail_strain_filter: str = "All Strains"
     retail_sku_filter: str = "All SKU Types"
     retail_customer_filter: str = "All Retailers"
+    retail_start_address_input: str = ""
     retail_start_address: str = ""
 
     units_metric: str = "0"
@@ -692,7 +806,16 @@ class DashboardState(rx.State):
 
     @rx.event
     def change_retail_start_address(self, value: str):
-        self.retail_start_address = value
+        self.retail_start_address_input = value
+
+    @rx.event
+    def apply_retail_start_address(self):
+        self.retail_start_address = self.retail_start_address_input.strip()
+
+    @rx.event
+    def clear_retail_start_address(self):
+        self.retail_start_address_input = ""
+        self.retail_start_address = ""
 
     def _apply_qa_payload(self, payload: dict[str, Any]) -> None:
         self._qa_packages = payload.get("packages", [])
@@ -4027,12 +4150,6 @@ class DashboardState(rx.State):
         rows = self._retail_aggregate_records()
         return str(rows[0].get("Last Delivery", "—")) if rows else "—"
 
-    def _retail_map_name(self) -> str:
-        if self.retail_customer_filter != "All Retailers":
-            return self.retail_customer_filter
-        rows = self._retail_aggregate_records()
-        return str(rows[0].get("Retailer", "")) if rows else ""
-
     def _retail_map_locations(self) -> list[dict[str, str]]:
         """Return one map-ready row for every matching retailer."""
         locations: dict[str, dict[str, str]] = {}
@@ -4045,7 +4162,17 @@ class DashboardState(rx.State):
             if current and current["Last Delivery"] >= delivery_date:
                 continue
             match = find_clade9_location(retailer)
-            address = str(match.get("full_address", "")).strip()
+            street_address = str(match.get("address", "")).strip()
+            locality = str(match.get("locality", "")).strip()
+            address_is_complete = bool(
+                re.search(r"\b(?:NJ|New Jersey)\b", street_address, re.I)
+                and re.search(r"\b\d{5}(?:-\d{4})?\b", street_address)
+            )
+            address = street_address if address_is_complete else ", ".join(
+                part for part in (street_address, locality) if part
+            )
+            if not address:
+                address = str(match.get("full_address", "")).strip()
             query = quote_plus(address or f"{retailer}, New Jersey")
             locations[retailer] = {
                 "Retailer": retailer,
@@ -4062,97 +4189,29 @@ class DashboardState(rx.State):
         return self._retail_map_locations()
 
     @rx.var(cache=True)
-    def retail_all_map_url(self) -> str:
-        """Build a Google Maps route containing up to ten matching shops."""
-        rows = self._retail_map_locations()[:10]
-        if not rows:
-            return "https://www.google.com/maps"
-        addresses = [row["Route Address"] for row in rows]
-        starting_address = self.retail_start_address.strip()
-        if len(addresses) == 1:
-            destination = quote_plus(addresses[0])
-            if starting_address:
-                return (
-                    "https://www.google.com/maps/dir/?api=1"
-                    f"&origin={quote_plus(starting_address)}"
-                    f"&destination={destination}"
-                )
-            return f"https://www.google.com/maps/search/?api=1&query={destination}"
-
-        if starting_address:
-            origin = starting_address
-            destination = addresses[-1]
-            waypoints = addresses[:-1]
-        else:
-            origin = addresses[0]
-            destination = addresses[-1]
-            waypoints = addresses[1:-1]
-        url = (
-            "https://www.google.com/maps/dir/?api=1"
-            f"&origin={quote_plus(origin)}"
-            f"&destination={quote_plus(destination)}"
-        )
-        if waypoints:
-            url += f"&waypoints={quote_plus('|'.join(waypoints))}"
-        return url
+    def retail_map_src_doc(self) -> str:
+        rows = [
+            {
+                "retailer": row["Retailer"],
+                "address": row["Address"],
+                "route_address": row["Route Address"],
+                "last_delivery": row["Last Delivery"],
+            }
+            for row in self._retail_map_locations()[:15]
+        ]
+        return _retail_map_document(rows, self.retail_start_address.strip())
 
     @rx.var(cache=True)
     def retail_all_map_note(self) -> str:
         count = len(self._retail_map_locations())
         if count == 0:
             return "No matching retailer locations are available to map."
-        if count > 10:
+        if count > 15:
             return (
-                f"{count:,} retailers match. Google Maps will open the first 10 "
-                "alphabetically; choose a retailer above to focus on another shop."
+                f"{count:,} retailers match. The map displays the first 15 "
+                "alphabetically; the complete result set remains listed below."
             )
-        return f"Google Maps will open all {count:,} matching retailer locations."
-
-    @rx.var(cache=True)
-    def retail_map_title(self) -> str:
-        name = self._retail_map_name()
-        return name or "New Jersey"
-
-    def _retail_location_match(self) -> dict[str, Any]:
-        return find_clade9_location(self._retail_map_name())
-
-    @rx.var(cache=True)
-    def retail_store_address(self) -> str:
-        match = self._retail_location_match()
-        return str(match.get("full_address", ""))
-
-    @rx.var(cache=True)
-    def retail_store_website(self) -> str:
-        match = self._retail_location_match()
-        return str(match.get("website", ""))
-
-    @rx.var(cache=True)
-    def retail_location_note(self) -> str:
-        address = str(self._retail_location_match().get("full_address", ""))
-        if address:
-            return f"Clade9 store locator address: {address}"
-        return (
-            "No reliable Clade9 directory match was found for this retailer. "
-            "The map is using its Metrc retailer name instead."
-        )
-
-    @rx.var(cache=True)
-    def retail_map_url(self) -> str:
-        name = self._retail_map_name()
-        address = str(self._retail_location_match().get("full_address", ""))
-        query = quote_plus(address or (
-            f"{name}, New Jersey" if name else "New Jersey"
-        ))
-        return f"https://www.google.com/maps?q={query}&output=embed"
-
-    @rx.var(cache=True)
-    def retail_map_external_url(self) -> str:
-        name = self._retail_map_name()
-        address = str(self._retail_location_match().get("full_address", ""))
-        query = quote_plus(address or (
-            f"{name}, New Jersey" if name else "New Jersey"
-        ))
-        return f"https://www.google.com/maps/search/?api=1&query={query}"
+        return f"The map displays all {count:,} matching retailer locations."
 
     @rx.var(cache=True)
     def filtered_exceptions(self) -> list[dict[str, Any]]:
@@ -7365,10 +7424,11 @@ def retail_availability_panel() -> rx.Component:
         ),
         rx.card(
             rx.vstack(
-                rx.heading("Map Every Matching Shop", size="4"),
+                rx.heading("Matching Shops Near an Address", size="4"),
                 rx.text(
-                    "The map route uses every retailer matching the delivery-window "
-                    "and product filters—not only the first retailer in the list.",
+                    "Every shop matching the delivery-window and product filters is "
+                    "shown as its own marker. Enter an address to sort the shops and "
+                    "show the approximate distance to each.",
                     color=MUTED,
                 ),
                 rx.flex(
@@ -7379,20 +7439,46 @@ def retail_availability_panel() -> rx.Component:
                         ),
                         rx.input(
                             placeholder="Example: 123 Main St, Princeton, NJ 08540",
-                            value=DashboardState.retail_start_address,
+                            value=DashboardState.retail_start_address_input,
                             on_change=DashboardState.change_retail_start_address,
                             width="min(100%, 520px)",
                         ),
                         width="min(100%, 540px)",
                     ),
-                    rx.link(
-                        rx.button("Map All Matching Shops", size="3"),
-                        href=DashboardState.retail_all_map_url,
-                        target="_blank",
+                    rx.button(
+                        "Find Nearby Matching Shops",
+                        on_click=DashboardState.apply_retail_start_address,
+                        size="3",
+                    ),
+                    rx.cond(
+                        DashboardState.retail_start_address_input != "",
+                        rx.button(
+                            "Clear Address",
+                            on_click=DashboardState.clear_retail_start_address,
+                            variant="outline",
+                            size="3",
+                        ),
                     ),
                     align="end", gap="3", wrap="wrap", width="100%",
                 ),
                 rx.text(DashboardState.retail_all_map_note, size="1", color=MUTED),
+                rx.el.iframe(
+                    src_doc=DashboardState.retail_map_src_doc,
+                    title="Matching retail availability locations",
+                    width="100%", height="560px",
+                    border="0", border_radius="10px",
+                    loading="eager",
+                    sandbox=(
+                        "allow-scripts allow-same-origin allow-popups "
+                        "allow-popups-to-escape-sandbox"
+                    ),
+                ),
+                rx.text(
+                    "Distances are straight-line estimates. Address lookup and map "
+                    "tiles are provided by OpenStreetMap services. Directions open "
+                    "only for the individual shop selected.",
+                    size="1", color=MUTED,
+                ),
                 width="100%", spacing="3",
             ),
             width="100%",
@@ -7417,54 +7503,6 @@ def retail_availability_panel() -> rx.Component:
             ),
             columns=rx.breakpoints(initial="1", sm="2", lg="4"),
             gap="4", width="100%",
-        ),
-        rx.card(
-            rx.vstack(
-                rx.hstack(
-                    rx.box(
-                        rx.text("Retailer Detail Map", size="1", color=MUTED, weight="bold"),
-                        rx.heading(DashboardState.retail_map_title, size="4"),
-                    ),
-                    rx.spacer(),
-                    rx.cond(
-                        DashboardState.retail_store_website != "",
-                        rx.link(
-                            rx.button("Retailer Website", variant="outline"),
-                            href=DashboardState.retail_store_website,
-                            target="_blank",
-                        ),
-                    ),
-                    rx.link(
-                        rx.button("Open in Google Maps", variant="outline"),
-                        href=DashboardState.retail_map_external_url,
-                        target="_blank",
-                    ),
-                    width="100%", align="center", wrap="wrap",
-                ),
-                rx.el.iframe(
-                    src=DashboardState.retail_map_url,
-                    title="Selected retailer map",
-                    width="100%", height="420px",
-                    border="0", border_radius="10px",
-                    loading="lazy",
-                ),
-                rx.text(
-                    DashboardState.retail_location_note,
-                    size="1", color=MUTED,
-                ),
-                rx.text(
-                    "Choose a retailer in the Retailer / Map filter for a single-store "
-                    "view, or use Map All Matching Shops above for the full result set.",
-                    size="1", color=MUTED,
-                ),
-                rx.link(
-                    "Location source: Clade9 Store Locator",
-                    href="https://clade9.com/locations/",
-                    target="_blank", size="1",
-                ),
-                width="100%", spacing="3",
-            ),
-            width="100%",
         ),
         rx.heading("Matching Shop Directory", size="4"),
         rx.cond(

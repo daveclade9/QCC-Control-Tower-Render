@@ -1,5 +1,17 @@
 # QCC Control Tower 0.9.4 - Staging Release Notes
 
+## 0.9.4.2 Nearby-Shop Map
+
+- Replaces the multi-stop route with one availability map containing a marker
+  for each matching shop.
+- Uses the entered address or ZIP as the map's starting-location marker.
+- Sorts the visible shop list by approximate straight-line distance and displays
+  the mileage to every successfully located shop.
+- Opens directions only for the individual retailer selected from the map or
+  nearby-shop list.
+- Uses the Clade9 directory addresses with OpenStreetMap map tiles and address
+  lookup services; no Google Maps API key is required for the availability map.
+
 ## 0.9.4.1 Retail Map Update
 
 - Adds **Map All Matching Shops** so filtered brand, strain, SKU, and delivery
