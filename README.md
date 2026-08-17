@@ -1,4 +1,8 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.4
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.4.3
+
+Version 0.9.4.3 dates accepted retail deliveries by Metrc's Received At value
+and adds a toggle for outbound transfers that remain Shipped and have not yet
+been accepted. The two states stay visually and analytically separate.
 
 Version 0.9.4 adds a Sales-focused Retail Availability workspace for finding
 retailers that received selected QCC products during the last one to four weeks.

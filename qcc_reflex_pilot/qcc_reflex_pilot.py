@@ -57,7 +57,7 @@ from .label_catalog import NICE_LABEL_CATALOG
 from .retailer_directory import find_clade9_location
 
 
-PILOT_VERSION = "0.9.4.2"
+PILOT_VERSION = "0.9.4.3"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -141,7 +141,7 @@ function directionsUrl(store){
 function render(rows){
   shopsNode.innerHTML=rows.map(row=>{
     const distance=row.distance==null?'':`<p class="distance">${row.distance.toFixed(1)} miles away</p>`;
-    return `<div class="shop"><h3>${clean(row.retailer)}</h3>${distance}<p>${clean(row.address)}</p><p>Last matching delivery: ${clean(row.last_delivery)}</p><a target="_blank" rel="noopener" href="${directionsUrl(row)}">Directions to this shop</a></div>`;
+    return `<div class="shop"><h3>${clean(row.retailer)}</h3>${distance}<p>${clean(row.address)}</p><p>${clean(row.date_label)}: ${clean(row.last_delivery)}</p><a target="_blank" rel="noopener" href="${directionsUrl(row)}">Directions to this shop</a></div>`;
   }).join('');
 }
 async function load(){
@@ -435,6 +435,7 @@ class DashboardState(rx.State):
     saved_plan_search: str = ""
     saved_plan_status_filter: str = "All Plan Statuses"
     retail_timeframe: str = "4 Weeks"
+    retail_show_pending: bool = False
     retail_brand_filter: str = "All Brands"
     retail_strain_filter: str = "All Strains"
     retail_sku_filter: str = "All SKU Types"
@@ -787,6 +788,10 @@ class DashboardState(rx.State):
     @rx.event
     def change_retail_timeframe(self, value: str):
         self.retail_timeframe = value
+
+    @rx.event
+    def change_retail_show_pending(self, value: bool):
+        self.retail_show_pending = value
 
     @rx.event
     def change_retail_brand_filter(self, value: str):
@@ -4006,10 +4011,15 @@ class DashboardState(rx.State):
 
     def _filtered_retail_deliveries(self) -> list[dict[str, Any]]:
         dated_rows: list[tuple[date, dict[str, Any]]] = []
+        selected_status = (
+            "Awaiting Acceptance" if self.retail_show_pending else "Accepted"
+        )
         for row in self.retail_delivery_history:
+            if str(row.get("Transfer Status", "")) != selected_status:
+                continue
             try:
                 delivery_date = date.fromisoformat(
-                    str(row.get("Delivery Date", ""))[:10]
+                    str(row.get("Activity Date", ""))[:10]
                 )
             except ValueError:
                 continue
@@ -4058,21 +4068,22 @@ class DashboardState(rx.State):
                 str(row.get("Strain", "")),
                 str(row.get("SKU Type", "")),
             )
-            delivery_date = str(row.get("Delivery Date", ""))
+            delivery_date = str(row.get("Activity Date", ""))
             record = grouped.setdefault(key, {
                 "Destination License": key[0], "Retailer": key[1],
                 "Brand": key[2], "Strain": key[3], "SKU Type": key[4],
                 "Units Shipped": 0.0, "Packages": 0, "Manifests": 0,
-                "First Delivery": delivery_date, "Last Delivery": delivery_date,
+                "First Metrc Date": delivery_date,
+                "Latest Metrc Date": delivery_date,
             })
             record["Units Shipped"] += float(row.get("Units Shipped", 0) or 0)
             record["Packages"] += int(row.get("Packages", 0) or 0)
             record["Manifests"] += int(row.get("Manifests", 0) or 0)
-            record["First Delivery"] = min(
-                str(record["First Delivery"]), delivery_date
+            record["First Metrc Date"] = min(
+                str(record["First Metrc Date"]), delivery_date
             )
-            record["Last Delivery"] = max(
-                str(record["Last Delivery"]), delivery_date
+            record["Latest Metrc Date"] = max(
+                str(record["Latest Metrc Date"]), delivery_date
             )
         records = list(grouped.values())
         for record in records:
@@ -4080,7 +4091,7 @@ class DashboardState(rx.State):
                 float(record["Units Shipped"]), 2
             )
         records.sort(key=lambda row: (
-            str(row.get("Last Delivery", "")),
+            str(row.get("Latest Metrc Date", "")),
             float(row.get("Units Shipped", 0) or 0),
         ), reverse=True)
         return records
@@ -4116,8 +4127,8 @@ class DashboardState(rx.State):
     def retail_availability_rows(self) -> list[list[Any]]:
         columns = [
             "Retailer", "Destination License", "Brand", "Strain", "SKU Type",
-            "Units Shipped", "Packages", "Manifests", "First Delivery",
-            "Last Delivery",
+            "Units Shipped", "Packages", "Manifests", "First Metrc Date",
+            "Latest Metrc Date",
         ]
         return [
             [row.get(column, "") for column in columns]
@@ -4148,7 +4159,7 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def retail_latest_delivery(self) -> str:
         rows = self._retail_aggregate_records()
-        return str(rows[0].get("Last Delivery", "—")) if rows else "—"
+        return str(rows[0].get("Latest Metrc Date", "—")) if rows else "—"
 
     def _retail_map_locations(self) -> list[dict[str, str]]:
         """Return one map-ready row for every matching retailer."""
@@ -4157,9 +4168,9 @@ class DashboardState(rx.State):
             retailer = str(row.get("Retailer", "")).strip()
             if not retailer:
                 continue
-            delivery_date = str(row.get("Last Delivery", ""))
+            delivery_date = str(row.get("Latest Metrc Date", ""))
             current = locations.get(retailer)
-            if current and current["Last Delivery"] >= delivery_date:
+            if current and current["Latest Metrc Date"] >= delivery_date:
                 continue
             match = find_clade9_location(retailer)
             street_address = str(match.get("address", "")).strip()
@@ -4177,7 +4188,10 @@ class DashboardState(rx.State):
             locations[retailer] = {
                 "Retailer": retailer,
                 "Address": address or "Address not matched in the Clade9 directory",
-                "Last Delivery": delivery_date,
+                "Latest Metrc Date": delivery_date,
+                "Date Label": (
+                    "Sent at" if self.retail_show_pending else "Received at"
+                ),
                 "Website": str(match.get("website", "")).strip(),
                 "Map URL": f"https://www.google.com/maps/search/?api=1&query={query}",
                 "Route Address": address or f"{retailer}, New Jersey",
@@ -4195,7 +4209,8 @@ class DashboardState(rx.State):
                 "retailer": row["Retailer"],
                 "address": row["Address"],
                 "route_address": row["Route Address"],
-                "last_delivery": row["Last Delivery"],
+                "last_delivery": row["Latest Metrc Date"],
+                "date_label": row["Date Label"],
             }
             for row in self._retail_map_locations()[:15]
         ]
@@ -4212,6 +4227,43 @@ class DashboardState(rx.State):
                 "alphabetically; the complete result set remains listed below."
             )
         return f"The map displays all {count:,} matching retailer locations."
+
+    @rx.var(cache=True)
+    def retail_activity_heading(self) -> str:
+        return (
+            "Outgoing Transfers Awaiting Acceptance"
+            if self.retail_show_pending else "Accepted Retail Deliveries"
+        )
+
+    @rx.var(cache=True)
+    def retail_activity_description(self) -> str:
+        if self.retail_show_pending:
+            return (
+                "Shows outbound transfers still marked Shipped in Metrc. Dates "
+                "are when QCC created the outgoing transfer; these shops have "
+                "not yet recorded acceptance in Metrc."
+            )
+        return (
+            "Shows retailer deliveries marked Accepted in Metrc. Dates are the "
+            "Metrc Received At dates. Acceptance does not guarantee that the "
+            "retailer still has the product in stock."
+        )
+
+    @rx.var(cache=True)
+    def retail_window_label(self) -> str:
+        return "Outbound Window" if self.retail_show_pending else "Received Window"
+
+    @rx.var(cache=True)
+    def retail_latest_date_label(self) -> str:
+        return "Latest Outbound" if self.retail_show_pending else "Latest Receipt"
+
+    @rx.var(cache=True)
+    def retail_latest_date_caption(self) -> str:
+        return (
+            "Newest matching transfer-created date"
+            if self.retail_show_pending
+            else "Newest matching Metrc receipt date"
+        )
 
     @rx.var(cache=True)
     def filtered_exceptions(self) -> list[dict[str, Any]]:
@@ -7335,7 +7387,7 @@ def retail_location_card(store: rx.Var) -> rx.Component:
             rx.heading(store["Retailer"], size="3"),
             rx.text(store["Address"], size="2", color=MUTED),
             rx.text(
-                "Last matching delivery: " + store["Last Delivery"],
+                store["Date Label"] + ": " + store["Latest Metrc Date"],
                 size="1", color=MUTED,
             ),
             rx.hstack(
@@ -7363,20 +7415,45 @@ def retail_availability_panel() -> rx.Component:
         rx.box(
             rx.heading("Where to Find QCC Products", size="5"),
             rx.text(
-                "Find retailers that received selected QCC products during the "
-                "last one to four weeks.",
+                "Map accepted retail deliveries or switch to outbound transfers "
+                "that shops have not yet accepted in Metrc.",
                 color=MUTED,
             ),
             width="100%",
         ),
         rx.callout(
-            "This view shows recent QCC deliveries. It does not guarantee that "
-            "a retailer still has the product in stock. Call the retailer to confirm.",
+            DashboardState.retail_activity_description,
             icon="info", color_scheme="blue", width="100%",
+        ),
+        rx.card(
+            rx.flex(
+                rx.box(
+                    rx.text(
+                        "Show outgoing transfers awaiting acceptance",
+                        weight="bold",
+                    ),
+                    rx.text(
+                        "Off shows completed Metrc receipts. On shows transfers "
+                        "still marked Shipped and not yet Accepted.",
+                        size="1", color=MUTED,
+                    ),
+                ),
+                rx.spacer(),
+                rx.switch(
+                    checked=DashboardState.retail_show_pending,
+                    on_change=DashboardState.change_retail_show_pending,
+                    size="3",
+                ),
+                align="center", width="100%", gap="3",
+            ),
+            width="100%",
         ),
         rx.flex(
             rx.box(
-                rx.text("Delivery Window", size="1", color=MUTED, weight="bold"),
+                rx.text(
+                    DashboardState.retail_window_label,
+                    size="1", color=MUTED, weight="bold",
+                ),
                 rx.select(
                     DashboardState.retail_timeframe_options,
                     value=DashboardState.retail_timeframe,
@@ -7426,7 +7503,7 @@ def retail_availability_panel() -> rx.Component:
             rx.vstack(
                 rx.heading("Matching Shops Near an Address", size="4"),
                 rx.text(
-                    "Every shop matching the delivery-window and product filters is "
+                    "Every shop matching the date-window and product filters is "
                     "shown as its own marker. Enter an address to sort the shops and "
                     "show the approximate distance to each.",
                     color=MUTED,
@@ -7487,7 +7564,7 @@ def retail_availability_panel() -> rx.Component:
         rx.grid(
             metric_card(
                 "Retailers", DashboardState.retail_retailers_metric,
-                "Matching recent delivery activity",
+                "Matching recent Metrc activity",
             ),
             metric_card(
                 "Units Shipped", DashboardState.retail_units_metric,
@@ -7498,8 +7575,9 @@ def retail_availability_panel() -> rx.Component:
                 "Filtered product combinations",
             ),
             metric_card(
-                "Latest Delivery", DashboardState.retail_latest_delivery,
-                "Newest matching shipment date",
+                DashboardState.retail_latest_date_label,
+                DashboardState.retail_latest_delivery,
+                DashboardState.retail_latest_date_caption,
             ),
             columns=rx.breakpoints(initial="1", sm="2", lg="4"),
             gap="4", width="100%",
@@ -7520,13 +7598,13 @@ def retail_availability_panel() -> rx.Component:
                 icon="map_pin", width="100%",
             ),
         ),
-        rx.heading("Recent Retail Deliveries", size="4"),
+        rx.heading(DashboardState.retail_activity_heading, size="4"),
         data_grid(
             DashboardState.retail_availability_rows,
             [
                 "Retailer", "Destination License", "Brand", "Strain", "SKU Type",
-                "Units Shipped", "Packages", "Manifests", "First Delivery",
-                "Last Delivery",
+                "Units Shipped", "Packages", "Manifests", "First Metrc Date",
+                "Latest Metrc Date",
             ],
             "560px",
         ),

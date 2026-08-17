@@ -2526,36 +2526,62 @@ def build_customer_summary(analysis: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_retail_delivery_history(analysis: pd.DataFrame) -> pd.DataFrame:
-    """Build a compact, complete four-week retailer delivery data set.
+    """Build compact four-week accepted and pending retailer activity.
 
     The browser receives daily SKU/customer aggregates rather than raw package
     rows. This keeps the new map workspace responsive while still allowing the
     user to switch between one, two, three, and four-week windows instantly.
+
+    Accepted transfers are dated by the Metrc ``received_at`` timestamp. Open
+    outbound transfers are dated by ``created_at`` and remain separate so the
+    interface never presents an unaccepted shipment as a completed delivery.
     """
     columns = [
-        "Delivery Date", "Destination License", "Customer", "Brand",
-        "Strain", "SKU Type", "Units Shipped", "Packages", "Manifests",
+        "Activity Date", "Date Type", "Transfer Status",
+        "Destination License", "Customer", "Brand", "Strain", "SKU Type",
+        "Units Shipped", "Packages", "Manifests",
     ]
-    demand = analysis[analysis["is_demand"]].copy()
-    if demand.empty:
+    if analysis.empty:
         return pd.DataFrame(columns=columns)
 
-    demand["created_at"] = pd.to_datetime(
-        demand["created_at"], errors="coerce"
+    activity_frames: list[pd.DataFrame] = []
+    activity_specs = (
+        ("is_demand", "received_at", "Received At", "Accepted"),
+        (
+            "is_open_shipment", "created_at", "Sent At",
+            "Awaiting Acceptance",
+        ),
     )
-    demand = demand[demand["created_at"].notna()].copy()
-    if demand.empty:
+    for flag, timestamp_column, date_type, status in activity_specs:
+        if flag not in analysis or timestamp_column not in analysis:
+            continue
+        rows = analysis[analysis[flag].fillna(False).astype(bool)].copy()
+        if rows.empty:
+            continue
+        rows["activity_at"] = pd.to_datetime(
+            rows[timestamp_column], errors="coerce"
+        )
+        rows = rows[rows["activity_at"].notna()].copy()
+        if rows.empty:
+            continue
+        anchor = rows["activity_at"].max().normalize()
+        rows = rows[rows["activity_at"].ge(
+            anchor - pd.Timedelta(days=27)
+        )].copy()
+        rows["activity_date"] = rows["activity_at"].dt.normalize()
+        rows["date_type"] = date_type
+        rows["transfer_status"] = status
+        activity_frames.append(rows)
+
+    if not activity_frames:
         return pd.DataFrame(columns=columns)
 
-    anchor = demand["created_at"].max().normalize()
-    demand = demand[demand["created_at"].ge(
-        anchor - pd.Timedelta(days=27)
-    )].copy()
-    demand["delivery_date"] = demand["created_at"].dt.normalize()
-    history = demand.groupby(
+    activity = pd.concat(activity_frames, ignore_index=True)
+    history = activity.groupby(
         [
-            "delivery_date", "destination_license", "destination_facility",
-            "brand", "strain", "sku_type",
+            "activity_date", "date_type", "transfer_status",
+            "destination_license", "destination_facility", "brand", "strain",
+            "sku_type",
         ],
         dropna=False,
     ).agg(
@@ -2563,19 +2589,20 @@ def build_retail_delivery_history(analysis: pd.DataFrame) -> pd.DataFrame:
         packages=("package_tag", "nunique"),
         manifests=("manifest", "nunique"),
     ).reset_index().rename(columns={
-        "delivery_date": "Delivery Date",
+        "activity_date": "Activity Date", "date_type": "Date Type",
+        "transfer_status": "Transfer Status",
         "destination_license": "Destination License",
         "destination_facility": "Customer",
         "brand": "Brand", "strain": "Strain", "sku_type": "SKU Type",
         "units_shipped": "Units Shipped", "packages": "Packages",
         "manifests": "Manifests",
     })
-    history["Delivery Date"] = history["Delivery Date"].apply(iso_date)
+    history["Activity Date"] = history["Activity Date"].apply(iso_date)
     history["Units Shipped"] = pd.to_numeric(
         history["Units Shipped"], errors="coerce"
     ).fillna(0).round(2)
     return history[columns].sort_values(
-        ["Delivery Date", "Units Shipped"], ascending=[False, False]
+        ["Activity Date", "Units Shipped"], ascending=[False, False]
     ).reset_index(drop=True)
 
 
