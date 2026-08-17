@@ -1,5 +1,17 @@
 # QCC Control Tower 0.9.4 - Staging Release Notes
 
+## 0.9.4.1 Retail Map Update
+
+- Adds **Map All Matching Shops** so filtered brand, strain, SKU, and delivery
+  results are no longer represented by only one retailer on the map.
+- Adds an optional starting address or ZIP for opening the matching locations as
+  a Google Maps route.
+- Adds a matching-shop directory with each retailer's Clade9 address, last
+  matching delivery date, website, and individual map link.
+- Keeps the existing retailer selector for focusing on one store at a time.
+- Limits a single multi-stop Google Maps route to ten shops; larger result sets
+  remain available in the matching-shop directory and retailer selector.
+
 ## Retail Availability
 
 - Adds **Retail Availability** to Sales & Demand Planning.

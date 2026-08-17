@@ -57,7 +57,7 @@ from .label_catalog import NICE_LABEL_CATALOG
 from .retailer_directory import find_clade9_location
 
 
-PILOT_VERSION = "0.9.4"
+PILOT_VERSION = "0.9.4.1"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -326,6 +326,7 @@ class DashboardState(rx.State):
     retail_strain_filter: str = "All Strains"
     retail_sku_filter: str = "All SKU Types"
     retail_customer_filter: str = "All Retailers"
+    retail_start_address: str = ""
 
     units_metric: str = "0"
     value_metric: str = "$0"
@@ -688,6 +689,10 @@ class DashboardState(rx.State):
     @rx.event
     def change_retail_customer_filter(self, value: str):
         self.retail_customer_filter = value
+
+    @rx.event
+    def change_retail_start_address(self, value: str):
+        self.retail_start_address = value
 
     def _apply_qa_payload(self, payload: dict[str, Any]) -> None:
         self._qa_packages = payload.get("packages", [])
@@ -4028,6 +4033,81 @@ class DashboardState(rx.State):
         rows = self._retail_aggregate_records()
         return str(rows[0].get("Retailer", "")) if rows else ""
 
+    def _retail_map_locations(self) -> list[dict[str, str]]:
+        """Return one map-ready row for every matching retailer."""
+        locations: dict[str, dict[str, str]] = {}
+        for row in self._retail_aggregate_records():
+            retailer = str(row.get("Retailer", "")).strip()
+            if not retailer:
+                continue
+            delivery_date = str(row.get("Last Delivery", ""))
+            current = locations.get(retailer)
+            if current and current["Last Delivery"] >= delivery_date:
+                continue
+            match = find_clade9_location(retailer)
+            address = str(match.get("full_address", "")).strip()
+            query = quote_plus(address or f"{retailer}, New Jersey")
+            locations[retailer] = {
+                "Retailer": retailer,
+                "Address": address or "Address not matched in the Clade9 directory",
+                "Last Delivery": delivery_date,
+                "Website": str(match.get("website", "")).strip(),
+                "Map URL": f"https://www.google.com/maps/search/?api=1&query={query}",
+                "Route Address": address or f"{retailer}, New Jersey",
+            }
+        return sorted(locations.values(), key=lambda item: item["Retailer"].lower())
+
+    @rx.var(cache=True)
+    def retail_map_location_cards(self) -> list[dict[str, str]]:
+        return self._retail_map_locations()
+
+    @rx.var(cache=True)
+    def retail_all_map_url(self) -> str:
+        """Build a Google Maps route containing up to ten matching shops."""
+        rows = self._retail_map_locations()[:10]
+        if not rows:
+            return "https://www.google.com/maps"
+        addresses = [row["Route Address"] for row in rows]
+        starting_address = self.retail_start_address.strip()
+        if len(addresses) == 1:
+            destination = quote_plus(addresses[0])
+            if starting_address:
+                return (
+                    "https://www.google.com/maps/dir/?api=1"
+                    f"&origin={quote_plus(starting_address)}"
+                    f"&destination={destination}"
+                )
+            return f"https://www.google.com/maps/search/?api=1&query={destination}"
+
+        if starting_address:
+            origin = starting_address
+            destination = addresses[-1]
+            waypoints = addresses[:-1]
+        else:
+            origin = addresses[0]
+            destination = addresses[-1]
+            waypoints = addresses[1:-1]
+        url = (
+            "https://www.google.com/maps/dir/?api=1"
+            f"&origin={quote_plus(origin)}"
+            f"&destination={quote_plus(destination)}"
+        )
+        if waypoints:
+            url += f"&waypoints={quote_plus('|'.join(waypoints))}"
+        return url
+
+    @rx.var(cache=True)
+    def retail_all_map_note(self) -> str:
+        count = len(self._retail_map_locations())
+        if count == 0:
+            return "No matching retailer locations are available to map."
+        if count > 10:
+            return (
+                f"{count:,} retailers match. Google Maps will open the first 10 "
+                "alphabetically; choose a retailer above to focus on another shop."
+            )
+        return f"Google Maps will open all {count:,} matching retailer locations."
+
     @rx.var(cache=True)
     def retail_map_title(self) -> str:
         name = self._retail_map_name()
@@ -7190,6 +7270,35 @@ def customers_panel() -> rx.Component:
     )
 
 
+def retail_location_card(store: rx.Var) -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.heading(store["Retailer"], size="3"),
+            rx.text(store["Address"], size="2", color=MUTED),
+            rx.text(
+                "Last matching delivery: " + store["Last Delivery"],
+                size="1", color=MUTED,
+            ),
+            rx.hstack(
+                rx.link(
+                    rx.button("Open Map", size="2", variant="outline"),
+                    href=store["Map URL"], target="_blank",
+                ),
+                rx.cond(
+                    store["Website"] != "",
+                    rx.link(
+                        rx.button("Website", size="2", variant="ghost"),
+                        href=store["Website"], target="_blank",
+                    ),
+                ),
+                gap="2", wrap="wrap",
+            ),
+            width="100%", spacing="2", align="start",
+        ),
+        width="100%",
+    )
+
+
 def retail_availability_panel() -> rx.Component:
     return rx.vstack(
         rx.box(
@@ -7254,6 +7363,41 @@ def retail_availability_panel() -> rx.Component:
             ),
             align="end", gap="3", wrap="wrap", width="100%",
         ),
+        rx.card(
+            rx.vstack(
+                rx.heading("Map Every Matching Shop", size="4"),
+                rx.text(
+                    "The map route uses every retailer matching the delivery-window "
+                    "and product filters—not only the first retailer in the list.",
+                    color=MUTED,
+                ),
+                rx.flex(
+                    rx.box(
+                        rx.text(
+                            "Starting Address or ZIP (optional)",
+                            size="1", color=MUTED, weight="bold",
+                        ),
+                        rx.input(
+                            placeholder="Example: 123 Main St, Princeton, NJ 08540",
+                            value=DashboardState.retail_start_address,
+                            on_change=DashboardState.change_retail_start_address,
+                            width="min(100%, 520px)",
+                        ),
+                        width="min(100%, 540px)",
+                    ),
+                    rx.link(
+                        rx.button("Map All Matching Shops", size="3"),
+                        href=DashboardState.retail_all_map_url,
+                        target="_blank",
+                    ),
+                    align="end", gap="3", wrap="wrap", width="100%",
+                ),
+                rx.text(DashboardState.retail_all_map_note, size="1", color=MUTED),
+                width="100%", spacing="3",
+            ),
+            width="100%",
+            border_top=f"4px solid {ACCENT}",
+        ),
         rx.grid(
             metric_card(
                 "Retailers", DashboardState.retail_retailers_metric,
@@ -7278,7 +7422,7 @@ def retail_availability_panel() -> rx.Component:
             rx.vstack(
                 rx.hstack(
                     rx.box(
-                        rx.text("Selected Retailer Map", size="1", color=MUTED, weight="bold"),
+                        rx.text("Retailer Detail Map", size="1", color=MUTED, weight="bold"),
                         rx.heading(DashboardState.retail_map_title, size="4"),
                     ),
                     rx.spacer(),
@@ -7308,6 +7452,11 @@ def retail_availability_panel() -> rx.Component:
                     DashboardState.retail_location_note,
                     size="1", color=MUTED,
                 ),
+                rx.text(
+                    "Choose a retailer in the Retailer / Map filter for a single-store "
+                    "view, or use Map All Matching Shops above for the full result set.",
+                    size="1", color=MUTED,
+                ),
                 rx.link(
                     "Location source: Clade9 Store Locator",
                     href="https://clade9.com/locations/",
@@ -7316,6 +7465,22 @@ def retail_availability_panel() -> rx.Component:
                 width="100%", spacing="3",
             ),
             width="100%",
+        ),
+        rx.heading("Matching Shop Directory", size="4"),
+        rx.cond(
+            DashboardState.retail_map_location_cards.length() > 0,
+            rx.grid(
+                rx.foreach(
+                    DashboardState.retail_map_location_cards,
+                    retail_location_card,
+                ),
+                columns=rx.breakpoints(initial="1", md="2", xl="3"),
+                gap="3", width="100%",
+            ),
+            rx.callout(
+                "No retailer locations match the current filters.",
+                icon="map_pin", width="100%",
+            ),
         ),
         rx.heading("Recent Retail Deliveries", size="4"),
         data_grid(
