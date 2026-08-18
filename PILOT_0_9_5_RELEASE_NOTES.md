@@ -1,4 +1,10 @@
-# QCC Control Tower Reflex 0.9.5.9
+# QCC Control Tower Reflex 0.9.5.10
+
+## 0.9.5.10 shared table sizing
+
+- Sets the Stockouts, Customer Shipment History, and Recent Transfer Records
+  table headers and body cells to 14px.
+- Leaves all other shared Grid tables and their existing formatting unchanged.
 
 ## 0.9.5.9 SKU Planning presentation
 

@@ -1,4 +1,7 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.9
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.10
+
+Version 0.9.5.10 sets the Stockouts, Customer Shipment History, and Recent
+Transfer Records table headers and body text to an explicit 14px.
 
 Version 0.9.5.9 gives SKU Planning & Coverage a uniform 13.5px table font
 and a black header with white text while preserving its existing column widths.

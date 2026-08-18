@@ -235,6 +235,11 @@ body {
   font-weight: 800;
 }
 
+.qcc-14px-data-grid .gridjs-th,
+.qcc-14px-data-grid .gridjs-td {
+  font-size: 14px;
+}
+
 .qcc-clade9-app .gridjs-table {
   border-radius: 0;
 }

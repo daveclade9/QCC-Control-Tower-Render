@@ -66,7 +66,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.9"
+PILOT_VERSION = "0.9.5.10"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -6553,6 +6553,7 @@ def stockouts_panel() -> rx.Component:
                 "Last Shipped", "Lifecycle Status",
                 "Recommended Action",
             ],
+            class_name="qcc-14px-data-grid",
         ),
         spacing="4",
         width="100%",
@@ -7930,6 +7931,7 @@ def customers_panel() -> rx.Component:
                 "Average Manifest Value",
             ],
             "600px",
+            class_name="qcc-14px-data-grid",
         ),
         width="100%",
         spacing="4",
@@ -8268,6 +8270,7 @@ def transfer_data_panel() -> rx.Component:
                 "Shipper Value", "Demand Record",
             ],
             "640px",
+            class_name="qcc-14px-data-grid",
         ),
         width="100%",
         spacing="4",
