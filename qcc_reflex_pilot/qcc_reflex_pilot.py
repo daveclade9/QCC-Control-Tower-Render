@@ -62,7 +62,7 @@ from .retailer_directory import (
 from .rules import normalize_strain_name
 
 
-PILOT_VERSION = "0.9.5.0"
+PILOT_VERSION = "0.9.5.1"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -346,7 +346,7 @@ class DashboardState(rx.State):
     rule_version: str = "QCC Control Tower 81.4 shared inventory rules"
     brand_filter: str = "All Brands"
     strain_filter: str = "All Strains"
-    strain_filter_input: str = "All Strains"
+    strain_filter_input: str = ""
     sku_filter: str = "All SKU Types"
     search_text: str = ""
     global_filters_resetting: bool = False
@@ -815,19 +815,31 @@ class DashboardState(rx.State):
 
     @rx.event
     def change_strain_filter(self, value: str):
+        """Narrow strain choices cumulatively as the user types."""
         self.strain_filter_input = value
         normalized = value.strip().lower()
-        exact = next(
-            (
-                option for option in self.strain_options
-                if option.strip().lower() == normalized
-            ),
-            None,
-        )
+        matches = [
+            option for option in self.strains
+            if normalized and normalized in option.strip().lower()
+        ]
+        exact = next((
+            option for option in self.strains
+            if option.strip().lower() == normalized
+        ), None)
         if exact is not None:
             self.strain_filter = exact
         elif not normalized:
             self.strain_filter = "All Strains"
+        elif len(matches) == 1:
+            self.strain_filter = matches[0]
+        self.sku_planning_page = 1
+        self.inventory_page = 1
+        self._sync_qa_consistency_filters()
+
+    @rx.event
+    def select_strain_filter(self, value: str):
+        self.strain_filter = value
+        self.strain_filter_input = ""
         self.sku_planning_page = 1
         self.inventory_page = 1
         self._sync_qa_consistency_filters()
@@ -2065,10 +2077,12 @@ class DashboardState(rx.State):
         if self.global_filters_resetting:
             return
         self.global_filters_resetting = True
-        await asyncio.sleep(0.25)
+        # Flush the visible spinner/disabled button before changing the data.
+        yield
+        await asyncio.sleep(0.5)
         self.brand_filter = "All Brands"
         self.strain_filter = "All Strains"
-        self.strain_filter_input = "All Strains"
+        self.strain_filter_input = ""
         self.sku_filter = "All SKU Types"
         self.search_text = ""
         self.sku_planning_page = 1
@@ -3852,7 +3866,9 @@ class DashboardState(rx.State):
         try:
             production, sales = await asyncio.gather(
                 rx.run_in_thread(load_production_module_data),
-                rx.run_in_thread(get_sales_dashboard_data, True),
+                rx.run_in_thread(
+                    lambda: get_sales_dashboard_data(force_refresh=True)
+                ),
             )
             async with self:
                 self._apply_production_payload(production)
@@ -3948,6 +3964,22 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def strain_options(self) -> list[str]:
         return ["All Strains", *self.strains]
+
+    @rx.var(cache=True)
+    def filtered_strain_options(self) -> list[str]:
+        """Return visible strain choices matching the entire typed phrase."""
+        needle = self.strain_filter_input.strip().lower()
+        matches = (
+            [value for value in self.strains if needle in value.lower()]
+            if needle else list(self.strains)
+        )
+        current = (
+            [self.strain_filter]
+            if self.strain_filter != "All Strains"
+            and self.strain_filter not in matches
+            else []
+        )
+        return ["All Strains", *current, *matches]
 
     @rx.var(cache=True)
     def filtered_top_skus(self) -> list[dict[str, Any]]:
@@ -5406,11 +5438,9 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def active_inventory_rows(self) -> list[list[Any]]:
-        page = min(max(self.inventory_page, 1), self.inventory_total_pages)
-        start = (page - 1) * self.inventory_page_size
-        return self.active_inventory_all_rows[
-            start:start + self.inventory_page_size
-        ]
+        # The table owns paging so changing 10/25/50/100 immediately changes
+        # the visible row count without a second server-side pager.
+        return self.active_inventory_all_rows
 
     @rx.var(cache=True)
     def inventory_total_pages(self) -> int:
@@ -5433,6 +5463,10 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def inventory_page_size_value(self) -> str:
         return str(self.inventory_page_size)
+
+    @rx.var(cache=True)
+    def inventory_pagination(self) -> dict[str, int]:
+        return {"page_size": self.inventory_page_size}
 
     @rx.var(cache=True)
     def inventory_previous_disabled(self) -> bool:
@@ -5880,9 +5914,10 @@ def inventory_data_grid(data: rx.Var) -> rx.Component:
     """Wide sortable inventory grid that never truncates column headings."""
     return rx.box(
         rx.data_table(
+            key="inventory-table-" + DashboardState.inventory_page_size_value,
             data=data,
             columns=DashboardState.inventory_columns,
-            pagination={"page_size": 25},
+            pagination=DashboardState.inventory_pagination,
             search=True,
             sort=True,
             resizable=False,
@@ -6142,16 +6177,18 @@ def filters() -> rx.Component:
                     rx.input(
                         value=DashboardState.strain_filter_input,
                         on_change=DashboardState.change_strain_filter,
-                        placeholder="Type a strain name",
-                        custom_attrs={"list": "qcc-global-strain-options"},
+                        placeholder="Type to narrow strains (for example DIA)",
                         width="250px",
                     ),
-                    rx.el.datalist(
-                        rx.foreach(
-                            DashboardState.strain_options,
-                            lambda option: rx.el.option(value=option),
-                        ),
-                        id="qcc-global-strain-options",
+                    rx.select(
+                        DashboardState.filtered_strain_options,
+                        value=DashboardState.strain_filter,
+                        on_change=DashboardState.select_strain_filter,
+                        width="250px",
+                    ),
+                    rx.text(
+                        "Selected: " + DashboardState.strain_filter,
+                        size="1", color=MUTED,
                     ),
                 ),
                 rx.box(
@@ -6501,6 +6538,18 @@ def sku_planning_action_row(row: rx.Var) -> rx.Component:
     )
 
 
+SKU_PLANNING_COLUMN_WIDTHS = {
+    "Brand": "140px", "Strain": "175px", "SKU Type": "205px",
+    "Units Shipped": "125px", "Avg Weekly Units": "145px",
+    "Avg Weekly Units - Last 30 Days": "145px", "Packages": "105px",
+    "Current Units": "125px", "Weeks of Supply": "130px",
+    "Potential Matching WIP": "205px", "Committed WIP": "175px",
+    "Matching Pre-WIP Weight": "200px", "Customers": "105px",
+    "Demand Status": "225px", "Last Shipped": "125px",
+    "Lifecycle Status": "175px",
+}
+
+
 def sku_planning_action_table() -> rx.Component:
     columns = [
         "Brand", "Strain", "SKU Type", "Units Shipped",
@@ -6529,8 +6578,15 @@ def sku_planning_action_table() -> rx.Component:
                         ),
                         color=DARK,
                         font_weight="700",
-                        font_size="0.74rem",
+                        font_size="0.76rem",
+                        line_height="1.15",
                         white_space="normal",
+                        word_break="normal",
+                        min_width=SKU_PLANNING_COLUMN_WIDTHS[column],
+                        max_width=SKU_PLANNING_COLUMN_WIDTHS[column],
+                        height="76px",
+                        vertical_align="middle",
+                        padding="0.65rem 1.6rem 0.65rem 0.5rem",
                         position="sticky",
                         top="0",
                         z_index="5",
@@ -8298,23 +8354,10 @@ def inventory_view(
                     width="110px",
                 ),
             ),
-            rx.spacer(),
-            rx.button(
-                "Previous",
-                on_click=DashboardState.previous_inventory_page,
-                disabled=DashboardState.inventory_previous_disabled,
-                variant="outline",
-            ),
-            rx.badge(
-                DashboardState.inventory_page_label,
-                color_scheme="teal",
-                size="3",
-            ),
-            rx.button(
-                "Next",
-                on_click=DashboardState.next_inventory_page,
-                disabled=DashboardState.inventory_next_disabled,
-                variant="outline",
+            rx.text(
+                "The table updates immediately. Use the table's page controls "
+                "to move through additional results.",
+                size="1", color=MUTED,
             ),
             gap="3", align="end", wrap="wrap", width="100%",
         ),

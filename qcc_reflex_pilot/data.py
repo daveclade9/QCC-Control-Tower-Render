@@ -63,16 +63,27 @@ _PRODUCTION_SCHEMA_READY = False
 PRODUCTION_LINE_OPTIONS = [
     "Flower Line 1",
     "Flower Line 2",
-    "Pre-Roll Line 3",
-    "Pre-Roll Line 4",
+    "Manufacturing Line 1",
+    "Manufacturing Line 2",
+    "Flex Line 3",
 ]
 PRODUCTION_LINE_STYLES = {
     "Flower Line 1": ("#166534", "#dcfce7"),
     "Flower Line 2": ("#1d4ed8", "#dbeafe"),
-    "Pre-Roll Line 3": ("#9a3412", "#ffedd5"),
-    "Pre-Roll Line 4": ("#6b21a8", "#f3e8ff"),
+    "Manufacturing Line 1": ("#9a3412", "#ffedd5"),
+    "Manufacturing Line 2": ("#6b21a8", "#f3e8ff"),
+    "Flex Line 3": ("#a16207", "#fef9c3"),
     "Unassigned": ("#475569", "#e2e8f0"),
 }
+PRODUCTION_LINE_ALIASES = {
+    "Pre-Roll Line 3": "Manufacturing Line 1",
+    "Pre-Roll Line 4": "Manufacturing Line 2",
+}
+
+
+def normalized_production_line(value: Any) -> str:
+    line = str(value or "Unassigned").strip() or "Unassigned"
+    return PRODUCTION_LINE_ALIASES.get(line, line)
 
 
 def _invalidate_dashboard_caches() -> None:
@@ -2560,7 +2571,9 @@ def build_saved_plan_rows(
                 "Plan Name": plan.get("plan_name", ""),
                 "Status": plan.get("status", ""),
                 "Target Date": iso_date(plan.get("target_packaging_date")),
-                "Production Line": plan.get("production_line", "Unassigned"),
+                "Production Line": normalized_production_line(
+                    plan.get("production_line", "Unassigned")
+                ),
                 "Department": plan.get("assigned_department", "Production"),
                 "Brand": output.get("brand", plan.get("output_brand", "")),
                 "Strain": output.get("strain", plan.get("strain", "")),
@@ -2635,8 +2648,8 @@ def build_saved_plan_cards(
             f"{row[0]} {row[1]} {row[2]} ({row[4]:,.0f})"
             for row in output_rows
         ) or str(plan.get("target_sku_type", "") or "No outputs")
-        production_line = str(
-            plan.get("production_line", "Unassigned") or "Unassigned"
+        production_line = normalized_production_line(
+            plan.get("production_line", "Unassigned")
         )
         line_color, line_background = PRODUCTION_LINE_STYLES.get(
             production_line, PRODUCTION_LINE_STYLES["Unassigned"]

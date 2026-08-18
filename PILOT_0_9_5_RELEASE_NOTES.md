@@ -1,4 +1,18 @@
-# QCC Control Tower Reflex 0.9.5.0
+# QCC Control Tower Reflex 0.9.5.1
+
+## 0.9.5.1 corrections
+
+- Restores a complete Strain selector and pairs it with cumulative phrase search.
+- Removes the duplicate server-side Inventory page buttons; the grid now owns
+  paging and immediately honors 10, 25, 50, or 100 rows per page.
+- Flushes Reset Global Filters progress to the browser before applying the reset.
+- Gives every SKU Planning heading a fixed readable width, taller header area,
+  wrapping, and room beside sorting controls.
+- Fixes the post-save background refresh callable that caused the
+  `run_in_thread()` positional-argument error.
+- Uses five production lines: Flower Line 1, Flower Line 2, Manufacturing Line
+  1, Manufacturing Line 2, and Flex Line 3. The two earlier Pre-Roll labels are
+  displayed under their corresponding Manufacturing Line names.
 
 ## Team-review improvements
 

@@ -1,4 +1,12 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.0
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.1
+
+Version 0.9.5.1 corrects the first team-review build: Strain filtering now has
+both cumulative search and a complete selection list, Inventory uses one working
+10/25/50/100-row table pager, Reset visibly reports progress, SKU Planning
+headers reserve enough room for their labels, and the post-save production
+refresh no longer passes an unsupported argument to Reflex. Production lines
+are now Flower Line 1, Flower Line 2, Manufacturing Line 1, Manufacturing Line
+2, and Flex Line 3.
 
 Version 0.9.5.0 delivers the team-review interface upgrades: cumulative strain
 search, consistent Executive WIP filtering, compact 10-row inventory and SKU
