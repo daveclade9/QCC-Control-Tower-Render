@@ -38,6 +38,7 @@ from .rules import (
     normalize_strain_name,
     prepare_transfer_analysis,
 )
+from .retailer_directory import CLADE9_LOCATIONS
 
 
 load_dotenv()
@@ -52,6 +53,37 @@ _SALES_DASHBOARD_CACHE_LOCK = threading.Lock()
 _OPERATIONAL_CONTEXT: dict[str, Any] = {"loaded_at": 0.0, "payload": None}
 _OPERATIONAL_CONTEXT_LOCK = threading.Lock()
 _OPERATIONAL_BUILD_LOCK = threading.Lock()
+_RETAILER_LOCATION_INIT_LOCK = threading.Lock()
+_RETAILER_LOCATION_INITIALIZED = False
+_RETAILER_LOCATION_CACHE: dict[str, Any] = {"loaded_at": 0.0, "rows": None}
+_RETAILER_LOCATION_CACHE_LOCK = threading.Lock()
+_PRODUCTION_SCHEMA_LOCK = threading.Lock()
+_PRODUCTION_SCHEMA_READY = False
+
+PRODUCTION_LINE_OPTIONS = [
+    "Flower Line 1",
+    "Flower Line 2",
+    "Manufacturing Line 1",
+    "Manufacturing Line 2",
+    "Flex Line 3",
+]
+PRODUCTION_LINE_STYLES = {
+    "Flower Line 1": ("#166534", "#dcfce7"),
+    "Flower Line 2": ("#1d4ed8", "#dbeafe"),
+    "Manufacturing Line 1": ("#9a3412", "#ffedd5"),
+    "Manufacturing Line 2": ("#6b21a8", "#f3e8ff"),
+    "Flex Line 3": ("#a16207", "#fef9c3"),
+    "Unassigned": ("#475569", "#e2e8f0"),
+}
+PRODUCTION_LINE_ALIASES = {
+    "Pre-Roll Line 3": "Manufacturing Line 1",
+    "Pre-Roll Line 4": "Manufacturing Line 2",
+}
+
+
+def normalized_production_line(value: Any) -> str:
+    line = str(value or "Unassigned").strip() or "Unassigned"
+    return PRODUCTION_LINE_ALIASES.get(line, line)
 
 
 def _invalidate_dashboard_caches() -> None:
@@ -254,6 +286,133 @@ def safe_query_frame(
         ):
             return pd.DataFrame()
         raise
+
+
+def _directory_retailer_location_rows() -> list[dict[str, Any]]:
+    """Convert the bundled Clade9 directory into the shared location schema."""
+    return [
+        {
+            "location_id": f"clade9:{row.get('source_id', index)}",
+            "destination_license": "",
+            "metrc_business_name": "",
+            "public_store_name": str(row.get("name", "")).strip(),
+            "street_address": str(row.get("address", "")).strip(),
+            "locality": str(row.get("locality", "")).strip(),
+            "phone": str(row.get("phone", "")).strip(),
+            "website": str(row.get("website", "")).strip(),
+            "latitude": None,
+            "longitude": None,
+            "location_status": "Directory Seed",
+            "verified": False,
+            "notes": "",
+            "source": "Clade9 Store Locator",
+            "source_id": str(row.get("source_id", "")).strip(),
+        }
+        for index, row in enumerate(CLADE9_LOCATIONS, start=1)
+    ]
+
+
+def _initialize_retailer_locations_database_once() -> None:
+    """Create and safely seed the persistent retailer-location directory."""
+    url = database_url()
+    if not url or psycopg is None:
+        raise RuntimeError("Supabase is required for the retailer directory.")
+    with psycopg.connect(url, connect_timeout=15) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS qcc_retailer_locations (
+                location_id TEXT PRIMARY KEY,
+                destination_license TEXT,
+                metrc_business_name TEXT NOT NULL DEFAULT '',
+                public_store_name TEXT NOT NULL DEFAULT '',
+                street_address TEXT NOT NULL DEFAULT '',
+                locality TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL DEFAULT '',
+                website TEXT NOT NULL DEFAULT '',
+                latitude DOUBLE PRECISION,
+                longitude DOUBLE PRECISION,
+                location_status TEXT NOT NULL DEFAULT 'Not Reviewed',
+                verified BOOLEAN NOT NULL DEFAULT FALSE,
+                notes TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                source_id TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_qcc_retailer_locations_license "
+            "ON qcc_retailer_locations(destination_license) "
+            "WHERE destination_license IS NOT NULL "
+            "AND BTRIM(destination_license) <> ''"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_qcc_retailer_locations_name "
+            "ON qcc_retailer_locations(public_store_name)"
+        )
+        seed_rows = _directory_retailer_location_rows()
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO qcc_retailer_locations (
+                    location_id, destination_license, metrc_business_name,
+                    public_store_name, street_address, locality, phone,
+                    website, latitude, longitude, location_status, verified,
+                    notes, source, source_id
+                ) VALUES (
+                    %(location_id)s, NULLIF(%(destination_license)s, ''),
+                    %(metrc_business_name)s, %(public_store_name)s,
+                    %(street_address)s, %(locality)s, %(phone)s, %(website)s,
+                    %(latitude)s, %(longitude)s, %(location_status)s,
+                    %(verified)s, %(notes)s, %(source)s, %(source_id)s
+                )
+                ON CONFLICT(location_id) DO NOTHING
+                """,
+                seed_rows,
+            )
+        connection.commit()
+
+
+def initialize_retailer_locations_database() -> None:
+    """Initialize the shared location table once per application process."""
+    global _RETAILER_LOCATION_INITIALIZED
+    if _RETAILER_LOCATION_INITIALIZED:
+        return
+    with _RETAILER_LOCATION_INIT_LOCK:
+        if _RETAILER_LOCATION_INITIALIZED:
+            return
+        _initialize_retailer_locations_database_once()
+        _RETAILER_LOCATION_INITIALIZED = True
+
+
+def load_retailer_locations(force_refresh: bool = False) -> list[dict[str, Any]]:
+    """Load the small shared retailer directory without delaying core Sales."""
+    now = time.monotonic()
+    with _RETAILER_LOCATION_CACHE_LOCK:
+        cached = _RETAILER_LOCATION_CACHE.get("rows")
+        age = now - float(_RETAILER_LOCATION_CACHE.get("loaded_at", 0.0))
+        if cached is not None and not force_refresh and age < SALES_CACHE_SECONDS:
+            return cached
+    try:
+        initialize_retailer_locations_database()
+        frame = query_frame(
+            "SELECT location_id, COALESCE(destination_license, '') AS "
+            "destination_license, metrc_business_name, public_store_name, "
+            "street_address, locality, phone, website, latitude, longitude, "
+            "location_status, verified, notes, source, source_id, updated_at "
+            "FROM qcc_retailer_locations ORDER BY public_store_name",
+            statement_timeout_seconds=15,
+        )
+        rows = record_list(frame)
+    except Exception:
+        # Retail mapping is optional. The bundled directory keeps the Sales
+        # workspace available even if this new table cannot be created yet.
+        rows = _directory_retailer_location_rows()
+    with _RETAILER_LOCATION_CACHE_LOCK:
+        _RETAILER_LOCATION_CACHE["rows"] = rows
+        _RETAILER_LOCATION_CACHE["loaded_at"] = time.monotonic()
+    return rows
 
 
 def query_frames(
@@ -700,6 +859,17 @@ def _infer_qa_strain(row: pd.Series) -> str:
     source_packages = text_value(row.get("source_package_labels", ""))
     combined = " ".join([item, harvest, source_packages])
 
+    # Craft Kings blend products are intentionally made from mixed source
+    # batches, so the finished product name—not a single source strain—is the
+    # authoritative QA strain.
+    for name, pattern in {
+        "Hybrid Blend": r"\bhybrid(?:\s+blend)?\b",
+        "Sativa Blend": r"\bsativa(?:\s+blend)?\b",
+        "Indica Blend": r"\bindica(?:\s+blend)?\b",
+    }.items():
+        if re.search(pattern, item, re.I):
+            return name
+
     # These common historical strains are not part of the active product-rule
     # catalog, but must remain searchable in the QA history.
     for name, pattern in {
@@ -801,6 +971,10 @@ def _prepare_qa_packages(
     current["strain"] = current.apply(_infer_qa_strain, axis=1)
     current["strain"] = current["strain"].map(normalize_strain_name)
     current["brand"] = current["inventory_brand"]
+    craft_blends = current["strain"].isin([
+        "Hybrid Blend", "Sativa Blend", "Indica Blend",
+    ])
+    current.loc[craft_blends, "brand"] = "Craft Kings"
     missing_brand = ~current["brand"].isin([
         "Clade9", "Craft Kings", "Royal Smalls", "Locals Only", "Cookies", "Precious",
     ])
@@ -1249,7 +1423,27 @@ def potential_wip_for_sku(
     return result
 
 
+def _ensure_production_schema() -> None:
+    """Apply small, backward-compatible production planning additions once."""
+    global _PRODUCTION_SCHEMA_READY
+    if _PRODUCTION_SCHEMA_READY or psycopg is None or not database_url():
+        return
+    with _PRODUCTION_SCHEMA_LOCK:
+        if _PRODUCTION_SCHEMA_READY:
+            return
+        with psycopg.connect(database_url(), connect_timeout=15) as connection:
+            connection.execute(
+                "ALTER TABLE production_plans ADD COLUMN IF NOT EXISTS "
+                "production_line TEXT NOT NULL DEFAULT 'Unassigned'"
+            )
+            connection.commit()
+        _PRODUCTION_SCHEMA_READY = True
+
+
 def load_production_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    # This additive migration is backward compatible with the live 0.8.9 app.
+    # It runs before the read so existing plans receive a safe label.
+    _ensure_production_schema()
     plans, outputs, sources = query_frames([
         ("SELECT * FROM production_plans ORDER BY created_at DESC", ()),
         (
@@ -1278,6 +1472,9 @@ def load_production_module_data() -> dict[str, Any]:
             "Plan Name": card["Plan Name"],
             "Status": card["Status"],
             "Department": card["Department"],
+            "Production Line": card["Production Line"],
+            "Line Color": card["Line Color"],
+            "Line Background": card["Line Background"],
             "Brand": card["Brand"],
             "Strain": card["Strain"],
             "SKU Type": card["SKU Type"],
@@ -1452,6 +1649,7 @@ def create_reflex_production_plan(
     created_by: str = "QCC Reflex User",
     plan_id: str = "",
     assigned_department: str = "Production",
+    production_line: str = "Flower Line 1",
 ) -> str:
     """Atomically validate and create or replace a production plan."""
     if psycopg is None or not database_url():
@@ -1466,6 +1664,8 @@ def create_reflex_production_plan(
         )
     if not str(plan_name).strip():
         raise ValueError("Enter a production plan name.")
+    if production_line not in PRODUCTION_LINE_OPTIONS:
+        raise ValueError("Select one of the four approved production lines.")
     batch = float(batch_weight_grams or 0)
     if batch <= 0:
         raise ValueError("Batch weight must be greater than zero.")
@@ -1496,6 +1696,10 @@ def create_reflex_production_plan(
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
                 ("qcc-production-planning",),
+            )
+            cursor.execute(
+                "ALTER TABLE production_plans ADD COLUMN IF NOT EXISTS "
+                "production_line TEXT NOT NULL DEFAULT 'Unassigned'"
             )
             cursor.execute(
                 "SELECT snapshot_id FROM inventory_snapshots "
@@ -1594,6 +1798,7 @@ def create_reflex_production_plan(
                 "unit_fill_weight_grams", "process_loss_percent",
                 "overfill_percent", "qa_retention_grams",
                 "formulation_details", "assigned_department",
+                "production_line",
             ]
             values = [
                 plan_id, str(plan_name).strip(), str(output_brand).strip(),
@@ -1616,6 +1821,7 @@ def create_reflex_production_plan(
                 float(qa_retention_grams or 0),
                 json.dumps(formulation_details or {}, sort_keys=True),
                 str(assigned_department or "Production").strip() or "Production",
+                production_line,
             ]
             if editing:
                 previous_values = existing_plan.iloc[0].to_dict()
@@ -2072,7 +2278,7 @@ def build_velocity(
 ) -> pd.DataFrame:
     columns = [
         "Brand", "Strain", "SKU Type", "Units Shipped",
-        "Avg Weekly Units", "Packages",
+        "Avg Weekly Units", "Avg Weekly Units - Last 30 Days", "Packages",
         "Current Units", "Weeks of Supply", "Potential Matching WIP",
         "Potential WIP Summary", "Committed WIP", "Matching Pre-WIP Weight", "Customers",
         "Demand Status", "Last Shipped", "Days Since Last Shipment",
@@ -2123,6 +2329,9 @@ def build_velocity(
     grouped["velocity_weeks"] = grouped["velocity_days"] / 7
     grouped["average_weekly_units"] = (
         grouped["units_shipped"] / grouped["velocity_weeks"]
+    )
+    grouped["average_weekly_units_last_30"] = (
+        grouped["average_weekly_units"] if period_days == 30 else 0.0
     )
     if inventory_skus.empty:
         grouped["current_units"] = 0.0
@@ -2280,6 +2489,7 @@ def build_velocity(
         "brand": "Brand", "strain": "Strain", "sku_type": "SKU Type",
         "units_shipped": "Units Shipped",
         "average_weekly_units": "Avg Weekly Units",
+        "average_weekly_units_last_30": "Avg Weekly Units - Last 30 Days",
         "packages": "Packages",
         "current_units": "Current Units",
         "weeks_of_supply": "Weeks of Supply",
@@ -2297,7 +2507,7 @@ def build_velocity(
         result["Last Shipped"], errors="coerce"
     ).dt.strftime("%Y-%m-%d").fillna("")
     for column in [
-        "Units Shipped", "Avg Weekly Units", "Current Units",
+        "Units Shipped", "Avg Weekly Units", "Avg Weekly Units - Last 30 Days", "Current Units",
         "Weeks of Supply",
     ]:
         result[column] = pd.to_numeric(result[column], errors="coerce").fillna(0).round(2)
@@ -2312,7 +2522,7 @@ def build_saved_plan_rows(
 ) -> pd.DataFrame:
     columns = [
         "Plan ID", "Plan Name", "Status", "Target Date",
-        "Department", "Brand", "Strain", "SKU Type", "Allocation %",
+        "Production Line", "Department", "Brand", "Strain", "SKU Type", "Allocation %",
         "Projected Units", "Batch Weight (g)", "Source Tags", "Created By",
     ]
     if plans.empty:
@@ -2361,6 +2571,9 @@ def build_saved_plan_rows(
                 "Plan Name": plan.get("plan_name", ""),
                 "Status": plan.get("status", ""),
                 "Target Date": iso_date(plan.get("target_packaging_date")),
+                "Production Line": normalized_production_line(
+                    plan.get("production_line", "Unassigned")
+                ),
                 "Department": plan.get("assigned_department", "Production"),
                 "Brand": output.get("brand", plan.get("output_brand", "")),
                 "Strain": output.get("strain", plan.get("strain", "")),
@@ -2435,11 +2648,20 @@ def build_saved_plan_cards(
             f"{row[0]} {row[1]} {row[2]} ({row[4]:,.0f})"
             for row in output_rows
         ) or str(plan.get("target_sku_type", "") or "No outputs")
+        production_line = normalized_production_line(
+            plan.get("production_line", "Unassigned")
+        )
+        line_color, line_background = PRODUCTION_LINE_STYLES.get(
+            production_line, PRODUCTION_LINE_STYLES["Unassigned"]
+        )
         cards.append({
             "Plan ID": plan_id,
             "Plan Name": str(plan.get("plan_name", "") or ""),
             "Status": str(plan.get("status", "") or ""),
             "Target Date": iso_date(plan.get("target_packaging_date")),
+            "Production Line": production_line,
+            "Line Color": line_color,
+            "Line Background": line_background,
             "Department": str(
                 plan.get("assigned_department", "Production") or "Production"
             ),
@@ -2522,6 +2744,87 @@ def build_customer_summary(analysis: pd.DataFrame) -> pd.DataFrame:
         ).fillna(0).round(2)
     return summary[columns].sort_values(
         "Shipment Value", ascending=False
+    ).reset_index(drop=True)
+
+
+def build_retail_delivery_history(analysis: pd.DataFrame) -> pd.DataFrame:
+    """Build compact four-week accepted and pending retailer activity.
+
+    The browser receives daily SKU/customer aggregates rather than raw package
+    rows. This keeps the new map workspace responsive while still allowing the
+    user to switch between one, two, three, and four-week windows instantly.
+
+    Accepted transfers are dated by the Metrc ``received_at`` timestamp. Open
+    outbound transfers are dated by ``created_at`` and remain separate so the
+    interface never presents an unaccepted shipment as a completed delivery.
+    """
+    columns = [
+        "Activity Date", "Date Type", "Transfer Status",
+        "Destination License", "Customer", "Brand", "Strain", "SKU Type",
+        "Units Shipped", "Packages", "Manifests",
+    ]
+    if analysis.empty:
+        return pd.DataFrame(columns=columns)
+
+    activity_frames: list[pd.DataFrame] = []
+    activity_specs = (
+        ("is_demand", "received_at", "Received At", "Accepted"),
+        (
+            "is_open_shipment", "created_at", "Sent At",
+            "Awaiting Acceptance",
+        ),
+    )
+    for flag, timestamp_column, date_type, status in activity_specs:
+        if flag not in analysis or timestamp_column not in analysis:
+            continue
+        rows = analysis[analysis[flag].fillna(False).astype(bool)].copy()
+        if rows.empty:
+            continue
+        rows["activity_at"] = pd.to_datetime(
+            rows[timestamp_column], errors="coerce"
+        )
+        rows = rows[rows["activity_at"].notna()].copy()
+        if rows.empty:
+            continue
+        anchor = rows["activity_at"].max().normalize()
+        rows = rows[rows["activity_at"].ge(
+            anchor - pd.Timedelta(days=27)
+        )].copy()
+        rows["activity_date"] = rows["activity_at"].dt.normalize()
+        rows["date_type"] = date_type
+        rows["transfer_status"] = status
+        activity_frames.append(rows)
+
+    if not activity_frames:
+        return pd.DataFrame(columns=columns)
+
+    activity = pd.concat(activity_frames, ignore_index=True)
+    history = activity.groupby(
+        [
+            "activity_date", "date_type", "transfer_status",
+            "destination_license", "destination_facility", "brand", "strain",
+            "sku_type",
+        ],
+        dropna=False,
+    ).agg(
+        units_shipped=("shipped_units", "sum"),
+        packages=("package_tag", "nunique"),
+        manifests=("manifest", "nunique"),
+    ).reset_index().rename(columns={
+        "activity_date": "Activity Date", "date_type": "Date Type",
+        "transfer_status": "Transfer Status",
+        "destination_license": "Destination License",
+        "destination_facility": "Customer",
+        "brand": "Brand", "strain": "Strain", "sku_type": "SKU Type",
+        "units_shipped": "Units Shipped", "packages": "Packages",
+        "manifests": "Manifests",
+    })
+    history["Activity Date"] = history["Activity Date"].apply(iso_date)
+    history["Units Shipped"] = pd.to_numeric(
+        history["Units Shipped"], errors="coerce"
+    ).fillna(0).round(2)
+    return history[columns].sort_values(
+        ["Activity Date", "Units Shipped"], ascending=[False, False]
     ).reset_index(drop=True)
 
 
@@ -2871,6 +3174,9 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
                 "Plan Name": card["Plan Name"],
                 "Status": card["Status"],
                 "Department": card["Department"],
+                "Production Line": card["Production Line"],
+                "Line Color": card["Line Color"],
+                "Line Background": card["Line Background"],
                 "Brand": card["Brand"],
                 "Strain": card["Strain"],
                 "SKU Type": card["SKU Type"],
@@ -2906,6 +3212,8 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
             "monthly": [], "top_skus": [], "business_pulse": [],
             "velocity": [], "velocity_windows": {"All Time": []},
             "stockouts": [], "customers": [], "exceptions": [],
+            "retail_delivery_history": [],
+            "retailer_locations": [],
             "transfer_data": [], "transfer_import_log": [],
             "saved_plans": record_list(saved_plans),
             "saved_plan_cards": saved_plan_cards,
@@ -2930,17 +3238,19 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
     velocity = build_velocity(
         demand, inventory_skus, inventory_packages, plans, outputs, sources
     )
-    velocity_windows: dict[str, list[dict[str, Any]]] = {
-        "All Time": record_list(velocity),
-    }
+    velocity_windows: dict[str, list[dict[str, Any]]] = {}
     if not demand.empty:
         velocity_end = pd.Timestamp(demand["created_at"].max()).normalize()
-        for label, days in [("1 Week", 7), ("30 Days", 30), ("90 Days", 90)]:
+        period_frames: dict[str, pd.DataFrame] = {}
+        for label, days in [
+            ("1 Week", 7), ("30 Days", 30), ("60 Days", 60),
+            ("90 Days", 90), ("120 Days", 120),
+        ]:
             window_start = velocity_end - pd.Timedelta(days=days - 1)
             window_demand = demand[
                 pd.to_datetime(demand["created_at"], errors="coerce").ge(window_start)
             ].copy()
-            velocity_windows[label] = record_list(build_velocity(
+            period_frames[label] = build_velocity(
                 window_demand,
                 inventory_skus,
                 inventory_packages,
@@ -2950,21 +3260,38 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
                 all_history_demand=demand,
                 period_days=days,
                 include_potential_wip=False,
-            ).drop(columns=[
+            )
+        keys = ["Brand", "Strain", "SKU Type"]
+        last_30 = period_frames["30 Days"][
+            keys + ["Avg Weekly Units"]
+        ].rename(columns={
+            "Avg Weekly Units": "Avg Weekly Units - Last 30 Days"
+        })
+        velocity = velocity.drop(
+            columns=["Avg Weekly Units - Last 30 Days"]
+        ).merge(last_30, on=keys, how="left")
+        velocity["Avg Weekly Units - Last 30 Days"] = pd.to_numeric(
+            velocity["Avg Weekly Units - Last 30 Days"], errors="coerce"
+        ).fillna(0).round(2)
+        velocity_windows["All Time"] = record_list(velocity)
+        for label in ["1 Week", "60 Days", "90 Days", "120 Days"]:
+            frame = period_frames[label].drop(columns=[
                 "Potential Matching WIP", "Potential WIP Summary",
-                "Matching Pre-WIP Weight",
+                "Matching Pre-WIP Weight", "Avg Weekly Units - Last 30 Days",
             ]).merge(
                 velocity[[
-                    "Brand", "Strain", "SKU Type",
+                    *keys,
                     "Potential Matching WIP", "Potential WIP Summary",
-                    "Matching Pre-WIP Weight",
+                    "Matching Pre-WIP Weight", "Avg Weekly Units - Last 30 Days",
                 ]],
-                on=["Brand", "Strain", "SKU Type"],
+                on=keys,
                 how="left",
-            ))
+            )
+            velocity_windows[label] = record_list(frame)
     else:
+        velocity_windows["All Time"] = record_list(velocity)
         velocity_windows.update({
-            "1 Week": [], "30 Days": [], "90 Days": [],
+            "1 Week": [], "60 Days": [], "90 Days": [], "120 Days": [],
         })
     # The Sales background load reuses the inventory context and must not
     # rebuild every inventory table a second time during the same login.
@@ -3026,9 +3353,12 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
             "Target Date": card["Target Date"],
             "Plan ID": card["Plan ID"],
             "Plan Name": card["Plan Name"],
-            "Status": card["Status"],
-            "Department": card["Department"],
-            "Brand": card["Brand"],
+                "Status": card["Status"],
+                "Department": card["Department"],
+                "Production Line": card["Production Line"],
+                "Line Color": card["Line Color"],
+                "Line Background": card["Line Background"],
+                "Brand": card["Brand"],
             "Strain": card["Strain"],
             "SKU Type": card["SKU Type"],
             "Output Summary": card["Output Summary"],
@@ -3037,6 +3367,8 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         if card["Target Date"]
     ]
     customers = build_customer_summary(analysis)
+    retail_delivery_history = build_retail_delivery_history(analysis)
+    retailer_locations = load_retailer_locations()
     exceptions = build_shipment_exceptions(analysis)
     transfer_display = build_transfer_display(analysis)
     transfer_import_log = load_transfer_import_log()
@@ -3100,6 +3432,8 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         "production_templates": record_list(production_templates),
         "calendar": sorted(calendar, key=lambda row: row["Target Date"]),
         "customers": record_list(customers),
+        "retail_delivery_history": record_list(retail_delivery_history),
+        "retailer_locations": retailer_locations,
         "exceptions": record_list(exceptions),
         "transfer_data": record_list(transfer_display.head(2000)),
         "transfer_import_log": record_list(transfer_import_log),
@@ -3169,7 +3503,9 @@ def demo_dashboard_data() -> dict[str, Any]:
         {
             "Brand": "Clade9", "Strain": "Diamond Bar",
             "SKU Type": "3.5g Flower", "Units Shipped": 12500,
-            "Avg Weekly Units": 525.0, "Packages": 4, "Current Units": 1410,
+            "Avg Weekly Units": 525.0,
+            "Avg Weekly Units - Last 30 Days": 560.0,
+            "Packages": 4, "Current Units": 1410,
             "Weeks of Supply": 2.69,
             "Potential Matching WIP": "12.5 lb",
             "Potential WIP Summary": "6 packages | Ages 18-74 days | Sizes 1.1-3.4 lb per lot",
@@ -3184,7 +3520,9 @@ def demo_dashboard_data() -> dict[str, Any]:
         {
             "Brand": "Craft Kings", "Strain": "Hybrid Blend",
             "SKU Type": "1g Pre-Roll", "Units Shipped": 9300,
-            "Avg Weekly Units": 410.0, "Packages": 0, "Current Units": 0,
+            "Avg Weekly Units": 410.0,
+            "Avg Weekly Units - Last 30 Days": 430.0,
+            "Packages": 0, "Current Units": 0,
             "Weeks of Supply": 0.0,
             "Potential Matching WIP": "8.4 lb",
             "Potential WIP Summary": "14 packages | Ages 9-103 days | Sizes 98.0 g-1.6 lb per lot",
@@ -3228,8 +3566,8 @@ def demo_dashboard_data() -> dict[str, Any]:
         ],
         "velocity": velocity,
         "velocity_windows": {
-            "1 Week": velocity, "30 Days": velocity,
-            "90 Days": velocity, "All Time": velocity,
+            "1 Week": velocity, "60 Days": velocity, "90 Days": velocity,
+            "120 Days": velocity, "All Time": velocity,
         },
         "stockouts": [velocity[1]],
         "saved_plans": [],
@@ -3237,6 +3575,8 @@ def demo_dashboard_data() -> dict[str, Any]:
         "production_templates": [],
         "calendar": [],
         "customers": [],
+        "retail_delivery_history": [],
+        "retailer_locations": _directory_retailer_location_rows(),
         "exceptions": [],
         "transfer_data": [],
         "transfer_import_log": [],

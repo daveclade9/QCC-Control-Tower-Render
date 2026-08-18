@@ -1,4 +1,4 @@
-"""QCC Control Tower Reflex 0.9.3 - inventory, planning, and QA workspace."""
+"""QCC Control Tower Reflex 0.9.5 - inventory, planning, and QA workspace."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from html import escape
 from calendar import month_name
 from datetime import date, datetime, timedelta
 from typing import Any, TypedDict
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote_plus
 
 import reflex as rx
 import pandas as pd
@@ -33,6 +33,7 @@ from .data import (
     load_production_module_data,
     log_qa_label_download,
     potential_wip_for_sku,
+    PRODUCTION_LINE_OPTIONS,
     PRODUCTION_PLAN_STATUSES,
     QA_LABEL_FIELDS,
     production_recipe_type,
@@ -54,9 +55,14 @@ from .auth import (
     verify_supabase_access_token,
 )
 from .label_catalog import NICE_LABEL_CATALOG
+from .retailer_directory import (
+    find_clade9_location,
+    normalized_retailer_name,
+)
+from .rules import normalize_strain_name
 
 
-PILOT_VERSION = "0.9.3.13"
+PILOT_VERSION = "0.9.5.3"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -70,6 +76,132 @@ QA_ANALYTE_CATEGORIES = [
 ]
 
 
+def _retail_map_document(
+    stores: list[dict[str, Any]], starting_address: str
+) -> str:
+    """Build the self-contained multi-marker retail availability map."""
+    store_json = json.dumps(stores, ensure_ascii=True).replace("<", "\\u003c")
+    origin_json = json.dumps(starting_address, ensure_ascii=True).replace(
+        "<", "\\u003c"
+    )
+    document = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    *{box-sizing:border-box} body{margin:0;font-family:Arial,sans-serif;color:#111827;background:#fff}
+    #layout{display:grid;grid-template-columns:minmax(0,2fr) minmax(260px,1fr);height:560px}
+    #map{min-height:360px} #side{overflow:auto;border-left:1px solid #dbe5ec;padding:14px;background:#f8fafc}
+    #status{font-size:13px;color:#64748b;margin:0 0 12px}.shop{background:#fff;border:1px solid #dbe5ec;border-radius:9px;padding:10px;margin-bottom:9px}
+    .shop h3{font-size:14px;margin:0 0 5px}.shop p{font-size:12px;color:#64748b;margin:3px 0;line-height:1.35}
+    .distance{font-weight:700;color:#0f766e!important}.shop a{display:inline-block;margin-top:6px;color:#0f766e;font-size:12px;font-weight:700;text-decoration:none}
+    .leaflet-popup-content h3{margin:0 0 5px;font-size:14px}.leaflet-popup-content p{margin:3px 0;font-size:12px}
+    @media(max-width:720px){#layout{grid-template-columns:1fr;grid-template-rows:360px auto;height:auto}#side{border-left:0;border-top:1px solid #dbe5ec;max-height:360px}}
+  </style>
+</head>
+<body>
+<div id="layout"><div id="map"></div><aside id="side"><p id="status">Preparing matching shop map…</p><div id="shops"></div></aside></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const stores=__STORE_DATA__;
+const originQuery=__ORIGIN_DATA__;
+const statusNode=document.getElementById('status');
+const shopsNode=document.getElementById('shops');
+const map=L.map('map',{scrollWheelZoom:false}).setView([40.15,-74.55],8);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+const bounds=[];
+const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+let lastLookupAt=0;
+const clean=value=>String(value||'').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+async function geocode(query,useCache=false){
+  if(!query)return null;
+  const cacheKey='qcc-retail-geo:'+query.toLowerCase();
+  if(useCache){
+    try{const cached=localStorage.getItem(cacheKey);if(cached)return JSON.parse(cached);}catch(error){}
+  }
+  const wait=Math.max(0,1050-(Date.now()-lastLookupAt));
+  if(wait)await pause(wait);
+  const url='https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&q='+encodeURIComponent(query);
+  lastLookupAt=Date.now();
+  const response=await fetch(url,{headers:{'Accept':'application/json','Accept-Language':'en-US'}});
+  if(!response.ok)throw new Error('Address lookup failed');
+  const result=await response.json();
+  if(!result.length)return null;
+  const point={lat:Number(result[0].lat),lng:Number(result[0].lon)};
+  if(useCache){try{localStorage.setItem(cacheKey,JSON.stringify(point));}catch(error){}}
+  return point;
+}
+function miles(a,b){
+  const rad=value=>value*Math.PI/180, earth=3958.8;
+  const dLat=rad(b.lat-a.lat),dLng=rad(b.lng-a.lng);
+  const value=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLng/2)**2;
+  return 2*earth*Math.asin(Math.sqrt(value));
+}
+function directionsUrl(store){
+  const base='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(store.route_address);
+  return originQuery?base+'&origin='+encodeURIComponent(originQuery):base;
+}
+function render(rows){
+  shopsNode.innerHTML=rows.map(row=>{
+    const distance=row.distance==null?'':`<p class="distance">${row.distance.toFixed(1)} miles away</p>`;
+    return `<div class="shop"><h3>${clean(row.retailer)}</h3>${distance}<p>${clean(row.address)}</p><p>${clean(row.date_label)}: ${clean(row.last_delivery)}</p><a target="_blank" rel="noopener" href="${directionsUrl(row)}">Directions to this shop</a></div>`;
+  }).join('');
+}
+function addStore(store,point,origin,mapped){
+  const row={...store,...point,distance:origin?miles(origin,point):null};
+  mapped.push(row); bounds.push([point.lat,point.lng]);
+  const distance=row.distance==null?'':`<p><strong>${row.distance.toFixed(1)} miles from the starting location</strong></p>`;
+  L.marker([point.lat,point.lng]).addTo(map).bindPopup(`<h3>${clean(row.retailer)}</h3>${distance}<p>${clean(row.address)}</p><p><a target="_blank" rel="noopener" href="${directionsUrl(row)}">Directions</a></p>`);
+}
+async function load(){
+  if(!stores.length){statusNode.textContent='No matching retailer locations are available.';return;}
+  let origin=null;
+  if(originQuery){
+    statusNode.textContent='Locating the starting address…';
+    try{origin=await geocode(originQuery,false);}catch(error){origin=null;}
+    if(origin){
+      L.circleMarker([origin.lat,origin.lng],{radius:9,color:'#0f766e',fillColor:'#14b8a6',fillOpacity:1}).addTo(map).bindPopup('<strong>Starting location</strong><br>'+clean(originQuery));
+      bounds.push([origin.lat,origin.lng]);
+    }
+  }
+  const mapped=[];
+  const unresolved=[];
+  for(const store of stores){
+    const hasSavedCoordinates=store.latitude!==null&&store.latitude!==''&&store.longitude!==null&&store.longitude!=='';
+    const lat=Number(store.latitude),lng=Number(store.longitude);
+    if(hasSavedCoordinates&&Number.isFinite(lat)&&Number.isFinite(lng)&&Math.abs(lat)<=90&&Math.abs(lng)<=180){
+      addStore(store,{lat,lng},origin,mapped);
+    }else{unresolved.push(store);}
+  }
+  render([...mapped].sort((a,b)=>(a.distance??99999)-(b.distance??99999)||a.retailer.localeCompare(b.retailer)));
+  const fallback=unresolved.slice(0,15);
+  for(let index=0;index<fallback.length;index++){
+    const store=fallback[index];
+    statusNode.textContent=`Mapping saved locations and checking address ${index+1} of ${fallback.length}…`;
+    try{
+      const point=await geocode(store.route_address,true);
+      if(point)addStore(store,point,origin,mapped);
+    }catch(error){}
+    render([...mapped].sort((a,b)=>(a.distance??99999)-(b.distance??99999)||a.retailer.localeCompare(b.retailer)));
+  }
+  if(bounds.length)map.fitBounds(bounds,{padding:[28,28],maxZoom:13});
+  const needsReview=Math.max(0,stores.length-mapped.length);
+  const reviewText=needsReview?` ${needsReview} still need location review.`:'';
+  if(originQuery&&!origin){statusNode.textContent=`The starting address could not be located. ${mapped.length} matching shops are shown without distances.${reviewText}`;}
+  else if(origin){statusNode.textContent=`${mapped.length} matching shops located and sorted by straight-line distance.${reviewText}`;}
+  else{statusNode.textContent=`${mapped.length} matching shops located. Enter a starting address to calculate distance.${reviewText}`;}
+}
+load();
+</script>
+</body>
+</html>"""
+    return document.replace("__STORE_DATA__", store_json).replace(
+        "__ORIGIN_DATA__", origin_json
+    )
+
+
 CalendarEvent = TypedDict(
     "CalendarEvent",
     {
@@ -78,6 +210,9 @@ CalendarEvent = TypedDict(
         "Plan Name": str,
         "Status": str,
         "Department": str,
+        "Production Line": str,
+        "Line Color": str,
+        "Line Background": str,
         "Brand": str,
         "Strain": str,
         "SKU Type": str,
@@ -98,6 +233,26 @@ EmployeeDirectoryRow = TypedDict(
         "Contact Email": str,
     },
 )
+RetailMapLocation = TypedDict(
+    "RetailMapLocation",
+    {
+        "Retailer": str,
+        "Destination License": str,
+        "Address": str,
+        "Latest Metrc Date": str,
+        "Date Label": str,
+        "Website": str,
+        "Map URL": str,
+        "Route Address": str,
+        "Latitude": float | None,
+        "Longitude": float | None,
+        "Match Method": str,
+        "Coordinate Status": str,
+        "Verified": bool,
+        "Location Status": str,
+        "Notes": str,
+    },
+)
 CalendarDay = TypedDict(
     "CalendarDay",
     {
@@ -115,6 +270,9 @@ SavedPlanCard = TypedDict(
         "Status": str,
         "Target Date": str,
         "Department": str,
+        "Production Line": str,
+        "Line Color": str,
+        "Line Background": str,
         "Batch Weight (g)": float,
         "Created By": str,
         "Brand": str,
@@ -190,6 +348,7 @@ class DashboardState(rx.State):
     strain_filter: str = "All Strains"
     sku_filter: str = "All SKU Types"
     search_text: str = ""
+    global_filters_resetting: bool = False
     qa_view: str = "cultivation"
     # Large source collections stay backend-only. Only filtered display data
     # is synchronized through the websocket.
@@ -284,6 +443,7 @@ class DashboardState(rx.State):
     production_plan_status: str = "Planned"
     production_plan_notes: str = ""
     production_assigned_department: str = "Production"
+    production_line: str = "Flower Line 1"
     production_scenario_name: str = "Current Mix"
     production_scenarios: list[list[Any]] = []
     production_save_message: str = ""
@@ -308,11 +468,11 @@ class DashboardState(rx.State):
     sales_demand_view: str = "overview"
     inventory_view_name: str = "cpg"
     inventory_page: int = 1
-    inventory_page_size: int = 50
+    inventory_page_size: int = 10
     transfer_page: int = 1
     transfer_page_size: int = 50
     sku_planning_page: int = 1
-    sku_planning_page_size: int = 25
+    sku_planning_page_size: int = 10
     sku_planning_sort: str = "Avg Weekly Units - High to Low"
     sku_velocity_period: str = "All Time"
     demand_lifecycle_filter: str = "Active Products Only"
@@ -320,6 +480,14 @@ class DashboardState(rx.State):
     velocity_windows: dict[str, list[dict[str, Any]]] = {}
     saved_plan_search: str = ""
     saved_plan_status_filter: str = "All Plan Statuses"
+    retail_timeframe: str = "4 Weeks"
+    retail_show_pending: bool = False
+    retail_brand_filter: str = "All Brands"
+    retail_strain_filter: str = "All Strains"
+    retail_sku_filter: str = "All SKU Types"
+    retail_customer_filter: str = "All Retailers"
+    retail_start_address_input: str = ""
+    retail_start_address: str = ""
 
     units_metric: str = "0"
     value_metric: str = "$0"
@@ -353,6 +521,8 @@ class DashboardState(rx.State):
     production_templates: list[dict[str, Any]] = []
     calendar: list[CalendarEvent] = []
     customers: list[dict[str, Any]] = []
+    retail_delivery_history: list[dict[str, Any]] = []
+    retailer_locations: list[dict[str, Any]] = []
     exceptions: list[dict[str, Any]] = []
     _transfer_data: list[dict[str, Any]] = []
     transfer_import_log: list[dict[str, Any]] = []
@@ -367,6 +537,8 @@ class DashboardState(rx.State):
     calendar_year: int = date.today().year
     calendar_month: int = date.today().month
     calendar_title: str = ""
+    calendar_view_mode: str = "Month"
+    calendar_focus_date: str = date.today().isoformat()
     calendar_days: list[CalendarDay] = []
 
     def _apply_employee(self, employee: dict[str, Any]) -> None:
@@ -661,6 +833,43 @@ class DashboardState(rx.State):
         self.sku_planning_page = 1
         self.inventory_page = 1
         self.transfer_page = 1
+
+    @rx.event
+    def change_retail_timeframe(self, value: str):
+        self.retail_timeframe = value
+
+    @rx.event
+    def change_retail_show_pending(self, value: bool):
+        self.retail_show_pending = value
+
+    @rx.event
+    def change_retail_brand_filter(self, value: str):
+        self.retail_brand_filter = value
+
+    @rx.event
+    def change_retail_strain_filter(self, value: str):
+        self.retail_strain_filter = value
+
+    @rx.event
+    def change_retail_sku_filter(self, value: str):
+        self.retail_sku_filter = value
+
+    @rx.event
+    def change_retail_customer_filter(self, value: str):
+        self.retail_customer_filter = value
+
+    @rx.event
+    def change_retail_start_address(self, value: str):
+        self.retail_start_address_input = value
+
+    @rx.event
+    def apply_retail_start_address(self):
+        self.retail_start_address = self.retail_start_address_input.strip()
+
+    @rx.event
+    def clear_retail_start_address(self):
+        self.retail_start_address_input = ""
+        self.retail_start_address = ""
 
     def _apply_qa_payload(self, payload: dict[str, Any]) -> None:
         self._qa_packages = payload.get("packages", [])
@@ -1839,11 +2048,20 @@ class DashboardState(rx.State):
         self.inventory_lookup_message = "Package found in the latest snapshot."
 
     @rx.event
-    def reset_filters(self):
+    async def reset_filters(self):
+        if self.global_filters_resetting:
+            return
+        self.global_filters_resetting = True
+        # Flush the visible spinner/disabled button before changing the data.
+        yield
+        await asyncio.sleep(0.5)
         self.brand_filter = "All Brands"
         self.strain_filter = "All Strains"
         self.sku_filter = "All SKU Types"
         self.search_text = ""
+        self.sku_planning_page = 1
+        self.inventory_page = 1
+        self.global_filters_resetting = False
 
     def _selected_sku(self) -> tuple[str, str, str] | None:
         if (
@@ -1919,6 +2137,14 @@ class DashboardState(rx.State):
                 "Available Weight (g)": "available_weight_grams",
             })
             matched = potential_wip_for_sku(source, brand, strain, sku_type)
+            if not matched.empty:
+                matched["_age_sort"] = pd.to_numeric(
+                    matched.get("Age", matched.get("inventory_age_days")),
+                    errors="coerce",
+                ).fillna(-1)
+                matched = matched.sort_values(
+                    ["_age_sort", "package_tag"], ascending=[False, True]
+                ).drop(columns=["_age_sort"])
             matches = matched.rename(columns={
                 "brand": "Brand", "strain": "Strain", "sku_type": "SKU Type",
                 "production_stage": "Production Stage", "qa_status": "QA Status",
@@ -2053,6 +2279,10 @@ class DashboardState(rx.State):
         self.production_templates = payload.get("production_templates", [])
         self.calendar = payload["calendar"]
         self.customers = payload.get("customers", [])
+        self.retail_delivery_history = payload.get(
+            "retail_delivery_history", []
+        )
+        self.retailer_locations = payload.get("retailer_locations", [])
         self.exceptions = payload.get("exceptions", [])
         self._transfer_data = payload.get("transfer_data", [])
         self.transfer_import_log = payload.get("transfer_import_log", [])
@@ -2168,7 +2398,15 @@ class DashboardState(rx.State):
         # Keep the first Sales update compact. Large view-specific tables are
         # copied from the server cache only when that subtab is opened.
         self.business_pulse = payload.get("business_pulse", [])
-        self.velocity = payload.get("velocity", [])
+        self.velocity_windows = payload.get(
+            "velocity_windows", {"All Time": payload.get("velocity", [])}
+        )
+        self.velocity = self.velocity_windows.get(
+            self.sku_velocity_period, payload.get("velocity", [])
+        )
+        self.retailer_locations = payload.get(
+            "retailer_locations", self.retailer_locations
+        )
         self._apply_optional_module_payload(payload)
         if payload.get("sales_error"):
             self.error_message = str(payload["sales_error"])
@@ -2300,6 +2538,7 @@ class DashboardState(rx.State):
             self.production_templates = []
             self.calendar = []
             self.customers = []
+            self.retail_delivery_history = []
             self.exceptions = []
             self._transfer_data = []
             self.transfer_import_log = []
@@ -2336,6 +2575,11 @@ class DashboardState(rx.State):
                 self.calendar = payload.get("calendar", [])
         elif self.sales_demand_view == "customers":
             self.customers = payload.get("customers", [])
+        elif self.sales_demand_view == "retail":
+            self.retail_delivery_history = payload.get(
+                "retail_delivery_history", []
+            )
+            self.retailer_locations = payload.get("retailer_locations", [])
         elif self.sales_demand_view == "exceptions":
             self.exceptions = payload.get("exceptions", [])
         elif self.sales_demand_view == "transfers":
@@ -2361,46 +2605,92 @@ class DashboardState(rx.State):
                 parsed = datetime.strptime(first_target, "%Y-%m-%d").date()
                 self.calendar_year = parsed.year
                 self.calendar_month = parsed.month
+                self.calendar_focus_date = parsed.isoformat()
             except (TypeError, ValueError):
                 pass
         self._rebuild_calendar()
 
     def _rebuild_calendar(self) -> None:
-        first = date(self.calendar_year, self.calendar_month, 1)
-        start = first - timedelta(days=(first.weekday() + 1) % 7)
-        self.calendar_title = (
-            f"{month_name[self.calendar_month]} {self.calendar_year}"
-        )
+        try:
+            focus = datetime.strptime(self.calendar_focus_date, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            focus = date(self.calendar_year, self.calendar_month, 1)
+        self.calendar_year, self.calendar_month = focus.year, focus.month
+        if self.calendar_view_mode == "Day":
+            start, count = focus, 1
+            self.calendar_title = focus.strftime("%A, %B %d, %Y")
+        elif self.calendar_view_mode == "Week":
+            start = focus - timedelta(days=(focus.weekday() + 1) % 7)
+            count = 7
+            self.calendar_title = (
+                f"{start:%b %d} – {(start + timedelta(days=6)):%b %d, %Y}"
+            )
+        else:
+            first = date(focus.year, focus.month, 1)
+            start = first - timedelta(days=(first.weekday() + 1) % 7)
+            count = 42
+            self.calendar_title = f"{month_name[focus.month]} {focus.year}"
         self.calendar_days = []
-        for offset in range(42):
+        line_order = {line: index for index, line in enumerate(PRODUCTION_LINE_OPTIONS)}
+        for offset in range(count):
             current = start + timedelta(days=offset)
             current_iso = current.isoformat()
+            plans = [
+                event for event in self.calendar
+                if event.get("Target Date") == current_iso
+            ]
+            plans.sort(key=lambda event: (
+                line_order.get(str(event.get("Production Line", "")), 99),
+                str(event.get("Plan Name", "")),
+            ))
             self.calendar_days.append({
                 "Day": str(current.day),
                 "Date": current_iso,
-                "In Month": current.month == self.calendar_month,
-                "Plans": [
-                    event for event in self.calendar
-                    if event.get("Target Date") == current_iso
-                ],
+                "In Month": self.calendar_view_mode != "Month" or current.month == focus.month,
+                "Plans": plans,
             })
+
+    @rx.var(cache=True)
+    def calendar_grid_columns(self) -> str:
+        return "1" if self.calendar_view_mode == "Day" else "7"
+
+    @rx.var(cache=True)
+    def calendar_weekday_headers(self) -> list[str]:
+        if self.calendar_view_mode == "Day":
+            try:
+                return [datetime.strptime(self.calendar_focus_date, "%Y-%m-%d").strftime("%A")]
+            except (TypeError, ValueError):
+                return ["Day"]
+        return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+    @rx.event
+    def change_calendar_view_mode(self, value: str):
+        if value in {"Month", "Week", "Day"}:
+            self.calendar_view_mode = value
+            self._rebuild_calendar()
 
     @rx.event
     def previous_calendar_month(self):
-        if self.calendar_month == 1:
-            self.calendar_month = 12
-            self.calendar_year -= 1
+        focus = datetime.strptime(self.calendar_focus_date, "%Y-%m-%d").date()
+        if self.calendar_view_mode == "Day":
+            focus -= timedelta(days=1)
+        elif self.calendar_view_mode == "Week":
+            focus -= timedelta(days=7)
         else:
-            self.calendar_month -= 1
+            focus = date(focus.year - (focus.month == 1), 12 if focus.month == 1 else focus.month - 1, 1)
+        self.calendar_focus_date = focus.isoformat()
         self._rebuild_calendar()
 
     @rx.event
     def next_calendar_month(self):
-        if self.calendar_month == 12:
-            self.calendar_month = 1
-            self.calendar_year += 1
+        focus = datetime.strptime(self.calendar_focus_date, "%Y-%m-%d").date()
+        if self.calendar_view_mode == "Day":
+            focus += timedelta(days=1)
+        elif self.calendar_view_mode == "Week":
+            focus += timedelta(days=7)
         else:
-            self.calendar_month += 1
+            focus = date(focus.year + (focus.month == 12), 1 if focus.month == 12 else focus.month + 1, 1)
+        self.calendar_focus_date = focus.isoformat()
         self._rebuild_calendar()
 
     def _production_catalog(self) -> list[tuple[str, str, str]]:
@@ -2804,6 +3094,62 @@ class DashboardState(rx.State):
         self.production_selected_tags = []
         self.production_batch_weight = 0.0
 
+    def _pending_source_commitments(self) -> dict[str, float]:
+        """Mirror the database allocation order for an immediate UI update."""
+        available_by_tag = {
+            str(row.get("Metrc Tag", "")): float(
+                row.get("Available Weight (g)", 0) or 0
+            )
+            for row in self.production_all_source_records
+        }
+        remaining = max(float(self.production_batch_weight or 0), 0.0)
+        commitments: dict[str, float] = {}
+        for package_tag in self.production_selected_tags:
+            available = max(available_by_tag.get(str(package_tag), 0.0), 0.0)
+            committed = min(available, remaining)
+            if committed > 0:
+                commitments[str(package_tag)] = committed
+                remaining -= committed
+            if remaining <= 0.001:
+                break
+        return commitments
+
+    def _apply_local_source_commitments(
+        self, commitments: dict[str, float]
+    ) -> None:
+        """Remove consumed source lots from the builder without a full reload."""
+        if not commitments:
+            return
+
+        def updated_rows(
+            rows: list[dict[str, Any]], *, update_view_flag: bool
+        ) -> list[dict[str, Any]]:
+            updated: list[dict[str, Any]] = []
+            for source_row in rows:
+                package_tag = str(source_row.get("Metrc Tag", ""))
+                committed = commitments.get(package_tag)
+                if committed is None:
+                    updated.append(source_row)
+                    continue
+                row = dict(source_row)
+                available = max(
+                    float(row.get("Available Weight (g)", 0) or 0)
+                    - committed,
+                    0.0,
+                )
+                row["Available Weight (g)"] = round(available, 2)
+                if update_view_flag and available <= 0.001:
+                    row["View Potential WIP"] = False
+                updated.append(row)
+            return updated
+
+        self.all_inventory = updated_rows(
+            self.all_inventory, update_view_flag=True
+        )
+        self.potential_wip_inventory = updated_rows(
+            self.potential_wip_inventory, update_view_flag=False
+        )
+
     @rx.event
     def change_production_material_filter(self, value: str):
         self.production_material_filter = value
@@ -2929,6 +3275,11 @@ class DashboardState(rx.State):
     @rx.event
     def change_production_assigned_department(self, value: str):
         self.production_assigned_department = value
+
+    @rx.event
+    def change_production_line(self, value: str):
+        if value in PRODUCTION_LINE_OPTIONS:
+            self.production_line = value
 
     @rx.event
     def change_production_scenario_name(self, value: str):
@@ -3175,6 +3526,9 @@ class DashboardState(rx.State):
         self.production_plan_notes = str(card.get("Notes", "") or "")
         self.production_assigned_department = str(
             card.get("Department", "Production") or "Production"
+        )
+        self.production_line = str(
+            card.get("Production Line", "Flower Line 1") or "Flower Line 1"
         )
         self.production_edit_plan_id = str(plan_id) if editing else ""
         if editing:
@@ -3444,6 +3798,7 @@ class DashboardState(rx.State):
             duration=20000,
         )
         try:
+            pending_commitments = self._pending_source_commitments()
             plan_id = create_reflex_production_plan(
                 plan_name=self.production_plan_name,
                 output_brand=self.production_brand,
@@ -3475,8 +3830,11 @@ class DashboardState(rx.State):
                 notes=self.production_plan_notes,
                 plan_id=self.production_edit_plan_id,
                 assigned_department=self.production_assigned_department,
+                production_line=self.production_line,
             )
             edited = bool(self.production_edit_plan_id)
+            if not edited:
+                self._apply_local_source_commitments(pending_commitments)
             self.production_edit_plan_id = ""
             self.production_selected_tags = []
             self.production_batch_weight = 0.0
@@ -3539,9 +3897,17 @@ class DashboardState(rx.State):
                 return
             self.production_data_loading = True
         try:
-            production = await rx.run_in_thread(load_production_module_data)
+            production, sales = await asyncio.gather(
+                rx.run_in_thread(load_production_module_data),
+                rx.run_in_thread(
+                    lambda: get_sales_dashboard_data(force_refresh=True)
+                ),
+            )
             async with self:
                 self._apply_production_payload(production)
+                # A saved plan changes committed and available WIP. Refresh the
+                # cached Sales planning rows once, without reloading inventory.
+                self._apply_sales_payload(sales)
         except Exception as error:
             async with self:
                 self.production_action_error = (
@@ -3568,7 +3934,8 @@ class DashboardState(rx.State):
                 ).strftime("%Y%m%d")
             except ValueError:
                 end_date = event_date
-            summary = str(event.get("Plan Name", "Production Plan")).replace(",", "\\,")
+            line = str(event.get("Production Line", "Unassigned"))
+            summary = f"{line}: {event.get('Plan Name', 'Production Plan')}".replace(",", "\\,")
             description = str(event.get("Output Summary", "")).replace(",", "\\,")
             lines.extend([
                 "BEGIN:VEVENT",
@@ -3650,6 +4017,8 @@ class DashboardState(rx.State):
             return status in {"Active", "Dormant"}
         if self.demand_lifecycle_filter == "Include Retirement Candidates":
             return status in {"Active", "Dormant", "Retirement Candidate"}
+        if self.demand_lifecycle_filter == "White Label Products":
+            return status == "White Label"
         return True
 
     @rx.var(cache=True)
@@ -3694,11 +4063,31 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def sku_planning_page_label(self) -> str:
         page = min(max(self.sku_planning_page, 1), self.sku_planning_total_pages)
-        return f"Page {page:,} of {self.sku_planning_total_pages:,}"
+        count = len(self.sku_planning_sorted_records)
+        if not count:
+            return "No matching rows"
+        start = (page - 1) * self.sku_planning_page_size + 1
+        end = min(page * self.sku_planning_page_size, count)
+        return (
+            f"Rows {start:,}-{end:,} of {count:,} · "
+            f"Page {page:,} of {self.sku_planning_total_pages:,}"
+        )
+
+    @rx.var(cache=True)
+    def sku_planning_page_size_value(self) -> str:
+        return str(self.sku_planning_page_size)
 
     @rx.event
     def change_sku_planning_sort(self, value: str):
         self.sku_planning_sort = value
+        self.sku_planning_page = 1
+
+    @rx.event
+    def change_sku_planning_page_size(self, value: str):
+        try:
+            self.sku_planning_page_size = int(value)
+        except (TypeError, ValueError):
+            self.sku_planning_page_size = 10
         self.sku_planning_page = 1
 
     @rx.event
@@ -3841,6 +4230,376 @@ class DashboardState(rx.State):
     def filtered_customers(self) -> list[dict[str, Any]]:
         return [row for row in self.customers if self._matches(row)]
 
+    def _filtered_retail_deliveries(self) -> list[dict[str, Any]]:
+        dated_rows: list[tuple[date, dict[str, Any]]] = []
+        selected_status = (
+            "Awaiting Acceptance" if self.retail_show_pending else "Accepted"
+        )
+        for row in self.retail_delivery_history:
+            if str(row.get("Transfer Status", "")) != selected_status:
+                continue
+            try:
+                delivery_date = date.fromisoformat(
+                    str(row.get("Activity Date", ""))[:10]
+                )
+            except ValueError:
+                continue
+            dated_rows.append((delivery_date, row))
+        if not dated_rows:
+            return []
+        anchor = max(item[0] for item in dated_rows)
+        weeks = {
+            "1 Week": 1, "2 Weeks": 2, "3 Weeks": 3, "4 Weeks": 4,
+        }.get(self.retail_timeframe, 4)
+        start = anchor - timedelta(days=weeks * 7 - 1)
+        filtered: list[dict[str, Any]] = []
+        for delivery_date, row in dated_rows:
+            if delivery_date < start:
+                continue
+            if (
+                self.retail_brand_filter != "All Brands"
+                and str(row.get("Brand", "")) != self.retail_brand_filter
+            ):
+                continue
+            if (
+                self.retail_strain_filter != "All Strains"
+                and str(row.get("Strain", "")) != self.retail_strain_filter
+            ):
+                continue
+            if (
+                self.retail_sku_filter != "All SKU Types"
+                and str(row.get("SKU Type", "")) != self.retail_sku_filter
+            ):
+                continue
+            if (
+                self.retail_customer_filter != "All Retailers"
+                and str(row.get("Customer", "")) != self.retail_customer_filter
+            ):
+                continue
+            filtered.append(row)
+        return filtered
+
+    def _retail_aggregate_records(self) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, ...], dict[str, Any]] = {}
+        for row in self._filtered_retail_deliveries():
+            key = (
+                str(row.get("Destination License", "")),
+                str(row.get("Customer", "")),
+                str(row.get("Brand", "")),
+                str(row.get("Strain", "")),
+                str(row.get("SKU Type", "")),
+            )
+            delivery_date = str(row.get("Activity Date", ""))
+            record = grouped.setdefault(key, {
+                "Destination License": key[0], "Retailer": key[1],
+                "Brand": key[2], "Strain": key[3], "SKU Type": key[4],
+                "Units Shipped": 0.0, "Packages": 0, "Manifests": 0,
+                "First Metrc Date": delivery_date,
+                "Latest Metrc Date": delivery_date,
+            })
+            record["Units Shipped"] += float(row.get("Units Shipped", 0) or 0)
+            record["Packages"] += int(row.get("Packages", 0) or 0)
+            record["Manifests"] += int(row.get("Manifests", 0) or 0)
+            record["First Metrc Date"] = min(
+                str(record["First Metrc Date"]), delivery_date
+            )
+            record["Latest Metrc Date"] = max(
+                str(record["Latest Metrc Date"]), delivery_date
+            )
+        records = list(grouped.values())
+        for record in records:
+            record["Units Shipped"] = round(
+                float(record["Units Shipped"]), 2
+            )
+        records.sort(key=lambda row: (
+            str(row.get("Latest Metrc Date", "")),
+            float(row.get("Units Shipped", 0) or 0),
+        ), reverse=True)
+        return records
+
+    @rx.var(cache=True)
+    def retail_timeframe_options(self) -> list[str]:
+        return ["1 Week", "2 Weeks", "3 Weeks", "4 Weeks"]
+
+    def _retail_options(self, column: str, all_label: str) -> list[str]:
+        return [all_label, *sorted({
+            str(row.get(column, "")).strip()
+            for row in self.retail_delivery_history
+            if str(row.get(column, "")).strip()
+        })]
+
+    @rx.var(cache=True)
+    def retail_brand_options(self) -> list[str]:
+        return self._retail_options("Brand", "All Brands")
+
+    @rx.var(cache=True)
+    def retail_strain_options(self) -> list[str]:
+        return self._retail_options("Strain", "All Strains")
+
+    @rx.var(cache=True)
+    def retail_sku_options(self) -> list[str]:
+        return self._retail_options("SKU Type", "All SKU Types")
+
+    @rx.var(cache=True)
+    def retail_customer_options(self) -> list[str]:
+        return self._retail_options("Customer", "All Retailers")
+
+    @rx.var(cache=True)
+    def retail_availability_rows(self) -> list[list[Any]]:
+        columns = [
+            "Retailer", "Destination License", "Brand", "Strain", "SKU Type",
+            "Units Shipped", "Packages", "Manifests", "First Metrc Date",
+            "Latest Metrc Date",
+        ]
+        return [
+            [row.get(column, "") for column in columns]
+            for row in self._retail_aggregate_records()
+        ]
+
+    @rx.var(cache=True)
+    def retail_retailers_metric(self) -> str:
+        retailers = {
+            str(row.get("Retailer", ""))
+            for row in self._retail_aggregate_records()
+            if str(row.get("Retailer", ""))
+        }
+        return f"{len(retailers):,}"
+
+    @rx.var(cache=True)
+    def retail_units_metric(self) -> str:
+        units = sum(
+            float(row.get("Units Shipped", 0) or 0)
+            for row in self._retail_aggregate_records()
+        )
+        return f"{units:,.0f}"
+
+    @rx.var(cache=True)
+    def retail_skus_metric(self) -> str:
+        return f"{len(self._retail_aggregate_records()):,}"
+
+    @rx.var(cache=True)
+    def retail_latest_delivery(self) -> str:
+        rows = self._retail_aggregate_records()
+        return str(rows[0].get("Latest Metrc Date", "—")) if rows else "—"
+
+    def _retailer_location_match(
+        self, destination_license: str, retailer: str
+    ) -> tuple[dict[str, Any], str]:
+        """Match a Metrc destination to its saved location record."""
+        license_key = destination_license.strip().upper()
+        name_key = normalized_retailer_name(retailer)
+        by_source: dict[str, dict[str, Any]] = {}
+        for location in self.retailer_locations:
+            source_id = str(location.get("source_id", "")).strip()
+            if source_id:
+                by_source[source_id] = location
+            saved_license = str(
+                location.get("destination_license", "")
+            ).strip().upper()
+            if license_key and saved_license == license_key:
+                return location, "Destination License"
+        for location in self.retailer_locations:
+            saved_names = {
+                normalized_retailer_name(location.get("metrc_business_name", "")),
+                normalized_retailer_name(location.get("public_store_name", "")),
+            }
+            if name_key and name_key in saved_names:
+                return location, "Exact Store Name"
+        directory_match = find_clade9_location(retailer)
+        if directory_match:
+            source_id = str(directory_match.get("source_id", "")).strip()
+            saved = by_source.get(source_id)
+            if saved:
+                return saved, "Clade9 Directory"
+            return {
+                "public_store_name": directory_match.get("name", ""),
+                "street_address": directory_match.get("address", ""),
+                "locality": directory_match.get("locality", ""),
+                "website": directory_match.get("website", ""),
+                "source": "Clade9 Store Locator",
+                "source_id": source_id,
+            }, "Clade9 Directory"
+        return {}, "No Match"
+
+    @staticmethod
+    def _valid_coordinate(value: Any, maximum: float) -> float | None:
+        try:
+            coordinate = float(value)
+        except (TypeError, ValueError):
+            return None
+        return coordinate if math.isfinite(coordinate) and abs(coordinate) <= maximum else None
+
+    def _retail_map_locations(self) -> list[RetailMapLocation]:
+        """Return one coordinate-aware map row for every matching retailer."""
+        locations: dict[str, RetailMapLocation] = {}
+        for row in self._retail_aggregate_records():
+            retailer = str(row.get("Retailer", "")).strip()
+            destination_license = str(
+                row.get("Destination License", "")
+            ).strip()
+            if not retailer:
+                continue
+            delivery_date = str(row.get("Latest Metrc Date", ""))
+            location_key = destination_license or normalized_retailer_name(retailer)
+            current = locations.get(location_key)
+            if current and current["Latest Metrc Date"] >= delivery_date:
+                continue
+            match, match_method = self._retailer_location_match(
+                destination_license, retailer
+            )
+            street_address = str(
+                match.get("street_address", match.get("address", ""))
+            ).strip()
+            locality = str(match.get("locality", "")).strip()
+            address_is_complete = bool(
+                re.search(r"\b(?:NJ|New Jersey)\b", street_address, re.I)
+                and re.search(r"\b\d{5}(?:-\d{4})?\b", street_address)
+            )
+            address = street_address if address_is_complete else ", ".join(
+                part for part in (street_address, locality) if part
+            )
+            if not address:
+                address = str(match.get("full_address", "")).strip()
+            latitude = self._valid_coordinate(match.get("latitude"), 90)
+            longitude = self._valid_coordinate(match.get("longitude"), 180)
+            has_coordinates = latitude is not None and longitude is not None
+            route_address = address or f"{retailer}, New Jersey"
+            map_query = (
+                f"{latitude},{longitude}" if has_coordinates else route_address
+            )
+            locations[location_key] = {
+                "Retailer": retailer,
+                "Destination License": destination_license,
+                "Address": address or "Address not matched in the Clade9 directory",
+                "Latest Metrc Date": delivery_date,
+                "Date Label": (
+                    "Sent at" if self.retail_show_pending else "Received at"
+                ),
+                "Website": str(match.get("website", "")).strip(),
+                "Map URL": (
+                    "https://www.google.com/maps/search/?api=1&query="
+                    + quote_plus(map_query)
+                ),
+                "Route Address": route_address,
+                "Latitude": latitude,
+                "Longitude": longitude,
+                "Match Method": match_method,
+                "Coordinate Status": (
+                    "Saved Coordinates" if has_coordinates
+                    else "Address Only" if address else "Needs Address"
+                ),
+                "Verified": bool(match.get("verified", False)),
+                "Location Status": str(match.get("location_status", "")),
+                "Notes": str(match.get("notes", "")),
+            }
+        return sorted(locations.values(), key=lambda item: item["Retailer"].lower())
+
+    @rx.var(cache=True)
+    def retail_map_location_cards(self) -> list[RetailMapLocation]:
+        return self._retail_map_locations()
+
+    @rx.var(cache=True)
+    def retail_location_review_rows(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "Destination License": row["Destination License"],
+                "Metrc Customer": row["Retailer"],
+                "Matched Address": row["Address"],
+                "Latitude": row["Latitude"] if row["Latitude"] is not None else "",
+                "Longitude": row["Longitude"] if row["Longitude"] is not None else "",
+                "Coordinate Status": row["Coordinate Status"],
+                "Match Method": row["Match Method"],
+                "Verified": row["Verified"],
+                "Location Status": row["Location Status"],
+                "Notes": row["Notes"],
+            }
+            for row in self._retail_map_locations()
+        ]
+
+    @rx.event
+    def download_retail_location_review(self):
+        return rx.download(
+            data=self._csv_bytes(self.retail_location_review_rows),
+            filename=(
+                "qcc_retailer_location_review_"
+                f"{date.today().isoformat()}.csv"
+            ),
+        )
+
+    @rx.var(cache=True)
+    def retail_map_src_doc(self) -> str:
+        rows = [
+            {
+                "retailer": row["Retailer"],
+                "address": row["Address"],
+                "route_address": row["Route Address"],
+                "last_delivery": row["Latest Metrc Date"],
+                "date_label": row["Date Label"],
+                "latitude": row["Latitude"],
+                "longitude": row["Longitude"],
+            }
+            for row in self._retail_map_locations()
+        ]
+        return _retail_map_document(rows, self.retail_start_address.strip())
+
+    @rx.var(cache=True)
+    def retail_all_map_note(self) -> str:
+        count = len(self._retail_map_locations())
+        if count == 0:
+            return "No matching retailer locations are available to map."
+        mapped = sum(
+            row.get("Coordinate Status") == "Saved Coordinates"
+            for row in self._retail_map_locations()
+        )
+        unresolved = count - mapped
+        if unresolved:
+            return (
+                f"{count:,} retailers match. {mapped:,} have saved coordinates. "
+                f"The map temporarily checks up to 15 of the {unresolved:,} "
+                "address-only records; download the review list to complete them."
+            )
+        return (
+            f"The map immediately displays all {count:,} matching retailer "
+            "locations from saved coordinates."
+        )
+
+    @rx.var(cache=True)
+    def retail_activity_heading(self) -> str:
+        return (
+            "Outgoing Transfers Awaiting Acceptance"
+            if self.retail_show_pending else "Accepted Retail Deliveries"
+        )
+
+    @rx.var(cache=True)
+    def retail_activity_description(self) -> str:
+        if self.retail_show_pending:
+            return (
+                "Shows outbound transfers still marked Shipped in Metrc. Dates "
+                "are when QCC created the outgoing transfer; these shops have "
+                "not yet recorded acceptance in Metrc."
+            )
+        return (
+            "Shows retailer deliveries marked Accepted in Metrc. Dates are the "
+            "Metrc Received At dates. Acceptance does not guarantee that the "
+            "retailer still has the product in stock."
+        )
+
+    @rx.var(cache=True)
+    def retail_window_label(self) -> str:
+        return "Outbound Window" if self.retail_show_pending else "Received Window"
+
+    @rx.var(cache=True)
+    def retail_latest_date_label(self) -> str:
+        return "Latest Outbound" if self.retail_show_pending else "Latest Receipt"
+
+    @rx.var(cache=True)
+    def retail_latest_date_caption(self) -> str:
+        return (
+            "Newest matching transfer-created date"
+            if self.retail_show_pending
+            else "Newest matching Metrc receipt date"
+        )
+
     @rx.var(cache=True)
     def filtered_exceptions(self) -> list[dict[str, Any]]:
         return [row for row in self.exceptions if self._matches(row)]
@@ -3929,7 +4688,35 @@ class DashboardState(rx.State):
     ) -> list[dict[str, Any]]:
         filtered: list[dict[str, Any]] = []
         for row in rows:
-            if not self._matches(row):
+            stage = str(row.get("Production Stage", ""))
+            if stage in {"WIP-Cultivation", "WIP-Manufacturing", "Pre-WIP"}:
+                row_strain = normalize_strain_name(
+                    str(row.get("Strain", ""))
+                ).strip().lower()
+                if self.strain_filter != "All Strains" and row_strain != (
+                    normalize_strain_name(self.strain_filter).strip().lower()
+                ):
+                    continue
+                if self.brand_filter != "All Brands":
+                    eligible_strains = {
+                        normalize_strain_name(
+                            str(item.get("Strain", ""))
+                        ).strip().lower()
+                        for item in self.velocity
+                        if str(item.get("Brand", "")) == self.brand_filter
+                        and (
+                            self.sku_filter == "All SKU Types"
+                            or str(item.get("SKU Type", "")) == self.sku_filter
+                        )
+                    }
+                    if row_strain not in eligible_strains:
+                        continue
+                search = self.search_text.strip().lower()
+                if search and search not in " ".join(
+                    str(value or "") for value in row.values()
+                ).lower():
+                    continue
+            elif not self._matches(row):
                 continue
             if (
                 self.executive_facility_filter != "All Facilities"
@@ -4668,11 +5455,9 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def active_inventory_rows(self) -> list[list[Any]]:
-        page = min(max(self.inventory_page, 1), self.inventory_total_pages)
-        start = (page - 1) * self.inventory_page_size
-        return self.active_inventory_all_rows[
-            start:start + self.inventory_page_size
-        ]
+        # The table owns paging so changing 10/25/50/100 immediately changes
+        # the visible row count without a second server-side pager.
+        return self.active_inventory_all_rows
 
     @rx.var(cache=True)
     def inventory_total_pages(self) -> int:
@@ -4691,6 +5476,15 @@ class DashboardState(rx.State):
             f"Rows {start:,}-{end:,} of {count:,} · "
             f"Page {page:,} of {self.inventory_total_pages:,}"
         )
+
+    @rx.var(cache=True)
+    def inventory_page_size_value(self) -> str:
+        return str(self.inventory_page_size)
+
+    @rx.var(cache=True)
+    def inventory_pagination(self) -> dict[str, int]:
+        # Grid.js calls its page-size option `limit`.
+        return {"limit": self.inventory_page_size}
 
     @rx.var(cache=True)
     def inventory_previous_disabled(self) -> bool:
@@ -4726,6 +5520,14 @@ class DashboardState(rx.State):
         self.inventory_page = min(
             self.inventory_page + 1, self.inventory_total_pages
         )
+
+    @rx.event
+    def change_inventory_page_size(self, value: str):
+        try:
+            self.inventory_page_size = int(value)
+        except (TypeError, ValueError):
+            self.inventory_page_size = 10
+        self.inventory_page = 1
 
     @rx.event
     def change_active_inventory_summarize(self, value: bool):
@@ -4812,7 +5614,8 @@ class DashboardState(rx.State):
     def calendar_rows(self) -> list[list[Any]]:
         return [[
             row.get("Target Date", ""), row.get("Plan Name", ""),
-            row.get("Status", ""), row.get("Department", ""),
+            row.get("Production Line", ""), row.get("Status", ""),
+            row.get("Department", ""),
             row.get("Output Summary", ""),
         ] for row in self.filtered_calendar]
 
@@ -5129,9 +5932,10 @@ def inventory_data_grid(data: rx.Var) -> rx.Component:
     """Wide sortable inventory grid that never truncates column headings."""
     return rx.box(
         rx.data_table(
+            key="inventory-table-" + DashboardState.inventory_page_size_value,
             data=data,
             columns=DashboardState.inventory_columns,
-            pagination={"page_size": 25},
+            pagination=DashboardState.inventory_pagination,
             search=True,
             sort=True,
             resizable=False,
@@ -5311,7 +6115,7 @@ def sku_package_dialog() -> rx.Component:
                 readable_grid(
                     DashboardState.selected_sku_package_details,
                     PACKAGE_DETAIL_COLUMNS,
-                    "560px",
+                    "420px",
                     1,
                 ),
                 rx.callout(
@@ -5330,10 +6134,37 @@ def sku_package_dialog() -> rx.Component:
                 padding_top="0.75rem",
             ),
             max_width="95vw",
-            width="1500px",
+            width="1180px",
+            class_name="qcc-compact-package-dialog",
         ),
         open=DashboardState.sku_detail_open,
         on_open_change=DashboardState.change_sku_detail_open,
+    )
+
+
+def native_filter_select(
+    options: rx.Var,
+    value: rx.Var,
+    on_change: Any,
+    width: str,
+) -> rx.Component:
+    """Aligned native dropdown with cumulative browser keyboard search."""
+    return rx.el.select(
+        rx.foreach(
+            options,
+            lambda option: rx.el.option(option, value=option),
+        ),
+        value=value,
+        on_change=on_change,
+        width=width,
+        height="32px",
+        padding="0 2rem 0 0.7rem",
+        border="1px solid #cbd5e1",
+        border_radius="6px",
+        background="white",
+        color=DARK,
+        font_size="0.875rem",
+        cursor="pointer",
     )
 
 
@@ -5351,8 +6182,16 @@ def filters() -> rx.Component:
                 ),
                 rx.spacer(),
                 rx.button(
-                    "Reset Global Filters",
+                    rx.cond(
+                        DashboardState.global_filters_resetting,
+                        rx.hstack(
+                            rx.spinner(size="1"), rx.text("Resetting..."), gap="2"
+                        ),
+                        "Reset Global Filters",
+                    ),
                     on_click=DashboardState.reset_filters,
+                    disabled=DashboardState.global_filters_resetting,
+                    loading=DashboardState.global_filters_resetting,
                     variant="outline",
                 ),
                 rx.button(
@@ -5370,29 +6209,29 @@ def filters() -> rx.Component:
             rx.flex(
                 rx.box(
                     rx.text("Brand", size="1", color=MUTED, weight="bold"),
-                    rx.select(
+                    native_filter_select(
                         DashboardState.brand_options,
-                        value=DashboardState.brand_filter,
-                        on_change=DashboardState.change_brand_filter,
-                        width="230px",
+                        DashboardState.brand_filter,
+                        DashboardState.change_brand_filter,
+                        "230px",
                     ),
                 ),
                 rx.box(
                     rx.text("Strain", size="1", color=MUTED, weight="bold"),
-                    rx.select(
+                    native_filter_select(
                         DashboardState.strain_options,
-                        value=DashboardState.strain_filter,
-                        on_change=DashboardState.change_strain_filter,
-                        width="250px",
+                        DashboardState.strain_filter,
+                        DashboardState.change_strain_filter,
+                        "250px",
                     ),
                 ),
                 rx.box(
                     rx.text("SKU Type", size="1", color=MUTED, weight="bold"),
-                    rx.select(
+                    native_filter_select(
                         DashboardState.sku_options,
-                        value=DashboardState.sku_filter,
-                        on_change=DashboardState.change_sku_filter,
-                        width="260px",
+                        DashboardState.sku_filter,
+                        DashboardState.change_sku_filter,
+                        "260px",
                     ),
                 ),
                 rx.box(
@@ -5629,7 +6468,8 @@ def stockouts_panel() -> rx.Component:
                     rx.select(
                         [
                             "Active Products Only", "Active + Dormant",
-                            "Include Retirement Candidates", "Include All Products",
+                            "Include Retirement Candidates", "White Label Products",
+                            "Include All Products",
                         ],
                         value=DashboardState.demand_lifecycle_filter,
                         on_change=DashboardState.change_demand_lifecycle_filter,
@@ -5665,6 +6505,8 @@ def sku_planning_cell(value: rx.Var, width: str = "145px") -> rx.Component:
         max_width=width,
         white_space="normal",
         vertical_align="middle",
+        font_size="0.76rem",
+        padding="0.38rem 0.45rem",
     )
 
 
@@ -5675,6 +6517,9 @@ def sku_planning_action_row(row: rx.Var) -> rx.Component:
         sku_planning_cell(row["SKU Type"], "205px"),
         sku_planning_cell(row["Units Shipped"].to_string(), "125px"),
         sku_planning_cell(row["Avg Weekly Units"].to_string(), "145px"),
+        sku_planning_cell(
+            row["Avg Weekly Units - Last 30 Days"].to_string(), "145px"
+        ),
         sku_planning_cell(row["Packages"].to_string(), "105px"),
         sku_planning_cell(row["Current Units"].to_string(), "125px"),
         sku_planning_cell(row["Weeks of Supply"].to_string(), "130px"),
@@ -5727,10 +6572,22 @@ def sku_planning_action_row(row: rx.Var) -> rx.Component:
     )
 
 
+SKU_PLANNING_COLUMN_WIDTHS = {
+    "Brand": "140px", "Strain": "175px", "SKU Type": "205px",
+    "Units Shipped": "125px", "Avg Weekly Units": "145px",
+    "Avg Weekly Units - Last 30 Days": "145px", "Packages": "105px",
+    "Current Units": "125px", "Weeks of Supply": "130px",
+    "Potential Matching WIP": "205px", "Committed WIP": "175px",
+    "Matching Pre-WIP Weight": "200px", "Customers": "105px",
+    "Demand Status": "225px", "Last Shipped": "125px",
+    "Lifecycle Status": "175px",
+}
+
+
 def sku_planning_action_table() -> rx.Component:
     columns = [
         "Brand", "Strain", "SKU Type", "Units Shipped",
-        "Avg Weekly Units", "Packages",
+        "Avg Weekly Units", "Avg Weekly Units - Last 30 Days", "Packages",
         "Current Units", "Weeks of Supply", "Potential Matching WIP",
         "Committed WIP", "Matching Pre-WIP Weight", "Customers",
         "Demand Status", "Last Shipped", "Lifecycle Status",
@@ -5740,7 +6597,14 @@ def sku_planning_action_table() -> rx.Component:
             rx.table.header(
                 rx.table.row(*[
                     rx.table.column_header_cell(
-                        column,
+                        (
+                            rx.text(
+                                "Avg Weekly Units", rx.el.br(), "Last 30 Days",
+                                line_height="1.05",
+                            )
+                            if column == "Avg Weekly Units - Last 30 Days"
+                            else column
+                        ),
                         background=(
                             "#99f6e4" if column == "Potential Matching WIP"
                             else "#bfdbfe" if column == "Committed WIP"
@@ -5748,7 +6612,18 @@ def sku_planning_action_table() -> rx.Component:
                         ),
                         color=DARK,
                         font_weight="700",
+                        font_size="0.76rem",
+                        line_height="1.15",
                         white_space="normal",
+                        word_break="normal",
+                        min_width=SKU_PLANNING_COLUMN_WIDTHS[column],
+                        max_width=SKU_PLANNING_COLUMN_WIDTHS[column],
+                        height="76px",
+                        vertical_align="middle",
+                        padding="0.65rem 1.6rem 0.65rem 0.5rem",
+                        position="sticky",
+                        top="0",
+                        z_index="5",
                     )
                     for column in columns
                 ])
@@ -5765,6 +6640,8 @@ def sku_planning_action_table() -> rx.Component:
         ),
         width="100%",
         overflow_x="auto",
+        max_height="620px",
+        overflow_y="auto",
         border="1px solid #d8e0e8",
         border_radius="8px",
     )
@@ -5830,7 +6707,7 @@ def sku_planning_panel() -> rx.Component:
             rx.box(
                 rx.text("Velocity timeframe", size="1", weight="bold", color=MUTED),
                 rx.select(
-                    ["1 Week", "30 Days", "90 Days", "All Time"],
+                    ["1 Week", "60 Days", "90 Days", "120 Days", "All Time"],
                     value=DashboardState.sku_velocity_period,
                     on_change=DashboardState.change_sku_velocity_period,
                     width="190px",
@@ -5856,28 +6733,46 @@ def sku_planning_panel() -> rx.Component:
                 rx.select(
                     [
                         "Active Products Only", "Active + Dormant",
-                        "Include Retirement Candidates", "Include All Products",
+                        "Include Retirement Candidates", "White Label Products",
+                        "Include All Products",
                     ],
                     value=DashboardState.demand_lifecycle_filter,
                     on_change=DashboardState.change_demand_lifecycle_filter,
                     width="260px",
                 ),
             ),
+            align="end", gap="2", wrap="wrap", width="100%",
+        ),
+        sku_planning_action_table(),
+        rx.flex(
+            rx.box(
+                rx.text("Rows per page", size="1", weight="bold", color=MUTED),
+                rx.select(
+                    ["10", "25", "50", "100"],
+                    value=DashboardState.sku_planning_page_size_value,
+                    on_change=DashboardState.change_sku_planning_page_size,
+                    width="110px",
+                ),
+            ),
             rx.spacer(),
             rx.button(
                 "Previous",
                 on_click=DashboardState.previous_sku_planning_page,
+                disabled=DashboardState.sku_planning_page <= 1,
                 variant="outline",
             ),
             rx.badge(DashboardState.sku_planning_page_label, size="2"),
             rx.button(
                 "Next",
                 on_click=DashboardState.next_sku_planning_page,
+                disabled=(
+                    DashboardState.sku_planning_page
+                    >= DashboardState.sku_planning_total_pages
+                ),
                 variant="outline",
             ),
             align="end", gap="2", wrap="wrap", width="100%",
         ),
-        sku_planning_action_table(),
         sku_package_dialog(),
         spacing="4",
         width="100%",
@@ -5966,6 +6861,11 @@ def plan_card(plan: rx.Var) -> rx.Component:
                 ),
             ),
             rx.spacer(),
+            rx.badge(
+                plan["Production Line"],
+                color=plan["Line Color"],
+                background=plan["Line Background"],
+            ),
             rx.badge(plan["Status"], color_scheme="teal"),
             rx.text(plan["Target Date"], weight="medium"),
             align="center",
@@ -5975,10 +6875,11 @@ def plan_card(plan: rx.Var) -> rx.Component:
         content=rx.vstack(
             rx.grid(
                 metric_card("Target Date", plan["Target Date"], "Packaging target"),
+                metric_card("Production Line", plan["Production Line"], "Assigned packaging line"),
                 metric_card("Department", plan["Department"], "Assigned team"),
                 metric_card("Batch Weight", plan["Batch Weight (g)"].to_string() + " g", "Committed batch"),
                 metric_card("Source Lots", plan["Source Count"].to_string(), "Metrc tags"),
-                columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+                columns=rx.breakpoints(initial="1", sm="2", lg="5"),
                 gap="3",
                 width="100%",
             ),
@@ -6134,10 +7035,11 @@ def saved_plans_panel() -> rx.Component:
 def calendar_plan_badge(event: rx.Var) -> rx.Component:
     return rx.box(
         rx.text(event["Plan Name"], weight="bold", size="1"),
+        rx.text(event["Production Line"], size="1", weight="bold"),
         rx.text(event["Department"], size="1"),
         rx.text(event["Output Summary"], size="1", color=MUTED),
-        background="#e3f2f3",
-        border_left=f"4px solid {ACCENT}",
+        background=event["Line Background"],
+        border_left="4px solid " + event["Line Color"],
         border_radius="6px",
         padding="0.4rem",
         width="100%",
@@ -6164,6 +7066,12 @@ def calendar_panel() -> rx.Component:
     return rx.vstack(
         rx.flex(
             rx.heading("Production Calendar", size="4"),
+            rx.select(
+                ["Month", "Week", "Day"],
+                value=DashboardState.calendar_view_mode,
+                on_change=DashboardState.change_calendar_view_mode,
+                width="130px",
+            ),
             rx.spacer(),
             rx.button(
                 "Download Calendar (.ics)",
@@ -6186,18 +7094,20 @@ def calendar_panel() -> rx.Component:
             width="100%",
         ),
         rx.grid(
-            *[
-                rx.text(day_name, weight="bold", text_align="center", color=MUTED)
-                for day_name in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-            ],
-            columns="7",
+            rx.foreach(
+                DashboardState.calendar_weekday_headers,
+                lambda day_name: rx.text(
+                    day_name, weight="bold", text_align="center", color=MUTED
+                ),
+            ),
+            columns=DashboardState.calendar_grid_columns,
             width="100%",
         ),
         rx.cond(
             DashboardState.calendar.length() > 0,
             rx.grid(
                 rx.foreach(DashboardState.calendar_days, calendar_day_cell),
-                columns="7",
+                columns=DashboardState.calendar_grid_columns,
                 gap="0",
                 width="100%",
             ),
@@ -6211,7 +7121,7 @@ def calendar_panel() -> rx.Component:
         data_grid(
             DashboardState.calendar_rows,
             [
-                "Target Date", "Plan Name", "Status", "Department",
+                "Target Date", "Plan Name", "Production Line", "Status", "Department",
                 "Output Summary",
             ],
             "320px",
@@ -6824,7 +7734,16 @@ def production_builder_panel() -> rx.Component:
                     width="100%",
                 ),
             ),
-            columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+            rx.box(
+                rx.text("Production line", size="1", weight="bold", color=MUTED),
+                rx.select(
+                    PRODUCTION_LINE_OPTIONS,
+                    value=DashboardState.production_line,
+                    on_change=DashboardState.change_production_line,
+                    width="100%",
+                ),
+            ),
+            columns=rx.breakpoints(initial="1", sm="2", lg="5"),
             gap="3", width="100%",
         ),
         rx.text_area(
@@ -6954,6 +7873,252 @@ def customers_panel() -> rx.Component:
         ),
         width="100%",
         spacing="4",
+    )
+
+
+def retail_location_card(store: rx.Var) -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.heading(store["Retailer"], size="3"),
+            rx.text(store["Address"], size="2", color=MUTED),
+            rx.text(
+                store["Date Label"] + ": " + store["Latest Metrc Date"],
+                size="1", color=MUTED,
+            ),
+            rx.text(
+                store["Coordinate Status"] + " · " + store["Match Method"],
+                size="1", color=MUTED,
+            ),
+            rx.hstack(
+                rx.link(
+                    rx.button("Open Map", size="2", variant="outline"),
+                    href=store["Map URL"], target="_blank",
+                ),
+                rx.cond(
+                    store["Website"] != "",
+                    rx.link(
+                        rx.button("Website", size="2", variant="ghost"),
+                        href=store["Website"], target="_blank",
+                    ),
+                ),
+                gap="2", wrap="wrap",
+            ),
+            width="100%", spacing="2", align="start",
+        ),
+        width="100%",
+    )
+
+
+def retail_availability_panel() -> rx.Component:
+    return rx.vstack(
+        rx.box(
+            rx.heading("Where to Find QCC Products", size="5"),
+            rx.text(
+                "Map accepted retail deliveries or switch to outbound transfers "
+                "that shops have not yet accepted in Metrc.",
+                color=MUTED,
+            ),
+            width="100%",
+        ),
+        rx.callout(
+            DashboardState.retail_activity_description,
+            icon="info", color_scheme="blue", width="100%",
+        ),
+        rx.card(
+            rx.flex(
+                rx.box(
+                    rx.text(
+                        "Show outgoing transfers awaiting acceptance",
+                        weight="bold",
+                    ),
+                    rx.text(
+                        "Off shows completed Metrc receipts. On shows transfers "
+                        "still marked Shipped and not yet Accepted.",
+                        size="1", color=MUTED,
+                    ),
+                ),
+                rx.spacer(),
+                rx.switch(
+                    checked=DashboardState.retail_show_pending,
+                    on_change=DashboardState.change_retail_show_pending,
+                    size="3",
+                ),
+                align="center", width="100%", gap="3",
+            ),
+            width="100%",
+        ),
+        rx.flex(
+            rx.box(
+                rx.text(
+                    DashboardState.retail_window_label,
+                    size="1", color=MUTED, weight="bold",
+                ),
+                rx.select(
+                    DashboardState.retail_timeframe_options,
+                    value=DashboardState.retail_timeframe,
+                    on_change=DashboardState.change_retail_timeframe,
+                    width="170px",
+                ),
+            ),
+            rx.box(
+                rx.text("Brand", size="1", color=MUTED, weight="bold"),
+                rx.select(
+                    DashboardState.retail_brand_options,
+                    value=DashboardState.retail_brand_filter,
+                    on_change=DashboardState.change_retail_brand_filter,
+                    width="210px",
+                ),
+            ),
+            rx.box(
+                rx.text("Strain", size="1", color=MUTED, weight="bold"),
+                rx.select(
+                    DashboardState.retail_strain_options,
+                    value=DashboardState.retail_strain_filter,
+                    on_change=DashboardState.change_retail_strain_filter,
+                    width="220px",
+                ),
+            ),
+            rx.box(
+                rx.text("SKU Type", size="1", color=MUTED, weight="bold"),
+                rx.select(
+                    DashboardState.retail_sku_options,
+                    value=DashboardState.retail_sku_filter,
+                    on_change=DashboardState.change_retail_sku_filter,
+                    width="220px",
+                ),
+            ),
+            rx.box(
+                rx.text("Retailer / Map", size="1", color=MUTED, weight="bold"),
+                rx.select(
+                    DashboardState.retail_customer_options,
+                    value=DashboardState.retail_customer_filter,
+                    on_change=DashboardState.change_retail_customer_filter,
+                    width="280px",
+                ),
+            ),
+            align="end", gap="3", wrap="wrap", width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.heading("Matching Shops Near an Address", size="4"),
+                    rx.spacer(),
+                    rx.button(
+                        "Download Location Review CSV",
+                        on_click=DashboardState.download_retail_location_review,
+                        variant="outline",
+                    ),
+                    align="center", gap="3", wrap="wrap", width="100%",
+                ),
+                rx.text(
+                    "Every shop matching the date-window and product filters is "
+                    "shown as its own marker when saved coordinates are available. "
+                    "Enter an address to sort the shops and show the approximate "
+                    "distance to each. The review download identifies any records "
+                    "that still need an address or coordinates.",
+                    color=MUTED,
+                ),
+                rx.flex(
+                    rx.box(
+                        rx.text(
+                            "Starting Address or ZIP (optional)",
+                            size="1", color=MUTED, weight="bold",
+                        ),
+                        rx.input(
+                            placeholder="Example: 123 Main St, Princeton, NJ 08540",
+                            value=DashboardState.retail_start_address_input,
+                            on_change=DashboardState.change_retail_start_address,
+                            width="min(100%, 520px)",
+                        ),
+                        width="min(100%, 540px)",
+                    ),
+                    rx.button(
+                        "Find Nearby Matching Shops",
+                        on_click=DashboardState.apply_retail_start_address,
+                        size="3",
+                    ),
+                    rx.cond(
+                        DashboardState.retail_start_address_input != "",
+                        rx.button(
+                            "Clear Address",
+                            on_click=DashboardState.clear_retail_start_address,
+                            variant="outline",
+                            size="3",
+                        ),
+                    ),
+                    align="end", gap="3", wrap="wrap", width="100%",
+                ),
+                rx.text(DashboardState.retail_all_map_note, size="1", color=MUTED),
+                rx.el.iframe(
+                    src_doc=DashboardState.retail_map_src_doc,
+                    title="Matching retail availability locations",
+                    width="100%", height="560px",
+                    border="0", border_radius="10px",
+                    loading="eager",
+                    sandbox=(
+                        "allow-scripts allow-same-origin allow-popups "
+                        "allow-popups-to-escape-sandbox"
+                    ),
+                ),
+                rx.text(
+                    "Distances are straight-line estimates. Address lookup and map "
+                    "tiles are provided by OpenStreetMap services. Directions open "
+                    "only for the individual shop selected.",
+                    size="1", color=MUTED,
+                ),
+                width="100%", spacing="3",
+            ),
+            width="100%",
+            border_top=f"4px solid {ACCENT}",
+        ),
+        rx.grid(
+            metric_card(
+                "Retailers", DashboardState.retail_retailers_metric,
+                "Matching recent Metrc activity",
+            ),
+            metric_card(
+                "Units Shipped", DashboardState.retail_units_metric,
+                "Across the selected window",
+            ),
+            metric_card(
+                "Retailer / SKU Matches", DashboardState.retail_skus_metric,
+                "Filtered product combinations",
+            ),
+            metric_card(
+                DashboardState.retail_latest_date_label,
+                DashboardState.retail_latest_delivery,
+                DashboardState.retail_latest_date_caption,
+            ),
+            columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+            gap="4", width="100%",
+        ),
+        rx.heading("Matching Shop Directory", size="4"),
+        rx.cond(
+            DashboardState.retail_map_location_cards.length() > 0,
+            rx.grid(
+                rx.foreach(
+                    DashboardState.retail_map_location_cards,
+                    retail_location_card,
+                ),
+                columns=rx.breakpoints(initial="1", md="2", xl="3"),
+                gap="3", width="100%",
+            ),
+            rx.callout(
+                "No retailer locations match the current filters.",
+                icon="map_pin", width="100%",
+            ),
+        ),
+        rx.heading(DashboardState.retail_activity_heading, size="4"),
+        data_grid(
+            DashboardState.retail_availability_rows,
+            [
+                "Retailer", "Destination License", "Brand", "Strain", "SKU Type",
+                "Units Shipped", "Packages", "Manifests", "First Metrc Date",
+                "Latest Metrc Date",
+            ],
+            "560px",
+        ),
+        width="100%", spacing="4",
     )
 
 
@@ -7193,26 +8358,6 @@ def inventory_view(
             "Detailed mode shows one row per Metrc package. Summary mode groups exact Brand, Strain, and SKU Type combinations, totals units and weight, and uses the oldest package age. Summary weight above always remains in pounds.",
             size="1", color=MUTED,
         ),
-        rx.flex(
-            rx.button(
-                "Previous 50",
-                on_click=DashboardState.previous_inventory_page,
-                disabled=DashboardState.inventory_previous_disabled,
-                variant="outline",
-            ),
-            rx.badge(
-                DashboardState.inventory_page_label,
-                color_scheme="teal",
-                size="3",
-            ),
-            rx.button(
-                "Next 50",
-                on_click=DashboardState.next_inventory_page,
-                disabled=DashboardState.inventory_next_disabled,
-                variant="outline",
-            ),
-            gap="3", align="center", wrap="wrap", width="100%",
-        ),
         rx.hstack(
             rx.box(
                 rx.text("Table Weight Display", weight="bold", size="2"),
@@ -7233,6 +8378,23 @@ def inventory_view(
             align="center",
         ),
         inventory_data_grid(rows),
+        rx.flex(
+            rx.box(
+                rx.text("Rows per page", size="1", weight="bold", color=MUTED),
+                rx.select(
+                    ["10", "25", "50", "100"],
+                    value=DashboardState.inventory_page_size_value,
+                    on_change=DashboardState.change_inventory_page_size,
+                    width="110px",
+                ),
+            ),
+            rx.text(
+                "The table updates immediately. Use the table's page controls "
+                "to move through additional results.",
+                size="1", color=MUTED,
+            ),
+            gap="3", align="end", wrap="wrap", width="100%",
+        ),
         width="100%", spacing="3",
     )
 
@@ -7483,8 +8645,9 @@ def sales_demand_workspace() -> rx.Component:
                 rx.tabs.trigger("SKU Planning & Coverage", value="planning"),
                 rx.tabs.trigger("Production Planning", value="production"),
                 rx.tabs.trigger("Customers", value="customers"),
-                rx.tabs.trigger("Shipment Exceptions", value="exceptions"),
+                rx.tabs.trigger("Retail Availability", value="retail"),
                 rx.tabs.trigger("Transfer Data", value="transfers"),
+                rx.tabs.trigger("Shipment Exceptions", value="exceptions"),
                 class_name="qcc-tabs",
                 width="100%",
             ),
@@ -7500,8 +8663,9 @@ def sales_demand_workspace() -> rx.Component:
                 ("planning", sku_planning_panel()),
                 ("production", production_planning_panel()),
                 ("customers", customers_panel()),
-                ("exceptions", exceptions_panel()),
+                ("retail", retail_availability_panel()),
                 ("transfers", transfer_data_panel()),
+                ("exceptions", exceptions_panel()),
                 overview_panel(),
             ),
             width="100%", padding_top="1.25rem",

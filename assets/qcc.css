@@ -279,3 +279,51 @@ body {
     flex: 0 0 auto;
   }
 }
+.qcc-compact-package-dialog {
+  font-size: 0.82rem;
+}
+
+.qcc-compact-package-dialog .gridjs-table {
+  table-layout: fixed;
+  font-size: 0.78rem;
+}
+
+.qcc-compact-package-dialog .gridjs-th {
+  position: relative;
+  min-width: 165px;
+  min-height: 62px;
+  padding: 12px 44px 12px 12px !important;
+  overflow: visible;
+  vertical-align: middle;
+  box-sizing: border-box;
+}
+
+.qcc-compact-package-dialog .gridjs-th-content {
+  display: block;
+  width: 100%;
+  overflow: visible;
+  white-space: normal;
+  word-break: normal;
+  text-overflow: clip;
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.22;
+}
+
+.qcc-compact-package-dialog .gridjs-sort {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  min-width: 20px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  z-index: 3;
+}
+
+.qcc-compact-package-dialog .gridjs-td {
+  font-size: 0.75rem;
+  line-height: 1.2;
+}

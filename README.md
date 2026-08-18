@@ -1,4 +1,37 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.3.13
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.3
+
+Version 0.9.5.3 keeps Matching WIP column headings clear of their sorting
+controls and immediately removes fully committed source lots after a plan saves.
+Partially committed lots remain visible with their reduced available weight.
+
+Version 0.9.5.1 corrects the first team-review build: Strain filtering now has
+both cumulative search and a complete selection list, Inventory uses one working
+10/25/50/100-row table pager, Reset visibly reports progress, SKU Planning
+headers reserve enough room for their labels, and the post-save production
+refresh no longer passes an unsupported argument to Reflex. Production lines
+are now Flower Line 1, Flower Line 2, Manufacturing Line 1, Manufacturing Line
+2, and Flex Line 3.
+
+Version 0.9.5.0 delivers the team-review interface upgrades: cumulative strain
+search, consistent Executive WIP filtering, compact 10-row inventory and SKU
+planning tables, a trailing-30-day velocity column, four color-coded production
+lines, month/week/day production calendar views, immediate post-save WIP
+refresh, and Craft Kings blend recognition in QA. White Label is available as
+a lifecycle category, while automatic assignment remains intentionally pending
+the confirmed customer/product rule.
+
+Version 0.9.4.4 adds a persistent Supabase retailer-location directory,
+coordinate-first mapping, and a downloadable location-review list. Accepted
+retail deliveries remain dated by Metrc's Received At value
+and adds a toggle for outbound transfers that remain Shipped and have not yet
+been accepted. The two states stay visually and analytically separate.
+
+Version 0.9.4 adds a Sales-focused Retail Availability workspace for finding
+retailers that received selected QCC products during the last one to four weeks.
+It includes product and retailer filters, delivery metrics, a selected-retailer
+Google Maps lookup backed by the Clade9 New Jersey store directory, and a
+complete recent-delivery table. The feature remains separate from
+production-oriented SKU Planning & Coverage.
 
 Version 0.9.3.13 restores the Quality Assurance workspace on the verified compact
 Sales snapshot foundation. QA loads only when selected, uses retryable reads,
@@ -58,7 +91,7 @@ Streamlit application.
 
 ## Included in Pilot 0.7.3
 
-- SKU Planning velocity windows for 1 Week, 30 Days, 90 Days, and All Time
+- SKU Planning velocity windows for 1 Week, 60 Days, 90 Days, 120 Days, and All Time
 - Current package count replaces First Shipped and History Status
 - Potential WIP hover summaries show package count, age range, and lot-size range
 - A dedicated info action opens the closable package-detail window
