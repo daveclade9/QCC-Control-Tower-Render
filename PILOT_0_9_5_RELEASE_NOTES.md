@@ -1,4 +1,18 @@
-# QCC Control Tower Reflex 0.9.5.6
+# QCC Control Tower Reflex 0.9.5.7
+
+## 0.9.5.7 compatibility model
+
+- Calculates Compatible Brand for unfinished inventory without changing the
+  Supabase snapshot or renaming finished goods.
+- Applies Building 1A facility and ownership gates before explicit product,
+  established strain, and uniquely observed finished-demand rules.
+- Replaces Brand with Compatible Brand in Bulk, WIP & Pre-WIP, and Aging Risk
+  Bulk; All Inventory retains Brand and adds Compatible Brand.
+- Uses Compatible Brand consistently for global filtering and Executive WIP
+  totals, and removes the earlier Aging Risk Bulk brand exclusion.
+- Keeps Hybrid Blend, Sativa Blend, and Indica Blend broad-source behavior only
+  inside production planning. It does not relabel every source Craft Kings.
+- Makes no typography, spacing, width, pagination, or other table-format changes.
 
 ## 0.9.5.6 adjustment
 

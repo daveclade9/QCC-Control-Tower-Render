@@ -1,4 +1,9 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.6
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.7
+
+Version 0.9.5.7 introduces a non-destructive Compatible Brand planning field
+for unfinished inventory. Building 1A ownership rules run before strain-based
+compatibility, Inventory and Executive WIP filters now reconcile, and the three
+Craft Kings blend outputs remain production-planning exceptions only.
 
 Version 0.9.5.6 sets Retail Availability column headings to 12px for a more
 compact, readable two-line presentation.

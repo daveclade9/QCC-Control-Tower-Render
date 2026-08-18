@@ -59,10 +59,14 @@ from .retailer_directory import (
     find_clade9_location,
     normalized_retailer_name,
 )
-from .rules import normalize_strain_name
+from .rules import (
+    UNFINISHED_INVENTORY_STAGES,
+    compatible_inventory_brand,
+    normalize_strain_name,
+)
 
 
-PILOT_VERSION = "0.9.5.6"
+PILOT_VERSION = "0.9.5.7"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -3952,15 +3956,44 @@ class DashboardState(rx.State):
             filename=f"qcc_production_calendar_{date.today().isoformat()}.ics",
         )
 
+    @rx.var(cache=True)
+    def compatible_brand_lookup(self) -> dict[str, str]:
+        """Map uniquely sold strains to a planning brand for Building 33 WIP."""
+        source = self.velocity_windows.get("All Time", []) or self.velocity
+        candidates: dict[str, set[str]] = {}
+        for row in source:
+            strain = normalize_strain_name(
+                str(row.get("Strain", "") or "")
+            ).strip().lower()
+            brand = str(row.get("Brand", "") or "").strip()
+            if not strain or strain == "strain needs review" or not brand:
+                continue
+            if brand in {
+                "Brand Needs Review", "Unbranded / Bulk",
+                "Unallocated QCC Brand", "ROFR / Not Purchased",
+            }:
+                continue
+            candidates.setdefault(strain, set()).add(brand)
+        return {
+            strain: next(iter(brands))
+            for strain, brands in candidates.items()
+            if len(brands) == 1
+        }
+
+    def _compatible_brand(self, row: dict[str, Any]) -> str:
+        return compatible_inventory_brand(row, self.compatible_brand_lookup)
+
+    def _filter_brand_value(self, row: dict[str, Any]) -> str:
+        stage = str(row.get("Production Stage", "") or "").strip()
+        if stage in UNFINISHED_INVENTORY_STAGES:
+            return self._compatible_brand(row)
+        return str(row.get("Brand", "") or "").strip()
+
     def _matches(self, row: dict[str, Any]) -> bool:
-        if (
-            self.brand_filter != "All Brands"
-            and row.get("Brand") is not None
-            and self.brand_filter not in [
-                value.strip()
-                for value in str(row.get("Brand", "")).split(",")
-            ]
-        ):
+        if self.brand_filter != "All Brands" and self.brand_filter not in [
+            value.strip()
+            for value in self._filter_brand_value(row).split(",")
+        ]:
             return False
         strain = (
             "" if self.strain_filter == "All Strains"
@@ -4698,19 +4731,19 @@ class DashboardState(rx.State):
                 ):
                     continue
                 if self.brand_filter != "All Brands":
-                    eligible_strains = {
-                        normalize_strain_name(
-                            str(item.get("Strain", ""))
-                        ).strip().lower()
-                        for item in self.velocity
-                        if str(item.get("Brand", "")) == self.brand_filter
-                        and (
-                            self.sku_filter == "All SKU Types"
-                            or str(item.get("SKU Type", "")) == self.sku_filter
-                        )
-                    }
-                    if row_strain not in eligible_strains:
+                    if self._compatible_brand(row) != self.brand_filter:
                         continue
+                    if self.sku_filter != "All SKU Types":
+                        eligible_strains = {
+                            normalize_strain_name(
+                                str(item.get("Strain", ""))
+                            ).strip().lower()
+                            for item in self.velocity
+                            if str(item.get("Brand", "")) == self.brand_filter
+                            and str(item.get("SKU Type", "")) == self.sku_filter
+                        }
+                        if row_strain not in eligible_strains:
+                            continue
                 search = self.search_text.strip().lower()
                 if search and search not in " ".join(
                     str(value or "") for value in row.values()
@@ -4758,14 +4791,36 @@ class DashboardState(rx.State):
             return f"{weight_grams:,.1f} g"
         return f"{weight_grams / 453.59237:,.1f} lb"
 
-    @rx.var(cache=True)
-    def inventory_columns(self) -> list[str]:
+    def _inventory_columns_for_view(self, view_name: str) -> list[str]:
         unit = "g" if self.inventory_weight_unit == "Grams" else "lb"
+        identity_columns = ["Brand"]
+        if view_name in {"bulk", "wip", "aging_bulk"}:
+            identity_columns = ["Compatible Brand"]
+        elif view_name == "all":
+            identity_columns = ["Brand", "Compatible Brand"]
         return [
-            "Brand", "Strain", "SKU Type", "Unit Count",
+            *identity_columns, "Strain", "SKU Type", "Unit Count",
             f"Total Weight ({unit})", "Age (Days)", "Location",
             "QA Status", "Metrc Tag",
         ]
+
+    @rx.var(cache=True)
+    def inventory_columns(self) -> list[str]:
+        return self._inventory_columns_for_view(self.inventory_view_name)
+
+    @rx.var(cache=True)
+    def inventory_grouping_caption(self) -> str:
+        if self.inventory_view_name in {"bulk", "wip", "aging_bulk"}:
+            identity = "Compatible Brand, Strain, and SKU Type"
+        elif self.inventory_view_name == "all":
+            identity = "Brand, Compatible Brand, Strain, and SKU Type"
+        else:
+            identity = "Brand, Strain, and SKU Type"
+        return (
+            "Detailed mode shows one row per Metrc package. Summary mode groups "
+            f"exact {identity} combinations, totals units and weight, and uses "
+            "the oldest package age. Summary weight above always remains in pounds."
+        )
 
     @rx.var(cache=True)
     def inventory_weight_metric_label(self) -> str:
@@ -5174,43 +5229,43 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def cpg_inventory_rows(self) -> list[list[Any]]:
         return self._inventory_rows(
-            self.filtered_cpg_inventory, self.summarize_cpg_inventory
+            self.filtered_cpg_inventory, self.summarize_cpg_inventory, "cpg"
         )
 
     @rx.var(cache=True)
     def bulk_inventory_rows(self) -> list[list[Any]]:
         return self._inventory_rows(
-            self.filtered_bulk_inventory, self.summarize_bulk_inventory
+            self.filtered_bulk_inventory, self.summarize_bulk_inventory, "bulk"
         )
 
     @rx.var(cache=True)
     def wip_inventory_rows(self) -> list[list[Any]]:
         return self._inventory_rows(
-            self.filtered_wip_inventory, self.summarize_wip_inventory
+            self.filtered_wip_inventory, self.summarize_wip_inventory, "wip"
         )
 
     @rx.var(cache=True)
     def aging_cpg_rows(self) -> list[list[Any]]:
         return self._inventory_rows(
-            self.filtered_aging_cpg, self.summarize_aging_cpg
+            self.filtered_aging_cpg, self.summarize_aging_cpg, "aging_cpg"
         )
 
     @rx.var(cache=True)
     def aging_bulk_rows(self) -> list[list[Any]]:
         return self._inventory_rows(
-            self.filtered_aging_bulk, self.summarize_aging_bulk
+            self.filtered_aging_bulk, self.summarize_aging_bulk, "aging_bulk"
         )
 
     @rx.var(cache=True)
     def all_inventory_rows(self) -> list[list[Any]]:
         return self._inventory_rows(
-            self.filtered_all_inventory, self.summarize_all_inventory
+            self.filtered_all_inventory, self.summarize_all_inventory, "all"
         )
 
     @rx.var(cache=True)
     def needs_review_rows(self) -> list[list[Any]]:
         return self._inventory_rows(
-            self.filtered_needs_review, self.summarize_needs_review
+            self.filtered_needs_review, self.summarize_needs_review, "review"
         )
 
     def _unit_count(self, row: dict[str, Any]) -> float:
@@ -5230,17 +5285,32 @@ class DashboardState(rx.State):
             return cleaned[0]
         return f"Multiple ({len(cleaned)})"
 
+    def _inventory_identity_values(
+        self, row: dict[str, Any], view_name: str
+    ) -> list[str]:
+        brand = str(row.get("Brand", "") or "")
+        compatible = self._compatible_brand(row)
+        if view_name in {"bulk", "wip", "aging_bulk"}:
+            return [compatible]
+        if view_name == "all":
+            return [brand, compatible]
+        return [brand]
+
     def _inventory_rows(
-        self, rows: list[dict[str, Any]], summarize: bool = False
+        self,
+        rows: list[dict[str, Any]],
+        summarize: bool = False,
+        view_name: str | None = None,
     ) -> list[list[Any]]:
+        selected_view = view_name or self.inventory_view_name
         if summarize:
-            groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+            groups: dict[tuple[str, ...], dict[str, Any]] = {}
             for row in rows:
-                key = (
-                    str(row.get("Brand", "") or ""),
+                key = tuple([
+                    *self._inventory_identity_values(row, selected_view),
                     str(row.get("Strain", "") or ""),
                     str(row.get("SKU Type", "") or ""),
-                )
+                ])
                 group = groups.setdefault(key, {
                     "units": 0.0,
                     "weight": 0.0,
@@ -5263,7 +5333,7 @@ class DashboardState(rx.State):
                     group["tags"].add(tag)
             return [
                 [
-                    key[0], key[1], key[2], round(group["units"], 2),
+                    *key, round(group["units"], 2),
                     self._inventory_weight_value(group["weight"]),
                     round(group["oldest_age"], 1),
                     self._mixed_label(group["locations"]),
@@ -5274,7 +5344,7 @@ class DashboardState(rx.State):
             ]
         return [
             [
-                str(row.get("Brand", "") or ""),
+                *self._inventory_identity_values(row, selected_view),
                 str(row.get("Strain", "") or ""),
                 str(row.get("SKU Type", "") or ""),
                 round(self._unit_count(row), 2),
@@ -5450,7 +5520,9 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def active_inventory_all_rows(self) -> list[list[Any]]:
         return self._inventory_rows(
-            self.active_inventory_data, self.active_inventory_summarize
+            self.active_inventory_data,
+            self.active_inventory_summarize,
+            self.inventory_view_name,
         )
 
     @rx.var(cache=True)
@@ -5769,11 +5841,17 @@ class DashboardState(rx.State):
         )
 
     def _download_inventory_view(
-        self, rows: list[dict[str, Any]], summarize: bool, label: str
+        self,
+        rows: list[dict[str, Any]],
+        summarize: bool,
+        label: str,
+        view_name: str | None = None,
     ):
+        selected_view = view_name or self.inventory_view_name
+        columns = self._inventory_columns_for_view(selected_view)
         rows = [
-            dict(zip(self.inventory_columns, row))
-            for row in self._inventory_rows(rows, summarize)
+            dict(zip(columns, row))
+            for row in self._inventory_rows(rows, summarize, selected_view)
         ]
         if summarize:
             label += "_sku_summary"
@@ -5783,47 +5861,49 @@ class DashboardState(rx.State):
     def download_cpg_inventory(self):
         return self._download_inventory_view(
             self.filtered_cpg_inventory, self.summarize_cpg_inventory,
-            "cpg_inventory",
+            "cpg_inventory", "cpg",
         )
 
     @rx.event
     def download_bulk_inventory(self):
         return self._download_inventory_view(
             self.filtered_bulk_inventory, self.summarize_bulk_inventory,
-            "bulk_inventory",
+            "bulk_inventory", "bulk",
         )
 
     @rx.event
     def download_wip_inventory(self):
         return self._download_inventory_view(
             self.filtered_wip_inventory, self.summarize_wip_inventory,
-            "wip_pre_wip",
+            "wip_pre_wip", "wip",
         )
 
     @rx.event
     def download_aging_cpg(self):
         return self._download_inventory_view(
-            self.filtered_aging_cpg, self.summarize_aging_cpg, "aging_cpg"
+            self.filtered_aging_cpg, self.summarize_aging_cpg,
+            "aging_cpg", "aging_cpg",
         )
 
     @rx.event
     def download_aging_bulk(self):
         return self._download_inventory_view(
-            self.filtered_aging_bulk, self.summarize_aging_bulk, "aging_bulk"
+            self.filtered_aging_bulk, self.summarize_aging_bulk,
+            "aging_bulk", "aging_bulk",
         )
 
     @rx.event
     def download_all_inventory(self):
         return self._download_inventory_view(
             self.filtered_all_inventory, self.summarize_all_inventory,
-            "all_inventory",
+            "all_inventory", "all",
         )
 
     @rx.event
     def download_needs_review(self):
         return self._download_inventory_view(
             self.filtered_needs_review, self.summarize_needs_review,
-            "needs_review",
+            "needs_review", "review",
         )
 
 
@@ -5934,7 +6014,10 @@ def inventory_data_grid(data: rx.Var) -> rx.Component:
     """Wide sortable inventory grid that never truncates column headings."""
     return rx.box(
         rx.data_table(
-            key="inventory-table-" + DashboardState.inventory_page_size_value,
+            key=(
+                "inventory-table-" + DashboardState.inventory_view_name
+                + "-" + DashboardState.inventory_page_size_value
+            ),
             data=data,
             columns=DashboardState.inventory_columns,
             pagination=DashboardState.inventory_pagination,
@@ -8358,7 +8441,7 @@ def inventory_view(
             width="100%",
         ),
         rx.text(
-            "Detailed mode shows one row per Metrc package. Summary mode groups exact Brand, Strain, and SKU Type combinations, totals units and weight, and uses the oldest package age. Summary weight above always remains in pounds.",
+            DashboardState.inventory_grouping_caption,
             size="1", color=MUTED,
         ),
         rx.hstack(

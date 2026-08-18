@@ -123,6 +123,84 @@ def normalize_strain_name(value: Any) -> str:
     return aliases.get(text.lower(), text.title() if text else "Strain Needs Review")
 
 
+UNFINISHED_INVENTORY_STAGES = {
+    "Sellable Bulk", "WIP-Cultivation", "WIP-Manufacturing", "Pre-WIP",
+}
+
+
+def compatible_inventory_brand(
+    row: dict[str, Any], demand_brand_by_strain: dict[str, str] | None = None
+) -> str:
+    """Return the planning brand for unfinished inventory without renaming it.
+
+    Facility and ownership gates intentionally run before product and strain
+    inference. The three shared blend outputs remain a production-planning
+    exception and do not make every source package Craft Kings-compatible.
+    """
+    stage = str(row.get("Production Stage", row.get("production_stage", "")) or "").strip()
+    if stage not in UNFINISHED_INVENTORY_STAGES:
+        return ""
+
+    current_facility = str(
+        row.get("Current Facility", row.get("current_facility", ""))
+        or row.get("Facility", row.get("facility", ""))
+        or ""
+    ).strip()
+    ownership = str(
+        row.get("Ownership Status", row.get("ownership_status", "")) or ""
+    ).strip()
+    if (
+        current_facility == "Building 1A"
+        or ownership == "Partner-Owned / Compliance Managed"
+    ):
+        return "ROFR / Not Purchased"
+    if ownership == "QCC-Owned / Purchased from Building 1A":
+        return "Unallocated QCC Brand"
+    if current_facility and current_facility != "Building 33 (C9)":
+        return "Compatibility Needs Review"
+
+    item = str(row.get("Item", row.get("item", "")) or "")
+    category = str(row.get("Category", row.get("category", "")) or "")
+    combined = f"{item} {category}"
+    package_tag = str(
+        row.get("Metrc Tag", row.get("package_tag", "")) or ""
+    ).strip()
+    strain = normalize_strain_name(
+        row.get("Strain", row.get("strain", ""))
+    )
+
+    if re.search(r"\bwet\s+(?:badder|diamonds?)\b", combined, re.I):
+        return "Locals Only"
+    if package_tag in CLADE9_1G_LIVE_ROSIN_PACKAGE_TAGS:
+        return "Clade9"
+    if package_tag in CRAFT_KINGS_HYBRID_BLEND_PACKAGE_TAGS:
+        return "Craft Kings"
+    if re.search(r"\bcraft\s+kings?\b", combined, re.I):
+        return "Craft Kings"
+    if re.search(r"\bclade\s*9\b", combined, re.I):
+        return "Clade9"
+    if strain in CLADE9_STRAIN_PATTERNS:
+        return "Clade9"
+    if strain in CRAFT_KINGS_STRAIN_PATTERNS:
+        return "Craft Kings"
+
+    demand_brand = str(
+        (demand_brand_by_strain or {}).get(strain.lower(), "") or ""
+    ).strip()
+    if demand_brand:
+        return demand_brand
+
+    existing_brand = str(
+        row.get("Brand", row.get("brand", "")) or ""
+    ).strip()
+    if existing_brand in {
+        "Clade9", "Craft Kings", "Royal Smalls", "Locals Only",
+        "Cookies", "Precious",
+    }:
+        return existing_brand
+    return "Clade9" if current_facility == "Building 33 (C9)" else "Compatibility Needs Review"
+
+
 def gummy_variant(item: Any) -> str | None:
     text = str(item or "")
     match = re.search(
