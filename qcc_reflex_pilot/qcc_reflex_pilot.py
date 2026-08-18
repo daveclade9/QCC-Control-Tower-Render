@@ -62,7 +62,7 @@ from .retailer_directory import (
 from .rules import normalize_strain_name
 
 
-PILOT_VERSION = "0.9.5.3"
+PILOT_VERSION = "0.9.5.4"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -5907,6 +5907,7 @@ def data_grid(
     columns: list[str],
     height: str = "480px",
     show_search: bool = True,
+    class_name: str = "",
 ) -> rx.Component:
     table_width = max(900, len(columns) * 165)
     return rx.box(
@@ -5921,6 +5922,7 @@ def data_grid(
             width=f"{table_width}px",
             min_width=f"{table_width}px",
         ),
+        class_name=class_name,
         width="100%",
         overflow_x="auto",
         border="1px solid #d8e0e8",
@@ -8112,11 +8114,12 @@ def retail_availability_panel() -> rx.Component:
         data_grid(
             DashboardState.retail_availability_rows,
             [
-                "Retailer", "Destination License", "Brand", "Strain", "SKU Type",
-                "Units Shipped", "Packages", "Manifests", "First Metrc Date",
-                "Latest Metrc Date",
+                "Retailer", "Destination\nLicense", "Brand", "Strain", "SKU\nType",
+                "Units\nShipped", "Packages", "Manifests", "First Metrc\nDate",
+                "Latest Metrc\nDate",
             ],
             "560px",
+            class_name="qcc-retail-availability-grid",
         ),
         width="100%", spacing="4",
     )

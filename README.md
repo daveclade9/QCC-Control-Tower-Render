@@ -1,4 +1,7 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.3
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.4
+
+Version 0.9.5.4 gives the Retail Availability directory clear two-line column
+headings and reserves a separate area for every sorting control.
 
 Version 0.9.5.3 keeps Matching WIP column headings clear of their sorting
 controls and immediately removes fully committed source lots after a plan saves.

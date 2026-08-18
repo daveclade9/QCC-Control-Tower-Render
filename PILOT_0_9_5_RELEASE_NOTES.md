@@ -1,4 +1,9 @@
-# QCC Control Tower Reflex 0.9.5.3
+# QCC Control Tower Reflex 0.9.5.4
+
+## 0.9.5.4 correction
+
+- Splits multiword Retail Availability table headings across two deliberate
+  lines and reserves dedicated space beside them for the sorting controls.
 
 ## 0.9.5.3 corrections
 

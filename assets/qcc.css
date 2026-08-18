@@ -327,3 +327,30 @@ body {
   font-size: 0.75rem;
   line-height: 1.2;
 }
+
+/* Retail Availability uses deliberately split two-line labels. Keep the
+   sorting control in its own reserved area so it never covers header text. */
+.qcc-retail-availability-grid .gridjs-th {
+  position: relative;
+  min-height: 62px;
+  padding: 11px 42px 11px 12px !important;
+  vertical-align: middle;
+  overflow: visible;
+}
+
+.qcc-retail-availability-grid .gridjs-th-content {
+  display: block;
+  white-space: pre-line;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
+.qcc-retail-availability-grid .gridjs-sort {
+  position: absolute !important;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  margin: 0 !important;
+}
