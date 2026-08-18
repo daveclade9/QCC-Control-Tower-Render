@@ -1,4 +1,11 @@
-# QCC Control Tower Reflex 0.9.5.8
+# QCC Control Tower Reflex 0.9.5.9
+
+## 0.9.5.9 SKU Planning presentation
+
+- Sets the SKU Planning & Coverage table header, body text, action text, and
+  committed-WIP badges to 13.5px.
+- Uses a uniform black header with white text while preserving all existing
+  column widths and the highlighted WIP body cells.
 
 ## 0.9.5.8 compatibility correction
 

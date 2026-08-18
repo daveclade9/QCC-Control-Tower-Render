@@ -1,4 +1,7 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.8
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.9
+
+Version 0.9.5.9 gives SKU Planning & Coverage a uniform 13.5px table font
+and a black header with white text while preserving its existing column widths.
 
 Version 0.9.5.8 restricts Clade9 bulk compatibility to the approved strain
 allowlist and removes the Building 33 and sales-history fallbacks. Building 1A

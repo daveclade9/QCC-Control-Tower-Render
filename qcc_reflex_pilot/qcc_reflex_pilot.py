@@ -66,7 +66,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.8"
+PILOT_VERSION = "0.9.5.9"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -6566,7 +6566,7 @@ def sku_planning_cell(value: rx.Var, width: str = "145px") -> rx.Component:
         max_width=width,
         white_space="normal",
         vertical_align="middle",
-        font_size="0.76rem",
+        font_size="13.5px",
         padding="0.38rem 0.45rem",
     )
 
@@ -6594,6 +6594,7 @@ def sku_planning_action_row(row: rx.Var) -> rx.Component:
                         ),
                         background="#0f766e",
                         color="white",
+                        font_size="13.5px",
                         flex="1",
                         cursor="pointer",
                     ),
@@ -6619,6 +6620,7 @@ def sku_planning_action_row(row: rx.Var) -> rx.Component:
                 row["Committed WIP"],
                 color_scheme="blue",
                 size="2",
+                font_size="13.5px",
             ),
             min_width="175px",
             background="#dbeafe",
@@ -6666,14 +6668,10 @@ def sku_planning_action_table() -> rx.Component:
                             if column == "Avg Weekly Units - Last 30 Days"
                             else column
                         ),
-                        background=(
-                            "#99f6e4" if column == "Potential Matching WIP"
-                            else "#bfdbfe" if column == "Committed WIP"
-                            else "#f1f5f9"
-                        ),
-                        color=DARK,
+                        background="#111111",
+                        color="#ffffff",
                         font_weight="700",
-                        font_size="0.76rem",
+                        font_size="13.5px",
                         line_height="1.15",
                         white_space="normal",
                         word_break="normal",
@@ -6697,6 +6695,7 @@ def sku_planning_action_table() -> rx.Component:
             ),
             size="1",
             variant="surface",
+            font_size="13.5px",
             width="2620px",
         ),
         width="100%",
