@@ -1,4 +1,8 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.11
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.12
+
+Version 0.9.5.12 speeds up single and bulk production-plan deletion by keeping
+the inventory context warm, refreshing committed WIP in the background, and
+indexing the production child tables used during deletion.
 
 Version 0.9.5.11 displays each word of every multiword header on its own row in
 the 14px Stockouts, Customer Shipment History, and Recent Transfer tables.

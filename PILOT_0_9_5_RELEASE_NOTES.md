@@ -1,4 +1,11 @@
-# QCC Control Tower Reflex 0.9.5.11
+# QCC Control Tower Reflex 0.9.5.12
+
+## 0.9.5.12 faster production-plan deletion
+
+- Keeps the shared inventory snapshot warm when production plans are deleted,
+  while refreshing saved plans and committed WIP in the background.
+- Adds production child-table indexes and removes one unnecessary database
+  round trip from single and bulk plan deletion.
 
 ## 0.9.5.11 multirow operational headers
 
