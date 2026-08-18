@@ -66,7 +66,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.7"
+PILOT_VERSION = "0.9.5.8"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -3956,32 +3956,8 @@ class DashboardState(rx.State):
             filename=f"qcc_production_calendar_{date.today().isoformat()}.ics",
         )
 
-    @rx.var(cache=True)
-    def compatible_brand_lookup(self) -> dict[str, str]:
-        """Map uniquely sold strains to a planning brand for Building 33 WIP."""
-        source = self.velocity_windows.get("All Time", []) or self.velocity
-        candidates: dict[str, set[str]] = {}
-        for row in source:
-            strain = normalize_strain_name(
-                str(row.get("Strain", "") or "")
-            ).strip().lower()
-            brand = str(row.get("Brand", "") or "").strip()
-            if not strain or strain == "strain needs review" or not brand:
-                continue
-            if brand in {
-                "Brand Needs Review", "Unbranded / Bulk",
-                "Unallocated QCC Brand", "ROFR / Not Purchased",
-            }:
-                continue
-            candidates.setdefault(strain, set()).add(brand)
-        return {
-            strain: next(iter(brands))
-            for strain, brands in candidates.items()
-            if len(brands) == 1
-        }
-
     def _compatible_brand(self, row: dict[str, Any]) -> str:
-        return compatible_inventory_brand(row, self.compatible_brand_lookup)
+        return compatible_inventory_brand(row)
 
     def _filter_brand_value(self, row: dict[str, Any]) -> str:
         stage = str(row.get("Production Stage", "") or "").strip()

@@ -1,4 +1,8 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.7
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.8
+
+Version 0.9.5.8 restricts Clade9 bulk compatibility to the approved strain
+allowlist and removes the Building 33 and sales-history fallbacks. Building 1A
+origin and ownership protections continue to run before strain compatibility.
 
 Version 0.9.5.7 introduces a non-destructive Compatible Brand planning field
 for unfinished inventory. Building 1A ownership rules run before strain-based

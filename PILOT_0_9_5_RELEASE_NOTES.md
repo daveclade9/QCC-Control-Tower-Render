@@ -1,11 +1,21 @@
-# QCC Control Tower Reflex 0.9.5.7
+# QCC Control Tower Reflex 0.9.5.8
+
+## 0.9.5.8 compatibility correction
+
+- Removes the automatic Clade9 fallback for all unfinished inventory in
+  Building 33 and removes sales-history compatibility inference.
+- Assigns Clade9 compatibility only to the 16 approved strains after the
+  Building 1A origin and ownership gates have passed.
+- Leaves unmatched Building 33 material as Compatibility Needs Review.
+- Preserves production-planning blend exceptions and all existing table
+  formatting.
 
 ## 0.9.5.7 compatibility model
 
 - Calculates Compatible Brand for unfinished inventory without changing the
   Supabase snapshot or renaming finished goods.
-- Applies Building 1A facility and ownership gates before explicit product,
-  established strain, and uniquely observed finished-demand rules.
+- Applies Building 1A facility and ownership gates before explicit product and
+  approved strain rules.
 - Replaces Brand with Compatible Brand in Bulk, WIP & Pre-WIP, and Aging Risk
   Bulk; All Inventory retains Brand and adds Compatible Brand.
 - Uses Compatible Brand consistently for global filtering and Executive WIP

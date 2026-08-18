@@ -1,6 +1,9 @@
 import unittest
 
-from qcc_reflex_pilot.rules import compatible_inventory_brand
+from qcc_reflex_pilot.rules import (
+    CLADE9_COMPATIBLE_BULK_STRAINS,
+    compatible_inventory_brand,
+)
 
 
 class CompatibleBrandRulesTest(unittest.TestCase):
@@ -34,21 +37,58 @@ class CompatibleBrandRulesTest(unittest.TestCase):
 
     def test_diamond_bar_uses_established_clade9_rule(self):
         row = self.row(Strain="Diamond Bar")
-        self.assertEqual(
-            compatible_inventory_brand(row, {"diamond bar": "Craft Kings"}),
-            "Clade9",
-        )
+        self.assertEqual(compatible_inventory_brand(row), "Clade9")
 
-    def test_unique_finished_demand_can_map_building_33_wip(self):
+    def test_unapproved_strain_is_not_inferred_from_demand(self):
         row = self.row(Strain="Ice Cream Cake")
         self.assertEqual(
-            compatible_inventory_brand(row, {"ice cream cake": "Craft Kings"}),
-            "Craft Kings",
+            compatible_inventory_brand(row), "Compatibility Needs Review"
         )
 
+    def test_all_approved_clade9_strains_are_supported(self):
+        strains = [
+            "J1", "Fig Bar", "Orange Push Pop", "Diamond Bar",
+            "Diamond Dust", "Lemon Cherry Gelato", "G13",
+            "Private Reserve", "Tahoe OG", "Blue Dream",
+            "Razberry Runtz", "Brooklyn Runtz", "South Central Purps",
+            "Lipsmackerz", "Pinetar", "LA Piff",
+        ]
+        self.assertEqual(len(CLADE9_COMPATIBLE_BULK_STRAINS), 16)
+        for strain in strains:
+            with self.subTest(strain=strain):
+                self.assertEqual(
+                    compatible_inventory_brand(self.row(Strain=strain)),
+                    "Clade9",
+                )
+
     def test_blend_source_exception_does_not_relabel_generic_bulk(self):
-        row = self.row(Strain="Generic Source Flower")
-        self.assertEqual(compatible_inventory_brand(row), "Clade9")
+        row = self.row(Strain="Generic Source Flower", Item="Clade9 Bulk Flower")
+        self.assertEqual(
+            compatible_inventory_brand(row), "Compatibility Needs Review"
+        )
+
+    def test_building_1a_origin_wins_over_approved_strain(self):
+        for strain in ["Lemon Cherry Gelato", "Blue Dream"]:
+            with self.subTest(strain=strain):
+                row = self.row(
+                    Strain=strain,
+                    **{
+                        "Ownership Status":
+                            "QCC-Owned / Purchased from Building 1A"
+                    },
+                )
+                self.assertEqual(
+                    compatible_inventory_brand(row), "Unallocated QCC Brand"
+                )
+
+        row = self.row(
+            Strain="Diamond Bar",
+            Facility="Building 1A",
+            **{"Ownership Status": "QCC-Owned / Internal"},
+        )
+        self.assertEqual(
+            compatible_inventory_brand(row), "Unallocated QCC Brand"
+        )
 
 
 if __name__ == "__main__":
