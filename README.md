@@ -1,4 +1,8 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.12
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.13
+
+Version 0.9.5.13 mounts only the active main workspace, gives Production
+Planning a lightweight saved-plan/calendar load, and stabilizes Inventory
+header height after table reflow.
 
 Version 0.9.5.12 speeds up single and bulk production-plan deletion by keeping
 the inventory context warm, refreshing committed WIP in the background, and

@@ -66,7 +66,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.12"
+PILOT_VERSION = "0.9.5.13"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -454,6 +454,7 @@ class DashboardState(rx.State):
     production_save_error: str = ""
     production_saving: bool = False
     production_data_loading: bool = False
+    production_module_loaded: bool = False
     production_last_saved_plan_id: str = ""
     production_edit_plan_id: str = ""
     production_view: str = "build"
@@ -2577,6 +2578,7 @@ class DashboardState(rx.State):
                     "production_templates", []
                 )
                 self.calendar = payload.get("calendar", [])
+                self.production_module_loaded = True
         elif self.sales_demand_view == "customers":
             self.customers = payload.get("customers", [])
         elif self.sales_demand_view == "retail":
@@ -3891,7 +3893,29 @@ class DashboardState(rx.State):
         self.saved_plan_cards = production.get("saved_plan_cards", [])
         self.production_templates = production.get("production_templates", [])
         self.calendar = production.get("calendar", [])
+        self.production_module_loaded = True
         self._set_initial_calendar_month()
+
+    @rx.event(background=True)
+    async def load_production_data_background(self):
+        """Show saved plans and calendar without waiting for Sales history."""
+        async with self:
+            if self.production_data_loading or self.production_module_loaded:
+                return
+            self.production_data_loading = True
+        try:
+            production = await rx.run_in_thread(load_production_module_data)
+            async with self:
+                self._apply_production_payload(production)
+                self.production_action_error = ""
+        except Exception as error:
+            async with self:
+                self.production_action_error = (
+                    f"Production plans could not be loaded: {error}"
+                )
+        finally:
+            async with self:
+                self.production_data_loading = False
 
     @rx.event(background=True)
     async def refresh_production_data_background(self):
@@ -4137,6 +4161,8 @@ class DashboardState(rx.State):
         # The selected module's optional data is applied in a second state
         # update, so a large sales table cannot hold up the tab transition.
         yield
+        if value == "production" and not self.production_module_loaded:
+            yield DashboardState.load_production_data_background
         if value in self.sales_loaded_views:
             if value == "production":
                 self._set_initial_calendar_month()
@@ -4153,6 +4179,11 @@ class DashboardState(rx.State):
             return
         if value != "sales_demand":
             return
+        if (
+            self.sales_demand_view == "production"
+            and not self.production_module_loaded
+        ):
+            yield DashboardState.load_production_data_background
         if self.sales_demand_view in self.sales_loaded_views:
             return
         yield DashboardState.load_sales_background
@@ -9844,26 +9875,33 @@ def protected_dashboard() -> rx.Component:
                     class_name="qcc-tabs qcc-tabs-primary",
                     width="100%",
                 ),
-                rx.tabs.content(executive_dashboard_panel(), value="executive", padding_top="1.25rem"),
-                rx.tabs.content(sales_demand_workspace(), value="sales_demand", padding_top="1.25rem"),
-                rx.tabs.content(inventory_panel(), value="inventory", padding_top="1.25rem"),
-                rx.tabs.content(qa_panel(), value="qa", padding_top="1.25rem"),
-                rx.tabs.content(
-                    rx.cond(
-                        DashboardState.is_administrator,
-                        administration_panel(),
-                        rx.callout(
-                            "Administrator access is required.",
-                            icon="shield_alert",
-                            color_scheme="red",
-                        ),
-                    ),
-                    value="administration",
-                    padding_top="1.25rem",
-                ),
-                default_value="executive",
+                value=DashboardState.workspace_view,
                 on_change=DashboardState.change_workspace_view,
                 width="100%",
+            ),
+            rx.box(
+                rx.match(
+                    DashboardState.workspace_view,
+                    ("executive", executive_dashboard_panel()),
+                    ("sales_demand", sales_demand_workspace()),
+                    ("inventory", inventory_panel()),
+                    ("qa", qa_panel()),
+                    (
+                        "administration",
+                        rx.cond(
+                            DashboardState.is_administrator,
+                            administration_panel(),
+                            rx.callout(
+                                "Administrator access is required.",
+                                icon="shield_alert",
+                                color_scheme="red",
+                            ),
+                        ),
+                    ),
+                    executive_dashboard_panel(),
+                ),
+                width="100%",
+                padding_top="1.25rem",
             ),
             width="100%",
             max_width="1800px",

@@ -1,4 +1,12 @@
-# QCC Control Tower Reflex 0.9.5.12
+# QCC Control Tower Reflex 0.9.5.13
+
+## 0.9.5.13 workspace and production loading
+
+- Renders only the active top-level workspace so hidden Inventory, Sales, QA,
+  and Administration tables do not compete for browser layout work.
+- Loads Saved Plans and the Production Calendar independently before the
+  heavier Sales and velocity payload finishes in the background.
+- Locks Inventory table headers to a compact 72px height after Grid.js reflow.
 
 ## 0.9.5.12 faster production-plan deletion
 
