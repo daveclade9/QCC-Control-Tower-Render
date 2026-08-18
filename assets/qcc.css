@@ -279,3 +279,12 @@ body {
     flex: 0 0 auto;
   }
 }
+.qcc-compact-package-dialog {
+  font-size: 0.82rem;
+}
+
+.qcc-compact-package-dialog .ag-cell,
+.qcc-compact-package-dialog .ag-header-cell {
+  font-size: 0.75rem !important;
+  line-height: 1.1 !important;
+}

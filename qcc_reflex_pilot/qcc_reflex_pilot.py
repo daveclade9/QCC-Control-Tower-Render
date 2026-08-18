@@ -1,4 +1,4 @@
-"""QCC Control Tower Reflex 0.9.3 - inventory, planning, and QA workspace."""
+"""QCC Control Tower Reflex 0.9.5 - inventory, planning, and QA workspace."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from .data import (
     load_production_module_data,
     log_qa_label_download,
     potential_wip_for_sku,
+    PRODUCTION_LINE_OPTIONS,
     PRODUCTION_PLAN_STATUSES,
     QA_LABEL_FIELDS,
     production_recipe_type,
@@ -58,9 +59,10 @@ from .retailer_directory import (
     find_clade9_location,
     normalized_retailer_name,
 )
+from .rules import normalize_strain_name
 
 
-PILOT_VERSION = "0.9.4.4"
+PILOT_VERSION = "0.9.5.0"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -208,6 +210,9 @@ CalendarEvent = TypedDict(
         "Plan Name": str,
         "Status": str,
         "Department": str,
+        "Production Line": str,
+        "Line Color": str,
+        "Line Background": str,
         "Brand": str,
         "Strain": str,
         "SKU Type": str,
@@ -265,6 +270,9 @@ SavedPlanCard = TypedDict(
         "Status": str,
         "Target Date": str,
         "Department": str,
+        "Production Line": str,
+        "Line Color": str,
+        "Line Background": str,
         "Batch Weight (g)": float,
         "Created By": str,
         "Brand": str,
@@ -338,8 +346,10 @@ class DashboardState(rx.State):
     rule_version: str = "QCC Control Tower 81.4 shared inventory rules"
     brand_filter: str = "All Brands"
     strain_filter: str = "All Strains"
+    strain_filter_input: str = "All Strains"
     sku_filter: str = "All SKU Types"
     search_text: str = ""
+    global_filters_resetting: bool = False
     qa_view: str = "cultivation"
     # Large source collections stay backend-only. Only filtered display data
     # is synchronized through the websocket.
@@ -434,6 +444,7 @@ class DashboardState(rx.State):
     production_plan_status: str = "Planned"
     production_plan_notes: str = ""
     production_assigned_department: str = "Production"
+    production_line: str = "Flower Line 1"
     production_scenario_name: str = "Current Mix"
     production_scenarios: list[list[Any]] = []
     production_save_message: str = ""
@@ -458,11 +469,11 @@ class DashboardState(rx.State):
     sales_demand_view: str = "overview"
     inventory_view_name: str = "cpg"
     inventory_page: int = 1
-    inventory_page_size: int = 50
+    inventory_page_size: int = 10
     transfer_page: int = 1
     transfer_page_size: int = 50
     sku_planning_page: int = 1
-    sku_planning_page_size: int = 25
+    sku_planning_page_size: int = 10
     sku_planning_sort: str = "Avg Weekly Units - High to Low"
     sku_velocity_period: str = "All Time"
     demand_lifecycle_filter: str = "Active Products Only"
@@ -527,6 +538,8 @@ class DashboardState(rx.State):
     calendar_year: int = date.today().year
     calendar_month: int = date.today().month
     calendar_title: str = ""
+    calendar_view_mode: str = "Month"
+    calendar_focus_date: str = date.today().isoformat()
     calendar_days: list[CalendarDay] = []
 
     def _apply_employee(self, employee: dict[str, Any]) -> None:
@@ -802,7 +815,19 @@ class DashboardState(rx.State):
 
     @rx.event
     def change_strain_filter(self, value: str):
-        self.strain_filter = value
+        self.strain_filter_input = value
+        normalized = value.strip().lower()
+        exact = next(
+            (
+                option for option in self.strain_options
+                if option.strip().lower() == normalized
+            ),
+            None,
+        )
+        if exact is not None:
+            self.strain_filter = exact
+        elif not normalized:
+            self.strain_filter = "All Strains"
         self.sku_planning_page = 1
         self.inventory_page = 1
         self._sync_qa_consistency_filters()
@@ -2036,11 +2061,19 @@ class DashboardState(rx.State):
         self.inventory_lookup_message = "Package found in the latest snapshot."
 
     @rx.event
-    def reset_filters(self):
+    async def reset_filters(self):
+        if self.global_filters_resetting:
+            return
+        self.global_filters_resetting = True
+        await asyncio.sleep(0.25)
         self.brand_filter = "All Brands"
         self.strain_filter = "All Strains"
+        self.strain_filter_input = "All Strains"
         self.sku_filter = "All SKU Types"
         self.search_text = ""
+        self.sku_planning_page = 1
+        self.inventory_page = 1
+        self.global_filters_resetting = False
 
     def _selected_sku(self) -> tuple[str, str, str] | None:
         if (
@@ -2116,6 +2149,14 @@ class DashboardState(rx.State):
                 "Available Weight (g)": "available_weight_grams",
             })
             matched = potential_wip_for_sku(source, brand, strain, sku_type)
+            if not matched.empty:
+                matched["_age_sort"] = pd.to_numeric(
+                    matched.get("Age", matched.get("inventory_age_days")),
+                    errors="coerce",
+                ).fillna(-1)
+                matched = matched.sort_values(
+                    ["_age_sort", "package_tag"], ascending=[False, True]
+                ).drop(columns=["_age_sort"])
             matches = matched.rename(columns={
                 "brand": "Brand", "strain": "Strain", "sku_type": "SKU Type",
                 "production_stage": "Production Stage", "qa_status": "QA Status",
@@ -2369,7 +2410,12 @@ class DashboardState(rx.State):
         # Keep the first Sales update compact. Large view-specific tables are
         # copied from the server cache only when that subtab is opened.
         self.business_pulse = payload.get("business_pulse", [])
-        self.velocity = payload.get("velocity", [])
+        self.velocity_windows = payload.get(
+            "velocity_windows", {"All Time": payload.get("velocity", [])}
+        )
+        self.velocity = self.velocity_windows.get(
+            self.sku_velocity_period, payload.get("velocity", [])
+        )
         self.retailer_locations = payload.get(
             "retailer_locations", self.retailer_locations
         )
@@ -2571,46 +2617,92 @@ class DashboardState(rx.State):
                 parsed = datetime.strptime(first_target, "%Y-%m-%d").date()
                 self.calendar_year = parsed.year
                 self.calendar_month = parsed.month
+                self.calendar_focus_date = parsed.isoformat()
             except (TypeError, ValueError):
                 pass
         self._rebuild_calendar()
 
     def _rebuild_calendar(self) -> None:
-        first = date(self.calendar_year, self.calendar_month, 1)
-        start = first - timedelta(days=(first.weekday() + 1) % 7)
-        self.calendar_title = (
-            f"{month_name[self.calendar_month]} {self.calendar_year}"
-        )
+        try:
+            focus = datetime.strptime(self.calendar_focus_date, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            focus = date(self.calendar_year, self.calendar_month, 1)
+        self.calendar_year, self.calendar_month = focus.year, focus.month
+        if self.calendar_view_mode == "Day":
+            start, count = focus, 1
+            self.calendar_title = focus.strftime("%A, %B %d, %Y")
+        elif self.calendar_view_mode == "Week":
+            start = focus - timedelta(days=(focus.weekday() + 1) % 7)
+            count = 7
+            self.calendar_title = (
+                f"{start:%b %d} – {(start + timedelta(days=6)):%b %d, %Y}"
+            )
+        else:
+            first = date(focus.year, focus.month, 1)
+            start = first - timedelta(days=(first.weekday() + 1) % 7)
+            count = 42
+            self.calendar_title = f"{month_name[focus.month]} {focus.year}"
         self.calendar_days = []
-        for offset in range(42):
+        line_order = {line: index for index, line in enumerate(PRODUCTION_LINE_OPTIONS)}
+        for offset in range(count):
             current = start + timedelta(days=offset)
             current_iso = current.isoformat()
+            plans = [
+                event for event in self.calendar
+                if event.get("Target Date") == current_iso
+            ]
+            plans.sort(key=lambda event: (
+                line_order.get(str(event.get("Production Line", "")), 99),
+                str(event.get("Plan Name", "")),
+            ))
             self.calendar_days.append({
                 "Day": str(current.day),
                 "Date": current_iso,
-                "In Month": current.month == self.calendar_month,
-                "Plans": [
-                    event for event in self.calendar
-                    if event.get("Target Date") == current_iso
-                ],
+                "In Month": self.calendar_view_mode != "Month" or current.month == focus.month,
+                "Plans": plans,
             })
+
+    @rx.var(cache=True)
+    def calendar_grid_columns(self) -> str:
+        return "1" if self.calendar_view_mode == "Day" else "7"
+
+    @rx.var(cache=True)
+    def calendar_weekday_headers(self) -> list[str]:
+        if self.calendar_view_mode == "Day":
+            try:
+                return [datetime.strptime(self.calendar_focus_date, "%Y-%m-%d").strftime("%A")]
+            except (TypeError, ValueError):
+                return ["Day"]
+        return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+    @rx.event
+    def change_calendar_view_mode(self, value: str):
+        if value in {"Month", "Week", "Day"}:
+            self.calendar_view_mode = value
+            self._rebuild_calendar()
 
     @rx.event
     def previous_calendar_month(self):
-        if self.calendar_month == 1:
-            self.calendar_month = 12
-            self.calendar_year -= 1
+        focus = datetime.strptime(self.calendar_focus_date, "%Y-%m-%d").date()
+        if self.calendar_view_mode == "Day":
+            focus -= timedelta(days=1)
+        elif self.calendar_view_mode == "Week":
+            focus -= timedelta(days=7)
         else:
-            self.calendar_month -= 1
+            focus = date(focus.year - (focus.month == 1), 12 if focus.month == 1 else focus.month - 1, 1)
+        self.calendar_focus_date = focus.isoformat()
         self._rebuild_calendar()
 
     @rx.event
     def next_calendar_month(self):
-        if self.calendar_month == 12:
-            self.calendar_month = 1
-            self.calendar_year += 1
+        focus = datetime.strptime(self.calendar_focus_date, "%Y-%m-%d").date()
+        if self.calendar_view_mode == "Day":
+            focus += timedelta(days=1)
+        elif self.calendar_view_mode == "Week":
+            focus += timedelta(days=7)
         else:
-            self.calendar_month += 1
+            focus = date(focus.year + (focus.month == 12), 1 if focus.month == 12 else focus.month + 1, 1)
+        self.calendar_focus_date = focus.isoformat()
         self._rebuild_calendar()
 
     def _production_catalog(self) -> list[tuple[str, str, str]]:
@@ -3141,6 +3233,11 @@ class DashboardState(rx.State):
         self.production_assigned_department = value
 
     @rx.event
+    def change_production_line(self, value: str):
+        if value in PRODUCTION_LINE_OPTIONS:
+            self.production_line = value
+
+    @rx.event
     def change_production_scenario_name(self, value: str):
         self.production_scenario_name = value
 
@@ -3385,6 +3482,9 @@ class DashboardState(rx.State):
         self.production_plan_notes = str(card.get("Notes", "") or "")
         self.production_assigned_department = str(
             card.get("Department", "Production") or "Production"
+        )
+        self.production_line = str(
+            card.get("Production Line", "Flower Line 1") or "Flower Line 1"
         )
         self.production_edit_plan_id = str(plan_id) if editing else ""
         if editing:
@@ -3685,6 +3785,7 @@ class DashboardState(rx.State):
                 notes=self.production_plan_notes,
                 plan_id=self.production_edit_plan_id,
                 assigned_department=self.production_assigned_department,
+                production_line=self.production_line,
             )
             edited = bool(self.production_edit_plan_id)
             self.production_edit_plan_id = ""
@@ -3749,9 +3850,15 @@ class DashboardState(rx.State):
                 return
             self.production_data_loading = True
         try:
-            production = await rx.run_in_thread(load_production_module_data)
+            production, sales = await asyncio.gather(
+                rx.run_in_thread(load_production_module_data),
+                rx.run_in_thread(get_sales_dashboard_data, True),
+            )
             async with self:
                 self._apply_production_payload(production)
+                # A saved plan changes committed and available WIP. Refresh the
+                # cached Sales planning rows once, without reloading inventory.
+                self._apply_sales_payload(sales)
         except Exception as error:
             async with self:
                 self.production_action_error = (
@@ -3778,7 +3885,8 @@ class DashboardState(rx.State):
                 ).strftime("%Y%m%d")
             except ValueError:
                 end_date = event_date
-            summary = str(event.get("Plan Name", "Production Plan")).replace(",", "\\,")
+            line = str(event.get("Production Line", "Unassigned"))
+            summary = f"{line}: {event.get('Plan Name', 'Production Plan')}".replace(",", "\\,")
             description = str(event.get("Output Summary", "")).replace(",", "\\,")
             lines.extend([
                 "BEGIN:VEVENT",
@@ -3860,6 +3968,8 @@ class DashboardState(rx.State):
             return status in {"Active", "Dormant"}
         if self.demand_lifecycle_filter == "Include Retirement Candidates":
             return status in {"Active", "Dormant", "Retirement Candidate"}
+        if self.demand_lifecycle_filter == "White Label Products":
+            return status == "White Label"
         return True
 
     @rx.var(cache=True)
@@ -3904,11 +4014,31 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def sku_planning_page_label(self) -> str:
         page = min(max(self.sku_planning_page, 1), self.sku_planning_total_pages)
-        return f"Page {page:,} of {self.sku_planning_total_pages:,}"
+        count = len(self.sku_planning_sorted_records)
+        if not count:
+            return "No matching rows"
+        start = (page - 1) * self.sku_planning_page_size + 1
+        end = min(page * self.sku_planning_page_size, count)
+        return (
+            f"Rows {start:,}-{end:,} of {count:,} · "
+            f"Page {page:,} of {self.sku_planning_total_pages:,}"
+        )
+
+    @rx.var(cache=True)
+    def sku_planning_page_size_value(self) -> str:
+        return str(self.sku_planning_page_size)
 
     @rx.event
     def change_sku_planning_sort(self, value: str):
         self.sku_planning_sort = value
+        self.sku_planning_page = 1
+
+    @rx.event
+    def change_sku_planning_page_size(self, value: str):
+        try:
+            self.sku_planning_page_size = int(value)
+        except (TypeError, ValueError):
+            self.sku_planning_page_size = 10
         self.sku_planning_page = 1
 
     @rx.event
@@ -4509,7 +4639,35 @@ class DashboardState(rx.State):
     ) -> list[dict[str, Any]]:
         filtered: list[dict[str, Any]] = []
         for row in rows:
-            if not self._matches(row):
+            stage = str(row.get("Production Stage", ""))
+            if stage in {"WIP-Cultivation", "WIP-Manufacturing", "Pre-WIP"}:
+                row_strain = normalize_strain_name(
+                    str(row.get("Strain", ""))
+                ).strip().lower()
+                if self.strain_filter != "All Strains" and row_strain != (
+                    normalize_strain_name(self.strain_filter).strip().lower()
+                ):
+                    continue
+                if self.brand_filter != "All Brands":
+                    eligible_strains = {
+                        normalize_strain_name(
+                            str(item.get("Strain", ""))
+                        ).strip().lower()
+                        for item in self.velocity
+                        if str(item.get("Brand", "")) == self.brand_filter
+                        and (
+                            self.sku_filter == "All SKU Types"
+                            or str(item.get("SKU Type", "")) == self.sku_filter
+                        )
+                    }
+                    if row_strain not in eligible_strains:
+                        continue
+                search = self.search_text.strip().lower()
+                if search and search not in " ".join(
+                    str(value or "") for value in row.values()
+                ).lower():
+                    continue
+            elif not self._matches(row):
                 continue
             if (
                 self.executive_facility_filter != "All Facilities"
@@ -5273,6 +5431,10 @@ class DashboardState(rx.State):
         )
 
     @rx.var(cache=True)
+    def inventory_page_size_value(self) -> str:
+        return str(self.inventory_page_size)
+
+    @rx.var(cache=True)
     def inventory_previous_disabled(self) -> bool:
         return self.inventory_page <= 1
 
@@ -5306,6 +5468,14 @@ class DashboardState(rx.State):
         self.inventory_page = min(
             self.inventory_page + 1, self.inventory_total_pages
         )
+
+    @rx.event
+    def change_inventory_page_size(self, value: str):
+        try:
+            self.inventory_page_size = int(value)
+        except (TypeError, ValueError):
+            self.inventory_page_size = 10
+        self.inventory_page = 1
 
     @rx.event
     def change_active_inventory_summarize(self, value: bool):
@@ -5392,7 +5562,8 @@ class DashboardState(rx.State):
     def calendar_rows(self) -> list[list[Any]]:
         return [[
             row.get("Target Date", ""), row.get("Plan Name", ""),
-            row.get("Status", ""), row.get("Department", ""),
+            row.get("Production Line", ""), row.get("Status", ""),
+            row.get("Department", ""),
             row.get("Output Summary", ""),
         ] for row in self.filtered_calendar]
 
@@ -5891,7 +6062,7 @@ def sku_package_dialog() -> rx.Component:
                 readable_grid(
                     DashboardState.selected_sku_package_details,
                     PACKAGE_DETAIL_COLUMNS,
-                    "560px",
+                    "420px",
                     1,
                 ),
                 rx.callout(
@@ -5910,7 +6081,8 @@ def sku_package_dialog() -> rx.Component:
                 padding_top="0.75rem",
             ),
             max_width="95vw",
-            width="1500px",
+            width="1180px",
+            class_name="qcc-compact-package-dialog",
         ),
         open=DashboardState.sku_detail_open,
         on_open_change=DashboardState.change_sku_detail_open,
@@ -5931,8 +6103,16 @@ def filters() -> rx.Component:
                 ),
                 rx.spacer(),
                 rx.button(
-                    "Reset Global Filters",
+                    rx.cond(
+                        DashboardState.global_filters_resetting,
+                        rx.hstack(
+                            rx.spinner(size="1"), rx.text("Resetting..."), gap="2"
+                        ),
+                        "Reset Global Filters",
+                    ),
                     on_click=DashboardState.reset_filters,
+                    disabled=DashboardState.global_filters_resetting,
+                    loading=DashboardState.global_filters_resetting,
                     variant="outline",
                 ),
                 rx.button(
@@ -5959,11 +6139,19 @@ def filters() -> rx.Component:
                 ),
                 rx.box(
                     rx.text("Strain", size="1", color=MUTED, weight="bold"),
-                    rx.select(
-                        DashboardState.strain_options,
-                        value=DashboardState.strain_filter,
+                    rx.input(
+                        value=DashboardState.strain_filter_input,
                         on_change=DashboardState.change_strain_filter,
+                        placeholder="Type a strain name",
+                        custom_attrs={"list": "qcc-global-strain-options"},
                         width="250px",
+                    ),
+                    rx.el.datalist(
+                        rx.foreach(
+                            DashboardState.strain_options,
+                            lambda option: rx.el.option(value=option),
+                        ),
+                        id="qcc-global-strain-options",
                     ),
                 ),
                 rx.box(
@@ -6209,7 +6397,8 @@ def stockouts_panel() -> rx.Component:
                     rx.select(
                         [
                             "Active Products Only", "Active + Dormant",
-                            "Include Retirement Candidates", "Include All Products",
+                            "Include Retirement Candidates", "White Label Products",
+                            "Include All Products",
                         ],
                         value=DashboardState.demand_lifecycle_filter,
                         on_change=DashboardState.change_demand_lifecycle_filter,
@@ -6245,6 +6434,8 @@ def sku_planning_cell(value: rx.Var, width: str = "145px") -> rx.Component:
         max_width=width,
         white_space="normal",
         vertical_align="middle",
+        font_size="0.76rem",
+        padding="0.38rem 0.45rem",
     )
 
 
@@ -6255,6 +6446,9 @@ def sku_planning_action_row(row: rx.Var) -> rx.Component:
         sku_planning_cell(row["SKU Type"], "205px"),
         sku_planning_cell(row["Units Shipped"].to_string(), "125px"),
         sku_planning_cell(row["Avg Weekly Units"].to_string(), "145px"),
+        sku_planning_cell(
+            row["Avg Weekly Units - Last 30 Days"].to_string(), "145px"
+        ),
         sku_planning_cell(row["Packages"].to_string(), "105px"),
         sku_planning_cell(row["Current Units"].to_string(), "125px"),
         sku_planning_cell(row["Weeks of Supply"].to_string(), "130px"),
@@ -6310,7 +6504,7 @@ def sku_planning_action_row(row: rx.Var) -> rx.Component:
 def sku_planning_action_table() -> rx.Component:
     columns = [
         "Brand", "Strain", "SKU Type", "Units Shipped",
-        "Avg Weekly Units", "Packages",
+        "Avg Weekly Units", "Avg Weekly Units - Last 30 Days", "Packages",
         "Current Units", "Weeks of Supply", "Potential Matching WIP",
         "Committed WIP", "Matching Pre-WIP Weight", "Customers",
         "Demand Status", "Last Shipped", "Lifecycle Status",
@@ -6320,7 +6514,14 @@ def sku_planning_action_table() -> rx.Component:
             rx.table.header(
                 rx.table.row(*[
                     rx.table.column_header_cell(
-                        column,
+                        (
+                            rx.text(
+                                "Avg Weekly Units", rx.el.br(), "Last 30 Days",
+                                line_height="1.05",
+                            )
+                            if column == "Avg Weekly Units - Last 30 Days"
+                            else column
+                        ),
                         background=(
                             "#99f6e4" if column == "Potential Matching WIP"
                             else "#bfdbfe" if column == "Committed WIP"
@@ -6328,7 +6529,11 @@ def sku_planning_action_table() -> rx.Component:
                         ),
                         color=DARK,
                         font_weight="700",
+                        font_size="0.74rem",
                         white_space="normal",
+                        position="sticky",
+                        top="0",
+                        z_index="5",
                     )
                     for column in columns
                 ])
@@ -6345,6 +6550,8 @@ def sku_planning_action_table() -> rx.Component:
         ),
         width="100%",
         overflow_x="auto",
+        max_height="620px",
+        overflow_y="auto",
         border="1px solid #d8e0e8",
         border_radius="8px",
     )
@@ -6410,7 +6617,7 @@ def sku_planning_panel() -> rx.Component:
             rx.box(
                 rx.text("Velocity timeframe", size="1", weight="bold", color=MUTED),
                 rx.select(
-                    ["1 Week", "30 Days", "90 Days", "All Time"],
+                    ["1 Week", "60 Days", "90 Days", "120 Days", "All Time"],
                     value=DashboardState.sku_velocity_period,
                     on_change=DashboardState.change_sku_velocity_period,
                     width="190px",
@@ -6436,28 +6643,46 @@ def sku_planning_panel() -> rx.Component:
                 rx.select(
                     [
                         "Active Products Only", "Active + Dormant",
-                        "Include Retirement Candidates", "Include All Products",
+                        "Include Retirement Candidates", "White Label Products",
+                        "Include All Products",
                     ],
                     value=DashboardState.demand_lifecycle_filter,
                     on_change=DashboardState.change_demand_lifecycle_filter,
                     width="260px",
                 ),
             ),
+            align="end", gap="2", wrap="wrap", width="100%",
+        ),
+        sku_planning_action_table(),
+        rx.flex(
+            rx.box(
+                rx.text("Rows per page", size="1", weight="bold", color=MUTED),
+                rx.select(
+                    ["10", "25", "50", "100"],
+                    value=DashboardState.sku_planning_page_size_value,
+                    on_change=DashboardState.change_sku_planning_page_size,
+                    width="110px",
+                ),
+            ),
             rx.spacer(),
             rx.button(
                 "Previous",
                 on_click=DashboardState.previous_sku_planning_page,
+                disabled=DashboardState.sku_planning_page <= 1,
                 variant="outline",
             ),
             rx.badge(DashboardState.sku_planning_page_label, size="2"),
             rx.button(
                 "Next",
                 on_click=DashboardState.next_sku_planning_page,
+                disabled=(
+                    DashboardState.sku_planning_page
+                    >= DashboardState.sku_planning_total_pages
+                ),
                 variant="outline",
             ),
             align="end", gap="2", wrap="wrap", width="100%",
         ),
-        sku_planning_action_table(),
         sku_package_dialog(),
         spacing="4",
         width="100%",
@@ -6546,6 +6771,11 @@ def plan_card(plan: rx.Var) -> rx.Component:
                 ),
             ),
             rx.spacer(),
+            rx.badge(
+                plan["Production Line"],
+                color=plan["Line Color"],
+                background=plan["Line Background"],
+            ),
             rx.badge(plan["Status"], color_scheme="teal"),
             rx.text(plan["Target Date"], weight="medium"),
             align="center",
@@ -6555,10 +6785,11 @@ def plan_card(plan: rx.Var) -> rx.Component:
         content=rx.vstack(
             rx.grid(
                 metric_card("Target Date", plan["Target Date"], "Packaging target"),
+                metric_card("Production Line", plan["Production Line"], "Assigned packaging line"),
                 metric_card("Department", plan["Department"], "Assigned team"),
                 metric_card("Batch Weight", plan["Batch Weight (g)"].to_string() + " g", "Committed batch"),
                 metric_card("Source Lots", plan["Source Count"].to_string(), "Metrc tags"),
-                columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+                columns=rx.breakpoints(initial="1", sm="2", lg="5"),
                 gap="3",
                 width="100%",
             ),
@@ -6714,10 +6945,11 @@ def saved_plans_panel() -> rx.Component:
 def calendar_plan_badge(event: rx.Var) -> rx.Component:
     return rx.box(
         rx.text(event["Plan Name"], weight="bold", size="1"),
+        rx.text(event["Production Line"], size="1", weight="bold"),
         rx.text(event["Department"], size="1"),
         rx.text(event["Output Summary"], size="1", color=MUTED),
-        background="#e3f2f3",
-        border_left=f"4px solid {ACCENT}",
+        background=event["Line Background"],
+        border_left="4px solid " + event["Line Color"],
         border_radius="6px",
         padding="0.4rem",
         width="100%",
@@ -6744,6 +6976,12 @@ def calendar_panel() -> rx.Component:
     return rx.vstack(
         rx.flex(
             rx.heading("Production Calendar", size="4"),
+            rx.select(
+                ["Month", "Week", "Day"],
+                value=DashboardState.calendar_view_mode,
+                on_change=DashboardState.change_calendar_view_mode,
+                width="130px",
+            ),
             rx.spacer(),
             rx.button(
                 "Download Calendar (.ics)",
@@ -6766,18 +7004,20 @@ def calendar_panel() -> rx.Component:
             width="100%",
         ),
         rx.grid(
-            *[
-                rx.text(day_name, weight="bold", text_align="center", color=MUTED)
-                for day_name in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-            ],
-            columns="7",
+            rx.foreach(
+                DashboardState.calendar_weekday_headers,
+                lambda day_name: rx.text(
+                    day_name, weight="bold", text_align="center", color=MUTED
+                ),
+            ),
+            columns=DashboardState.calendar_grid_columns,
             width="100%",
         ),
         rx.cond(
             DashboardState.calendar.length() > 0,
             rx.grid(
                 rx.foreach(DashboardState.calendar_days, calendar_day_cell),
-                columns="7",
+                columns=DashboardState.calendar_grid_columns,
                 gap="0",
                 width="100%",
             ),
@@ -6791,7 +7031,7 @@ def calendar_panel() -> rx.Component:
         data_grid(
             DashboardState.calendar_rows,
             [
-                "Target Date", "Plan Name", "Status", "Department",
+                "Target Date", "Plan Name", "Production Line", "Status", "Department",
                 "Output Summary",
             ],
             "320px",
@@ -7404,7 +7644,16 @@ def production_builder_panel() -> rx.Component:
                     width="100%",
                 ),
             ),
-            columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+            rx.box(
+                rx.text("Production line", size="1", weight="bold", color=MUTED),
+                rx.select(
+                    PRODUCTION_LINE_OPTIONS,
+                    value=DashboardState.production_line,
+                    on_change=DashboardState.change_production_line,
+                    width="100%",
+                ),
+            ),
+            columns=rx.breakpoints(initial="1", sm="2", lg="5"),
             gap="3", width="100%",
         ),
         rx.text_area(
@@ -8019,26 +8268,6 @@ def inventory_view(
             "Detailed mode shows one row per Metrc package. Summary mode groups exact Brand, Strain, and SKU Type combinations, totals units and weight, and uses the oldest package age. Summary weight above always remains in pounds.",
             size="1", color=MUTED,
         ),
-        rx.flex(
-            rx.button(
-                "Previous 50",
-                on_click=DashboardState.previous_inventory_page,
-                disabled=DashboardState.inventory_previous_disabled,
-                variant="outline",
-            ),
-            rx.badge(
-                DashboardState.inventory_page_label,
-                color_scheme="teal",
-                size="3",
-            ),
-            rx.button(
-                "Next 50",
-                on_click=DashboardState.next_inventory_page,
-                disabled=DashboardState.inventory_next_disabled,
-                variant="outline",
-            ),
-            gap="3", align="center", wrap="wrap", width="100%",
-        ),
         rx.hstack(
             rx.box(
                 rx.text("Table Weight Display", weight="bold", size="2"),
@@ -8059,6 +8288,36 @@ def inventory_view(
             align="center",
         ),
         inventory_data_grid(rows),
+        rx.flex(
+            rx.box(
+                rx.text("Rows per page", size="1", weight="bold", color=MUTED),
+                rx.select(
+                    ["10", "25", "50", "100"],
+                    value=DashboardState.inventory_page_size_value,
+                    on_change=DashboardState.change_inventory_page_size,
+                    width="110px",
+                ),
+            ),
+            rx.spacer(),
+            rx.button(
+                "Previous",
+                on_click=DashboardState.previous_inventory_page,
+                disabled=DashboardState.inventory_previous_disabled,
+                variant="outline",
+            ),
+            rx.badge(
+                DashboardState.inventory_page_label,
+                color_scheme="teal",
+                size="3",
+            ),
+            rx.button(
+                "Next",
+                on_click=DashboardState.next_inventory_page,
+                disabled=DashboardState.inventory_next_disabled,
+                variant="outline",
+            ),
+            gap="3", align="end", wrap="wrap", width="100%",
+        ),
         width="100%", spacing="3",
     )
 

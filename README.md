@@ -1,4 +1,12 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.4.4
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.0
+
+Version 0.9.5.0 delivers the team-review interface upgrades: cumulative strain
+search, consistent Executive WIP filtering, compact 10-row inventory and SKU
+planning tables, a trailing-30-day velocity column, four color-coded production
+lines, month/week/day production calendar views, immediate post-save WIP
+refresh, and Craft Kings blend recognition in QA. White Label is available as
+a lifecycle category, while automatic assignment remains intentionally pending
+the confirmed customer/product rule.
 
 Version 0.9.4.4 adds a persistent Supabase retailer-location directory,
 coordinate-first mapping, and a downloadable location-review list. Accepted
@@ -71,7 +79,7 @@ Streamlit application.
 
 ## Included in Pilot 0.7.3
 
-- SKU Planning velocity windows for 1 Week, 30 Days, 90 Days, and All Time
+- SKU Planning velocity windows for 1 Week, 60 Days, 90 Days, 120 Days, and All Time
 - Current package count replaces First Shipped and History Status
 - Potential WIP hover summaries show package count, age range, and lot-size range
 - A dedicated info action opens the closable package-detail window
