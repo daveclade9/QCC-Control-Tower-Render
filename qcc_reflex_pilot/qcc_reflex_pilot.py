@@ -62,7 +62,7 @@ from .retailer_directory import (
 from .rules import normalize_strain_name
 
 
-PILOT_VERSION = "0.9.5.2"
+PILOT_VERSION = "0.9.5.3"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -3094,6 +3094,62 @@ class DashboardState(rx.State):
         self.production_selected_tags = []
         self.production_batch_weight = 0.0
 
+    def _pending_source_commitments(self) -> dict[str, float]:
+        """Mirror the database allocation order for an immediate UI update."""
+        available_by_tag = {
+            str(row.get("Metrc Tag", "")): float(
+                row.get("Available Weight (g)", 0) or 0
+            )
+            for row in self.production_all_source_records
+        }
+        remaining = max(float(self.production_batch_weight or 0), 0.0)
+        commitments: dict[str, float] = {}
+        for package_tag in self.production_selected_tags:
+            available = max(available_by_tag.get(str(package_tag), 0.0), 0.0)
+            committed = min(available, remaining)
+            if committed > 0:
+                commitments[str(package_tag)] = committed
+                remaining -= committed
+            if remaining <= 0.001:
+                break
+        return commitments
+
+    def _apply_local_source_commitments(
+        self, commitments: dict[str, float]
+    ) -> None:
+        """Remove consumed source lots from the builder without a full reload."""
+        if not commitments:
+            return
+
+        def updated_rows(
+            rows: list[dict[str, Any]], *, update_view_flag: bool
+        ) -> list[dict[str, Any]]:
+            updated: list[dict[str, Any]] = []
+            for source_row in rows:
+                package_tag = str(source_row.get("Metrc Tag", ""))
+                committed = commitments.get(package_tag)
+                if committed is None:
+                    updated.append(source_row)
+                    continue
+                row = dict(source_row)
+                available = max(
+                    float(row.get("Available Weight (g)", 0) or 0)
+                    - committed,
+                    0.0,
+                )
+                row["Available Weight (g)"] = round(available, 2)
+                if update_view_flag and available <= 0.001:
+                    row["View Potential WIP"] = False
+                updated.append(row)
+            return updated
+
+        self.all_inventory = updated_rows(
+            self.all_inventory, update_view_flag=True
+        )
+        self.potential_wip_inventory = updated_rows(
+            self.potential_wip_inventory, update_view_flag=False
+        )
+
     @rx.event
     def change_production_material_filter(self, value: str):
         self.production_material_filter = value
@@ -3742,6 +3798,7 @@ class DashboardState(rx.State):
             duration=20000,
         )
         try:
+            pending_commitments = self._pending_source_commitments()
             plan_id = create_reflex_production_plan(
                 plan_name=self.production_plan_name,
                 output_brand=self.production_brand,
@@ -3776,6 +3833,8 @@ class DashboardState(rx.State):
                 production_line=self.production_line,
             )
             edited = bool(self.production_edit_plan_id)
+            if not edited:
+                self._apply_local_source_commitments(pending_commitments)
             self.production_edit_plan_id = ""
             self.production_selected_tags = []
             self.production_batch_weight = 0.0

@@ -1,4 +1,12 @@
-# QCC Control Tower Reflex 0.9.5.2
+# QCC Control Tower Reflex 0.9.5.3
+
+## 0.9.5.3 corrections
+
+- Gives Matching WIP popup headings dedicated wrapping space and keeps each
+  sorting control in a reserved area beside—not over—the column title.
+- Applies a newly saved plan's source commitments to the loaded inventory
+  immediately. Fully consumed source lots disappear from Build & Compare;
+  partially consumed lots remain with their reduced available weight.
 
 ## 0.9.5.2 corrections
 

@@ -1,10 +1,8 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.2
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.3
 
-Version 0.9.5.2 replaces the mixed Strain search/dropdown layout with aligned
-native Brand, Strain, and SKU dropdowns. Native browser dropdowns use cumulative
-keyboard type-ahead, so typing D-I-A quickly selects Diamond Bar. Inventory
-pagination now uses Grid.js's actual `limit` setting, allowing the 10/25/50/100
-selector to change the displayed row count.
+Version 0.9.5.3 keeps Matching WIP column headings clear of their sorting
+controls and immediately removes fully committed source lots after a plan saves.
+Partially committed lots remain visible with their reduced available weight.
 
 Version 0.9.5.1 corrects the first team-review build: Strain filtering now has
 both cumulative search and a complete selection list, Inventory uses one working
