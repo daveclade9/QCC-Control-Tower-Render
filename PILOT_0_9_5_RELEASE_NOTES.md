@@ -1,4 +1,11 @@
-# QCC Control Tower Reflex 0.9.5.1
+# QCC Control Tower Reflex 0.9.5.2
+
+## 0.9.5.2 corrections
+
+- Brand, Strain, and SKU are aligned single dropdowns with native cumulative
+  keyboard type-ahead; there is no separate Strain search field.
+- Inventory sends Grid.js `{limit: selected_rows}` instead of the unsupported
+  `{page_size: selected_rows}`, so 10, 25, 50, and 100 now change the page size.
 
 ## 0.9.5.1 corrections
 

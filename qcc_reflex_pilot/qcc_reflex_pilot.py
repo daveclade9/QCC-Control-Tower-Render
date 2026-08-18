@@ -62,7 +62,7 @@ from .retailer_directory import (
 from .rules import normalize_strain_name
 
 
-PILOT_VERSION = "0.9.5.1"
+PILOT_VERSION = "0.9.5.2"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -346,7 +346,6 @@ class DashboardState(rx.State):
     rule_version: str = "QCC Control Tower 81.4 shared inventory rules"
     brand_filter: str = "All Brands"
     strain_filter: str = "All Strains"
-    strain_filter_input: str = ""
     sku_filter: str = "All SKU Types"
     search_text: str = ""
     global_filters_resetting: bool = False
@@ -815,31 +814,7 @@ class DashboardState(rx.State):
 
     @rx.event
     def change_strain_filter(self, value: str):
-        """Narrow strain choices cumulatively as the user types."""
-        self.strain_filter_input = value
-        normalized = value.strip().lower()
-        matches = [
-            option for option in self.strains
-            if normalized and normalized in option.strip().lower()
-        ]
-        exact = next((
-            option for option in self.strains
-            if option.strip().lower() == normalized
-        ), None)
-        if exact is not None:
-            self.strain_filter = exact
-        elif not normalized:
-            self.strain_filter = "All Strains"
-        elif len(matches) == 1:
-            self.strain_filter = matches[0]
-        self.sku_planning_page = 1
-        self.inventory_page = 1
-        self._sync_qa_consistency_filters()
-
-    @rx.event
-    def select_strain_filter(self, value: str):
         self.strain_filter = value
-        self.strain_filter_input = ""
         self.sku_planning_page = 1
         self.inventory_page = 1
         self._sync_qa_consistency_filters()
@@ -2082,7 +2057,6 @@ class DashboardState(rx.State):
         await asyncio.sleep(0.5)
         self.brand_filter = "All Brands"
         self.strain_filter = "All Strains"
-        self.strain_filter_input = ""
         self.sku_filter = "All SKU Types"
         self.search_text = ""
         self.sku_planning_page = 1
@@ -3966,22 +3940,6 @@ class DashboardState(rx.State):
         return ["All Strains", *self.strains]
 
     @rx.var(cache=True)
-    def filtered_strain_options(self) -> list[str]:
-        """Return visible strain choices matching the entire typed phrase."""
-        needle = self.strain_filter_input.strip().lower()
-        matches = (
-            [value for value in self.strains if needle in value.lower()]
-            if needle else list(self.strains)
-        )
-        current = (
-            [self.strain_filter]
-            if self.strain_filter != "All Strains"
-            and self.strain_filter not in matches
-            else []
-        )
-        return ["All Strains", *current, *matches]
-
-    @rx.var(cache=True)
     def filtered_top_skus(self) -> list[dict[str, Any]]:
         return [row for row in self.top_skus if self._matches(row)]
 
@@ -5466,7 +5424,8 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def inventory_pagination(self) -> dict[str, int]:
-        return {"page_size": self.inventory_page_size}
+        # Grid.js calls its page-size option `limit`.
+        return {"limit": self.inventory_page_size}
 
     @rx.var(cache=True)
     def inventory_previous_disabled(self) -> bool:
@@ -6124,6 +6083,32 @@ def sku_package_dialog() -> rx.Component:
     )
 
 
+def native_filter_select(
+    options: rx.Var,
+    value: rx.Var,
+    on_change: Any,
+    width: str,
+) -> rx.Component:
+    """Aligned native dropdown with cumulative browser keyboard search."""
+    return rx.el.select(
+        rx.foreach(
+            options,
+            lambda option: rx.el.option(option, value=option),
+        ),
+        value=value,
+        on_change=on_change,
+        width=width,
+        height="32px",
+        padding="0 2rem 0 0.7rem",
+        border="1px solid #cbd5e1",
+        border_radius="6px",
+        background="white",
+        color=DARK,
+        font_size="0.875rem",
+        cursor="pointer",
+    )
+
+
 def filters() -> rx.Component:
     return rx.card(
         rx.vstack(
@@ -6165,39 +6150,29 @@ def filters() -> rx.Component:
             rx.flex(
                 rx.box(
                     rx.text("Brand", size="1", color=MUTED, weight="bold"),
-                    rx.select(
+                    native_filter_select(
                         DashboardState.brand_options,
-                        value=DashboardState.brand_filter,
-                        on_change=DashboardState.change_brand_filter,
-                        width="230px",
+                        DashboardState.brand_filter,
+                        DashboardState.change_brand_filter,
+                        "230px",
                     ),
                 ),
                 rx.box(
                     rx.text("Strain", size="1", color=MUTED, weight="bold"),
-                    rx.input(
-                        value=DashboardState.strain_filter_input,
-                        on_change=DashboardState.change_strain_filter,
-                        placeholder="Type to narrow strains (for example DIA)",
-                        width="250px",
-                    ),
-                    rx.select(
-                        DashboardState.filtered_strain_options,
-                        value=DashboardState.strain_filter,
-                        on_change=DashboardState.select_strain_filter,
-                        width="250px",
-                    ),
-                    rx.text(
-                        "Selected: " + DashboardState.strain_filter,
-                        size="1", color=MUTED,
+                    native_filter_select(
+                        DashboardState.strain_options,
+                        DashboardState.strain_filter,
+                        DashboardState.change_strain_filter,
+                        "250px",
                     ),
                 ),
                 rx.box(
                     rx.text("SKU Type", size="1", color=MUTED, weight="bold"),
-                    rx.select(
+                    native_filter_select(
                         DashboardState.sku_options,
-                        value=DashboardState.sku_filter,
-                        on_change=DashboardState.change_sku_filter,
-                        width="260px",
+                        DashboardState.sku_filter,
+                        DashboardState.change_sku_filter,
+                        "260px",
                     ),
                 ),
                 rx.box(
