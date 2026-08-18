@@ -240,6 +240,11 @@ body {
   font-size: 14px;
 }
 
+.qcc-14px-data-grid .gridjs-th-content {
+  white-space: pre-line;
+  line-height: 1.15;
+}
+
 .qcc-clade9-app .gridjs-table {
   border-radius: 0;
 }

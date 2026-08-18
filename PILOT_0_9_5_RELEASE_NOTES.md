@@ -1,4 +1,11 @@
-# QCC Control Tower Reflex 0.9.5.10
+# QCC Control Tower Reflex 0.9.5.11
+
+## 0.9.5.11 multirow operational headers
+
+- Splits every multiword header in Stockouts, Customer Shipment History, and
+  Recent Transfer Records one word per row.
+- Two-word headings use two rows and three-word headings use three rows while
+  retaining the 14px header and body size.
 
 ## 0.9.5.10 shared table sizing
 

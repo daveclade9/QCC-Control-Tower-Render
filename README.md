@@ -1,4 +1,7 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.10
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.11
+
+Version 0.9.5.11 displays each word of every multiword header on its own row in
+the 14px Stockouts, Customer Shipment History, and Recent Transfer tables.
 
 Version 0.9.5.10 sets the Stockouts, Customer Shipment History, and Recent
 Transfer Records table headers and body text to an explicit 14px.

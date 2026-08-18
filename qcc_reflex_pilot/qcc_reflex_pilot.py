@@ -66,7 +66,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.10"
+PILOT_VERSION = "0.9.5.11"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -6548,10 +6548,10 @@ def stockouts_panel() -> rx.Component:
         data_grid(
             DashboardState.stockout_rows,
             [
-                "Brand", "Strain", "SKU Type", "Avg Weekly Units",
-                "Current Units", "Weeks of Supply", "Demand Status",
-                "Last Shipped", "Lifecycle Status",
-                "Recommended Action",
+                "Brand", "Strain", "SKU\nType", "Avg\nWeekly\nUnits",
+                "Current\nUnits", "Weeks\nof\nSupply", "Demand\nStatus",
+                "Last\nShipped", "Lifecycle\nStatus",
+                "Recommended\nAction",
             ],
             class_name="qcc-14px-data-grid",
         ),
@@ -7925,10 +7925,10 @@ def customers_panel() -> rx.Component:
         data_grid(
             DashboardState.customer_rows,
             [
-                "Destination License", "Customer", "Units Shipped",
-                "Shipment Value", "Manifests", "SKUs Purchased",
-                "First Shipment", "Last Shipment", "Median Receipt Hours",
-                "Average Manifest Value",
+                "Destination\nLicense", "Customer", "Units\nShipped",
+                "Shipment\nValue", "Manifests", "SKUs\nPurchased",
+                "First\nShipment", "Last\nShipment", "Median\nReceipt\nHours",
+                "Average\nManifest\nValue",
             ],
             "600px",
             class_name="qcc-14px-data-grid",
@@ -8264,10 +8264,10 @@ def transfer_data_panel() -> rx.Component:
         data_grid(
             DashboardState.transfer_rows,
             [
-                "Manifest", "Invoice Number", "Created", "Received", "State",
-                "Destination License", "Customer", "Package Tag", "Metrc Item",
-                "Brand", "Strain", "SKU Type", "Shipped Units",
-                "Shipper Value", "Demand Record",
+                "Manifest", "Invoice\nNumber", "Created", "Received", "State",
+                "Destination\nLicense", "Customer", "Package\nTag",
+                "Metrc\nItem", "Brand", "Strain", "SKU\nType",
+                "Shipped\nUnits", "Shipper\nValue", "Demand\nRecord",
             ],
             "640px",
             class_name="qcc-14px-data-grid",
