@@ -1,4 +1,31 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.3
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.11
+
+Version 0.9.5.11 displays each word of every multiword header on its own row in
+the 14px Stockouts, Customer Shipment History, and Recent Transfer tables.
+
+Version 0.9.5.10 sets the Stockouts, Customer Shipment History, and Recent
+Transfer Records table headers and body text to an explicit 14px.
+
+Version 0.9.5.9 gives SKU Planning & Coverage a uniform 13.5px table font
+and a black header with white text while preserving its existing column widths.
+
+Version 0.9.5.8 restricts Clade9 bulk compatibility to the approved strain
+allowlist and removes the Building 33 and sales-history fallbacks. Building 1A
+origin and ownership protections continue to run before strain compatibility.
+
+Version 0.9.5.7 introduces a non-destructive Compatible Brand planning field
+for unfinished inventory. Building 1A ownership rules run before strain-based
+compatibility, Inventory and Executive WIP filters now reconcile, and the three
+Craft Kings blend outputs remain production-planning exceptions only.
+
+Version 0.9.5.6 sets Retail Availability column headings to 12px for a more
+compact, readable two-line presentation.
+
+Version 0.9.5.5 constrains Retail Availability sorting controls to a transparent
+icon-sized area so the two-line heading text remains fully visible.
+
+Version 0.9.5.4 gives the Retail Availability directory clear two-line column
+headings and reserves a separate area for every sorting control.
 
 Version 0.9.5.3 keeps Matching WIP column headings clear of their sorting
 controls and immediately removes fully committed source lots after a plan saves.

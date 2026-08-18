@@ -235,6 +235,16 @@ body {
   font-weight: 800;
 }
 
+.qcc-14px-data-grid .gridjs-th,
+.qcc-14px-data-grid .gridjs-td {
+  font-size: 14px;
+}
+
+.qcc-14px-data-grid .gridjs-th-content {
+  white-space: pre-line;
+  line-height: 1.15;
+}
+
 .qcc-clade9-app .gridjs-table {
   border-radius: 0;
 }
@@ -326,4 +336,48 @@ body {
 .qcc-compact-package-dialog .gridjs-td {
   font-size: 0.75rem;
   line-height: 1.2;
+}
+
+/* Retail Availability uses deliberately split two-line labels. Keep the
+   sorting control in its own reserved area so it never covers header text. */
+.qcc-retail-availability-grid .gridjs-th {
+  position: relative;
+  min-height: 62px;
+  padding: 11px 42px 11px 12px !important;
+  vertical-align: middle;
+  overflow: visible;
+  box-sizing: border-box;
+}
+
+.qcc-retail-availability-grid .gridjs-th-content {
+  display: block;
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: none;
+  white-space: pre-line;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.2;
+  font-size: 12px;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.qcc-retail-availability-grid .gridjs-sort {
+  position: absolute !important;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px !important;
+  min-width: 18px !important;
+  max-width: 18px !important;
+  height: 22px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  opacity: 0.88;
+  z-index: 3;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }

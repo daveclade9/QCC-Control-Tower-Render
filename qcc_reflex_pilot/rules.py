@@ -114,6 +114,8 @@ def normalize_strain_name(value: Any) -> str:
     aliases = {
         "private reserve": "Private Reserve OG",
         "private reserve og": "Private Reserve OG",
+        "tahoe og": "Tahoe OG",
+        "la piff": "LA Piff",
         "lip smackerz": "Lip Smackerz",
         "lipsmackerz": "Lip Smackerz",
         "rpg38": "Razberry Runtz",
@@ -121,6 +123,86 @@ def normalize_strain_name(value: Any) -> str:
         "pinetar": "Pine Tar",
     }
     return aliases.get(text.lower(), text.title() if text else "Strain Needs Review")
+
+
+UNFINISHED_INVENTORY_STAGES = {
+    "Sellable Bulk", "WIP-Cultivation", "WIP-Manufacturing", "Pre-WIP",
+}
+
+
+# This is intentionally narrower than CLADE9_STRAIN_PATTERNS. Those patterns
+# support historical item parsing, while this allowlist controls whether a
+# physical unfinished package is eligible for Clade9 production.
+CLADE9_COMPATIBLE_BULK_STRAINS = {
+    "J1", "Fig Bar", "Orange Push Pop", "Diamond Bar", "Diamond Dust",
+    "Lemon Cherry Gelato", "G13", "Private Reserve OG", "Tahoe OG",
+    "Blue Dream", "Razberry Runtz", "Brooklyn Runtz",
+    "South Central Purps", "Lip Smackerz", "Pine Tar", "LA Piff",
+}
+
+
+def compatible_inventory_brand(row: dict[str, Any]) -> str:
+    """Return the planning brand for unfinished inventory without renaming it.
+
+    Facility and ownership gates intentionally run before product and strain
+    inference. The three shared blend outputs remain a production-planning
+    exception and do not make every source package Craft Kings-compatible.
+    """
+    stage = str(row.get("Production Stage", row.get("production_stage", "")) or "").strip()
+    if stage not in UNFINISHED_INVENTORY_STAGES:
+        return ""
+
+    origin_facility = str(
+        row.get("Facility", row.get("facility", "")) or ""
+    ).strip()
+    current_facility = str(
+        row.get("Current Facility", row.get("current_facility", ""))
+        or origin_facility
+        or ""
+    ).strip()
+    ownership = str(
+        row.get("Ownership Status", row.get("ownership_status", "")) or ""
+    ).strip()
+    if (
+        current_facility == "Building 1A"
+        or ownership == "Partner-Owned / Compliance Managed"
+    ):
+        return "ROFR / Not Purchased"
+    if (
+        origin_facility == "Building 1A"
+        or ownership == "QCC-Owned / Purchased from Building 1A"
+    ):
+        return "Unallocated QCC Brand"
+    if current_facility and current_facility != "Building 33 (C9)":
+        return "Compatibility Needs Review"
+
+    item = str(row.get("Item", row.get("item", "")) or "")
+    category = str(row.get("Category", row.get("category", "")) or "")
+    combined = f"{item} {category}"
+    package_tag = str(
+        row.get("Metrc Tag", row.get("package_tag", "")) or ""
+    ).strip()
+    strain = normalize_strain_name(
+        row.get("Strain", row.get("strain", ""))
+    )
+
+    if re.search(r"\bwet\s+(?:badder|diamonds?)\b", combined, re.I):
+        return "Locals Only"
+    if package_tag in CRAFT_KINGS_HYBRID_BLEND_PACKAGE_TAGS:
+        return "Craft Kings"
+    if re.search(r"\bcraft\s+kings?\b", combined, re.I):
+        return "Craft Kings"
+    if strain in CLADE9_COMPATIBLE_BULK_STRAINS:
+        return "Clade9"
+    if strain in CRAFT_KINGS_STRAIN_PATTERNS:
+        return "Craft Kings"
+
+    existing_brand = str(
+        row.get("Brand", row.get("brand", "")) or ""
+    ).strip()
+    if existing_brand in {"Craft Kings", "Royal Smalls", "Locals Only"}:
+        return existing_brand
+    return "Compatibility Needs Review"
 
 
 def gummy_variant(item: Any) -> str | None:

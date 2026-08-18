@@ -2988,9 +2988,6 @@ def build_inventory_views(
             "Sellable Bulk", "WIP-Cultivation", "WIP-Manufacturing",
             "Pre-WIP",
         ])
-        & ~data["brand"].isin([
-            "Craft Kings", "Royal Smalls", "Clade9", "Locals Only",
-        ])
         & data["quantity"].gt(0)
     )
     review_source = data[data["needs_review"]].copy()

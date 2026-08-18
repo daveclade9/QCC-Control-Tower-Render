@@ -1,4 +1,62 @@
-# QCC Control Tower Reflex 0.9.5.3
+# QCC Control Tower Reflex 0.9.5.11
+
+## 0.9.5.11 multirow operational headers
+
+- Splits every multiword header in Stockouts, Customer Shipment History, and
+  Recent Transfer Records one word per row.
+- Two-word headings use two rows and three-word headings use three rows while
+  retaining the 14px header and body size.
+
+## 0.9.5.10 shared table sizing
+
+- Sets the Stockouts, Customer Shipment History, and Recent Transfer Records
+  table headers and body cells to 14px.
+- Leaves all other shared Grid tables and their existing formatting unchanged.
+
+## 0.9.5.9 SKU Planning presentation
+
+- Sets the SKU Planning & Coverage table header, body text, action text, and
+  committed-WIP badges to 13.5px.
+- Uses a uniform black header with white text while preserving all existing
+  column widths and the highlighted WIP body cells.
+
+## 0.9.5.8 compatibility correction
+
+- Removes the automatic Clade9 fallback for all unfinished inventory in
+  Building 33 and removes sales-history compatibility inference.
+- Assigns Clade9 compatibility only to the 16 approved strains after the
+  Building 1A origin and ownership gates have passed.
+- Leaves unmatched Building 33 material as Compatibility Needs Review.
+- Preserves production-planning blend exceptions and all existing table
+  formatting.
+
+## 0.9.5.7 compatibility model
+
+- Calculates Compatible Brand for unfinished inventory without changing the
+  Supabase snapshot or renaming finished goods.
+- Applies Building 1A facility and ownership gates before explicit product and
+  approved strain rules.
+- Replaces Brand with Compatible Brand in Bulk, WIP & Pre-WIP, and Aging Risk
+  Bulk; All Inventory retains Brand and adds Compatible Brand.
+- Uses Compatible Brand consistently for global filtering and Executive WIP
+  totals, and removes the earlier Aging Risk Bulk brand exclusion.
+- Keeps Hybrid Blend, Sativa Blend, and Indica Blend broad-source behavior only
+  inside production planning. It does not relabel every source Craft Kings.
+- Makes no typography, spacing, width, pagination, or other table-format changes.
+
+## 0.9.5.6 adjustment
+
+- Sets Retail Availability column headings to an explicit 12px size.
+
+## 0.9.5.5 hotfix
+
+- Constrains each Retail Availability sorting control to a small transparent
+  icon area and explicitly layers the white heading text above the header.
+
+## 0.9.5.4 correction
+
+- Splits multiword Retail Availability table headings across two deliberate
+  lines and reserves dedicated space beside them for the sorting controls.
 
 ## 0.9.5.3 corrections
 
