@@ -62,7 +62,7 @@ from .retailer_directory import (
 from .rules import normalize_strain_name
 
 
-PILOT_VERSION = "0.9.5.5"
+PILOT_VERSION = "0.9.5.6"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"

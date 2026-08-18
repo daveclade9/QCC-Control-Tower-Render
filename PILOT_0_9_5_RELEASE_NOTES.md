@@ -1,4 +1,8 @@
-# QCC Control Tower Reflex 0.9.5.5
+# QCC Control Tower Reflex 0.9.5.6
+
+## 0.9.5.6 adjustment
+
+- Sets Retail Availability column headings to an explicit 12px size.
 
 ## 0.9.5.5 hotfix
 

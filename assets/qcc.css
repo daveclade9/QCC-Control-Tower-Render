@@ -349,6 +349,7 @@ body {
   overflow: visible;
   text-overflow: clip;
   line-height: 1.2;
+  font-size: 12px;
   font-weight: 800;
   color: #ffffff;
 }

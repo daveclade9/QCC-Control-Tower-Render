@@ -1,4 +1,7 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.5
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.6
+
+Version 0.9.5.6 sets Retail Availability column headings to 12px for a more
+compact, readable two-line presentation.
 
 Version 0.9.5.5 constrains Retail Availability sorting controls to a transparent
 icon-sized area so the two-line heading text remains fully visible.
