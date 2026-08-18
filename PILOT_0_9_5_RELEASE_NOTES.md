@@ -1,4 +1,9 @@
-# QCC Control Tower Reflex 0.9.5.4
+# QCC Control Tower Reflex 0.9.5.5
+
+## 0.9.5.5 hotfix
+
+- Constrains each Retail Availability sorting control to a small transparent
+  icon area and explicitly layers the white heading text above the header.
 
 ## 0.9.5.4 correction
 

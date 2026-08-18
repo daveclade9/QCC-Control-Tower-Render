@@ -1,4 +1,7 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.4
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.5
+
+Version 0.9.5.5 constrains Retail Availability sorting controls to a transparent
+icon-sized area so the two-line heading text remains fully visible.
 
 Version 0.9.5.4 gives the Retail Availability directory clear two-line column
 headings and reserves a separate area for every sorting control.

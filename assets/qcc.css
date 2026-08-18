@@ -336,15 +336,21 @@ body {
   padding: 11px 42px 11px 12px !important;
   vertical-align: middle;
   overflow: visible;
+  box-sizing: border-box;
 }
 
 .qcc-retail-availability-grid .gridjs-th-content {
   display: block;
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: none;
   white-space: pre-line;
   overflow: visible;
   text-overflow: clip;
   line-height: 1.2;
   font-weight: 800;
+  color: #ffffff;
 }
 
 .qcc-retail-availability-grid .gridjs-sort {
@@ -352,5 +358,15 @@ body {
   right: 10px;
   top: 50%;
   transform: translateY(-50%);
+  width: 18px !important;
+  min-width: 18px !important;
+  max-width: 18px !important;
+  height: 22px !important;
   margin: 0 !important;
+  padding: 0 !important;
+  opacity: 0.88;
+  z-index: 3;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
