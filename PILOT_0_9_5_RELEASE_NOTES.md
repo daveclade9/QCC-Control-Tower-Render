@@ -1,4 +1,14 @@
-# QCC Control Tower Reflex 0.9.5.14
+# QCC Control Tower Reflex 0.9.5.15
+
+## 0.9.5.15 Inventory navigation optimization
+
+- Keeps one Inventory Grid.js instance mounted when moving between Inventory
+  tabs instead of destroying and rebuilding the table on every tab click.
+- Reuses the existing cached row matrix for each Inventory view when users
+  return to a previously opened tab.
+- Preserves the current columns, formatting, search, sorting, page-size
+  selector, summaries, filters, and downloads.
+- Makes no Supabase schema or data changes.
 
 ## 0.9.5.14 faster repeat navigation
 

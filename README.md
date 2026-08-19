@@ -1,4 +1,8 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.14
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.15
+
+Version 0.9.5.15 keeps the Inventory grid mounted between its subtabs and
+reuses each view's cached row matrix, reducing repeated server and browser work
+without changing table behavior, formatting, or Supabase data.
 
 Version 0.9.5.14 restores immediate client-managed main-tab navigation and
 keeps the Production plans/calendar data that arrives with the operational

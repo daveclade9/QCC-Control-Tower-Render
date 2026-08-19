@@ -66,7 +66,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.14"
+PILOT_VERSION = "0.9.5.15"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -5529,11 +5529,24 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def active_inventory_all_rows(self) -> list[list[Any]]:
-        return self._inventory_rows(
-            self.active_inventory_data,
-            self.active_inventory_summarize,
-            self.inventory_view_name,
-        )
+        # Reuse the per-view cached row matrices instead of converting the
+        # active inventory records again on every tab change. This keeps the
+        # current client-side search, sorting, and pagination behavior while
+        # making repeat navigation between Inventory tabs substantially
+        # cheaper for both the Reflex server and the browser.
+        if self.inventory_view_name == "bulk":
+            return self.bulk_inventory_rows
+        if self.inventory_view_name == "wip":
+            return self.wip_inventory_rows
+        if self.inventory_view_name == "aging_cpg":
+            return self.aging_cpg_rows
+        if self.inventory_view_name == "aging_bulk":
+            return self.aging_bulk_rows
+        if self.inventory_view_name == "all":
+            return self.all_inventory_rows
+        if self.inventory_view_name == "review":
+            return self.needs_review_rows
+        return self.cpg_inventory_rows
 
     @rx.var(cache=True)
     def active_inventory_rows(self) -> list[list[Any]]:
@@ -6024,10 +6037,11 @@ def inventory_data_grid(data: rx.Var) -> rx.Component:
     """Wide sortable inventory grid that never truncates column headings."""
     return rx.box(
         rx.data_table(
-            key=(
-                "inventory-table-" + DashboardState.inventory_view_name
-                + "-" + DashboardState.inventory_page_size_value
-            ),
+            # Keep the same Grid.js instance mounted while tabs change. The
+            # data and column props update normally; only a page-size change
+            # intentionally remounts the grid so Grid.js applies the new
+            # client-side pagination limit immediately.
+            key=("inventory-table-" + DashboardState.inventory_page_size_value),
             data=data,
             columns=DashboardState.inventory_columns,
             pagination=DashboardState.inventory_pagination,
