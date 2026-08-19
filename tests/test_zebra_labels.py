@@ -97,6 +97,24 @@ class ZebraLabelRulesTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_zpl(context, errors)
 
+    def test_required_values_accept_metrc_panel_prefixes_and_unit_suffixes(self):
+        analytes = [
+            {
+                **row,
+                "Test": "Cannabinoids - " + row["Test"].replace("(%)", "Percent"),
+            }
+            if row["Test"] != "Total Terpenes (%)"
+            else {**row, "Test": "Terpenes - Total Terpenes Percent"}
+            for row in DIAMOND_ANALYTES
+        ]
+        context, errors = prepare_label_context(
+            self.package(), analytes, "3.5g Flower"
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(context["analytes"]["total_thc"], 32.70)
+        self.assertEqual(context["analytes"]["thca"], 27.02)
+        self.assertEqual(context["analytes"]["total_terpenes"], 2.88)
+
     def test_lab_sample_tag_cannot_be_used_as_printed_uid(self):
         context, errors = prepare_label_context(
             self.package(source_package_labels=""),

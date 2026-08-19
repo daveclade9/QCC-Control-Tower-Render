@@ -156,7 +156,18 @@ def _find_value(
         if exact:
             return exact[1]
     for key, (_name, value) in analytes.items():
-        if any(re.fullmatch(pattern, key) for pattern in patterns):
+        # Metrc exports can prefix the analyte with its panel/category and can
+        # suffix it with the measurement basis (for example,
+        # "Cannabinoids Total THC Percent"). Match the complete normalized
+        # analyte phrase on token boundaries without allowing partial matches
+        # such as THC matching THCA.
+        if any(
+            re.search(
+                rf"(?:^|\s){re.escape(pattern)}(?:\s|$)",
+                key,
+            )
+            for pattern in patterns
+        ):
             return value
     return None
 

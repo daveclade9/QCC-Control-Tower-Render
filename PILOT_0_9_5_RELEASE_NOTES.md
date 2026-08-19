@@ -1,4 +1,11 @@
-# QCC Control Tower Reflex 0.9.5.21
+# QCC Control Tower Reflex 0.9.5.22
+
+## 0.9.5.22 Metrc analyte-name compatibility
+
+- Recognizes required label analytes when Metrc includes a panel/category
+  prefix or measurement-basis suffix around the analyte name.
+- Retains token-boundary matching so similarly named cannabinoids are not
+  confused with one another.
 
 ## 0.9.5.21 Zebra analyte lookup correction
 
