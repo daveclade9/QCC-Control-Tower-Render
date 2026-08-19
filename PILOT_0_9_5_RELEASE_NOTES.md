@@ -1,4 +1,74 @@
-# QCC Control Tower Reflex 0.9.5.11
+# QCC Control Tower Reflex 0.9.5.19
+
+## 0.9.5.19 Retail Availability dependent filters
+
+- Limits the Retail Availability Strain dropdown to strains associated with
+  the selected Brand in published retail-delivery history.
+- Resets an incompatible selected Strain to All Strains when Brand changes.
+- Uses the same aligned native dropdown as Global Filters for cumulative
+  keyboard type-ahead, so typing `D-I-A` advances toward Diamond Bar.
+- Leaves the retail map, delivery status, timeframe, SKU, and retailer logic
+  unchanged.
+
+## 0.9.5.18 targeted Inventory prewarming
+
+- Prepares the cached row matrices for All Inventory and Aging Risk Bulk in
+  the background immediately after the Inventory snapshot reaches the user.
+- Removes the temporary blue diagnostic line from the Inventory interface.
+- Retains lightweight server timing in Render logs without recalculating the
+  serialized payload after every tab change.
+- Makes no Supabase schema or data changes.
+
+## 0.9.5.17 diagnostic correction
+
+- Ignores duplicate same-tab change events emitted after a controlled
+  Inventory tab receives its selected value.
+- Preserves the original source-to-destination timing result instead of
+  replacing it with an incorrect `Aging Risk Bulk to Aging Risk Bulk` result.
+
+## 0.9.5.16 Inventory navigation diagnostics
+
+- Adds a staging diagnostic after each Inventory tab change showing the
+  server-update time, returned table-row count, and serialized row-payload size.
+- Writes the same measurement to Render logs with the
+  `INVENTORY_NAV_DIAGNOSTIC` prefix.
+- Measures server/state preparation separately from the user's perceived
+  browser-rendering time so the next optimization can target the actual delay.
+- Makes no Supabase schema or data changes.
+
+## 0.9.5.15 Inventory navigation optimization
+
+- Keeps one Inventory Grid.js instance mounted when moving between Inventory
+  tabs instead of destroying and rebuilding the table on every tab click.
+- Reuses the existing cached row matrix for each Inventory view when users
+  return to a previously opened tab.
+- Preserves the current columns, formatting, search, sorting, page-size
+  selector, summaries, filters, and downloads.
+- Makes no Supabase schema or data changes.
+
+## 0.9.5.14 faster repeat navigation
+
+- Restores client-managed top-level tabs so switching workspaces does not wait
+  for a server round trip.
+- Reuses Production plans and calendar data already included in the fast
+  Inventory/operational load instead of reading those tables a second time.
+- Retains the compact Inventory header and background Sales refresh from
+  0.9.5.13.
+
+## 0.9.5.13 workspace and production loading
+
+- Renders only the active top-level workspace so hidden Inventory, Sales, QA,
+  and Administration tables do not compete for browser layout work.
+- Loads Saved Plans and the Production Calendar independently before the
+  heavier Sales and velocity payload finishes in the background.
+- Locks Inventory table headers to a compact 72px height after Grid.js reflow.
+
+## 0.9.5.12 faster production-plan deletion
+
+- Keeps the shared inventory snapshot warm when production plans are deleted,
+  while refreshing saved plans and committed WIP in the background.
+- Adds production child-table indexes and removes one unnecessary database
+  round trip from single and bulk plan deletion.
 
 ## 0.9.5.11 multirow operational headers
 

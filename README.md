@@ -1,4 +1,32 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.11
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.19
+
+Version 0.9.5.19 filters Retail Availability strains by the selected brand and
+adds cumulative native keyboard type-ahead to its Brand and Strain dropdowns.
+
+Version 0.9.5.18 prepares All Inventory and Aging Risk Bulk row caches in the
+background after Inventory loads and removes the temporary diagnostic display.
+
+Version 0.9.5.17 preserves the original Inventory navigation diagnostic when
+the controlled tab emits a duplicate same-tab change event.
+
+Version 0.9.5.16 adds a staging-only Inventory navigation measurement showing
+server update time, table rows, and row-payload size after each tab change.
+
+Version 0.9.5.15 keeps the Inventory grid mounted between its subtabs and
+reuses each view's cached row matrix, reducing repeated server and browser work
+without changing table behavior, formatting, or Supabase data.
+
+Version 0.9.5.14 restores immediate client-managed main-tab navigation and
+keeps the Production plans/calendar data that arrives with the operational
+Inventory load, avoiding a redundant first Production read.
+
+Version 0.9.5.13 mounts only the active main workspace, gives Production
+Planning a lightweight saved-plan/calendar load, and stabilizes Inventory
+header height after table reflow.
+
+Version 0.9.5.12 speeds up single and bulk production-plan deletion by keeping
+the inventory context warm, refreshing committed WIP in the background, and
+indexing the production child tables used during deletion.
 
 Version 0.9.5.11 displays each word of every multiword header on its own row in
 the 14px Stockouts, Customer Shipment History, and Recent Transfer tables.

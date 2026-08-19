@@ -11,6 +11,7 @@ import re
 from html import escape
 from calendar import month_name
 from datetime import date, datetime, timedelta
+from time import perf_counter
 from typing import Any, TypedDict
 from urllib.parse import parse_qs, quote_plus
 
@@ -66,7 +67,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.11"
+PILOT_VERSION = "0.9.5.19"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -454,6 +455,7 @@ class DashboardState(rx.State):
     production_save_error: str = ""
     production_saving: bool = False
     production_data_loading: bool = False
+    production_module_loaded: bool = False
     production_last_saved_plan_id: str = ""
     production_edit_plan_id: str = ""
     production_view: str = "build"
@@ -849,6 +851,12 @@ class DashboardState(rx.State):
     @rx.event
     def change_retail_brand_filter(self, value: str):
         self.retail_brand_filter = value
+        valid_strains = self._retail_strains_for_brand(value)
+        if (
+            self.retail_strain_filter != "All Strains"
+            and self.retail_strain_filter not in valid_strains
+        ):
+            self.retail_strain_filter = "All Strains"
 
     @rx.event
     def change_retail_strain_filter(self, value: str):
@@ -2299,7 +2307,10 @@ class DashboardState(rx.State):
         self.all_inventory = payload.get("all_inventory", [])
         self.needs_review = payload.get("needs_review", [])
         self._apply_optional_module_payload(payload)
-        self._set_initial_calendar_month()
+        # The fast operational payload already contains the small Production
+        # tables. Keep them ready instead of clearing and rereading them when
+        # the user first opens Production Planning.
+        self._apply_production_payload(payload)
         self._initialize_production_target()
         self.loading = False
         yield DashboardState.load_sales_background
@@ -2348,6 +2359,22 @@ class DashboardState(rx.State):
                     self._apply_payload(payload)
                     self.using_demo_data = False
                     self.loading = False
+
+            # The Inventory update above is released to the browser before
+            # this second state lock. Prime only the two measured slow views
+            # while Sales and QA continue loading in their own tasks.
+            await asyncio.sleep(0)
+            async with self:
+                all_count, aging_bulk_count, warm_ms = (
+                    self._prewarm_slowest_inventory_views()
+                )
+            print(
+                "INVENTORY_PREWARM "
+                f"All Inventory={all_count:,} rows | "
+                f"Aging Risk Bulk={aging_bulk_count:,} rows | "
+                f"{warm_ms:,.0f} ms",
+                flush=True,
+            )
 
             for completed in asyncio.as_completed(auxiliary_tasks):
                 name, payload, error = await completed
@@ -2577,6 +2604,7 @@ class DashboardState(rx.State):
                     "production_templates", []
                 )
                 self.calendar = payload.get("calendar", [])
+                self.production_module_loaded = True
         elif self.sales_demand_view == "customers":
             self.customers = payload.get("customers", [])
         elif self.sales_demand_view == "retail":
@@ -3891,7 +3919,29 @@ class DashboardState(rx.State):
         self.saved_plan_cards = production.get("saved_plan_cards", [])
         self.production_templates = production.get("production_templates", [])
         self.calendar = production.get("calendar", [])
+        self.production_module_loaded = True
         self._set_initial_calendar_month()
+
+    @rx.event(background=True)
+    async def load_production_data_background(self):
+        """Show saved plans and calendar without waiting for Sales history."""
+        async with self:
+            if self.production_data_loading or self.production_module_loaded:
+                return
+            self.production_data_loading = True
+        try:
+            production = await rx.run_in_thread(load_production_module_data)
+            async with self:
+                self._apply_production_payload(production)
+                self.production_action_error = ""
+        except Exception as error:
+            async with self:
+                self.production_action_error = (
+                    f"Production plans could not be loaded: {error}"
+                )
+        finally:
+            async with self:
+                self.production_data_loading = False
 
     @rx.event(background=True)
     async def refresh_production_data_background(self):
@@ -4137,6 +4187,8 @@ class DashboardState(rx.State):
         # The selected module's optional data is applied in a second state
         # update, so a large sales table cannot hold up the tab transition.
         yield
+        if value == "production" and not self.production_module_loaded:
+            yield DashboardState.load_production_data_background
         if value in self.sales_loaded_views:
             if value == "production":
                 self._set_initial_calendar_month()
@@ -4153,6 +4205,11 @@ class DashboardState(rx.State):
             return
         if value != "sales_demand":
             return
+        if (
+            self.sales_demand_view == "production"
+            and not self.production_module_loaded
+        ):
+            yield DashboardState.load_production_data_background
         if self.sales_demand_view in self.sales_loaded_views:
             return
         yield DashboardState.load_sales_background
@@ -4337,13 +4394,28 @@ class DashboardState(rx.State):
             if str(row.get(column, "")).strip()
         })]
 
+    def _retail_strains_for_brand(self, brand: str) -> list[str]:
+        selected_brand = str(brand or "").strip()
+        return sorted({
+            str(row.get("Strain", "")).strip()
+            for row in self.retail_delivery_history
+            if str(row.get("Strain", "")).strip()
+            and (
+                selected_brand == "All Brands"
+                or str(row.get("Brand", "")).strip() == selected_brand
+            )
+        })
+
     @rx.var(cache=True)
     def retail_brand_options(self) -> list[str]:
         return self._retail_options("Brand", "All Brands")
 
     @rx.var(cache=True)
     def retail_strain_options(self) -> list[str]:
-        return self._retail_options("Strain", "All Strains")
+        return [
+            "All Strains",
+            *self._retail_strains_for_brand(self.retail_brand_filter),
+        ]
 
     @rx.var(cache=True)
     def retail_sku_options(self) -> list[str]:
@@ -5495,10 +5567,34 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def active_inventory_all_rows(self) -> list[list[Any]]:
-        return self._inventory_rows(
-            self.active_inventory_data,
-            self.active_inventory_summarize,
-            self.inventory_view_name,
+        # Reuse the per-view cached row matrices instead of converting the
+        # active inventory records again on every tab change. This keeps the
+        # current client-side search, sorting, and pagination behavior while
+        # making repeat navigation between Inventory tabs substantially
+        # cheaper for both the Reflex server and the browser.
+        if self.inventory_view_name == "bulk":
+            return self.bulk_inventory_rows
+        if self.inventory_view_name == "wip":
+            return self.wip_inventory_rows
+        if self.inventory_view_name == "aging_cpg":
+            return self.aging_cpg_rows
+        if self.inventory_view_name == "aging_bulk":
+            return self.aging_bulk_rows
+        if self.inventory_view_name == "all":
+            return self.all_inventory_rows
+        if self.inventory_view_name == "review":
+            return self.needs_review_rows
+        return self.cpg_inventory_rows
+
+    def _prewarm_slowest_inventory_views(self) -> tuple[int, int, float]:
+        """Prime the two largest measured Inventory row-matrix caches."""
+        started_at = perf_counter()
+        all_count = len(self.all_inventory_rows)
+        aging_bulk_count = len(self.aging_bulk_rows)
+        return (
+            all_count,
+            aging_bulk_count,
+            (perf_counter() - started_at) * 1000,
         )
 
     @rx.var(cache=True)
@@ -5556,8 +5652,41 @@ class DashboardState(rx.State):
 
     @rx.event
     def change_inventory_view(self, value: str):
+        # Radix can repeat on_change when a controlled tab receives its newly
+        # selected value. Ignore that no-op so it neither rebuilds state nor
+        # overwrites the real navigation measurement with "X to X".
+        if value == self.inventory_view_name:
+            return
+        previous_view = self.inventory_view_name
+        started_at = perf_counter()
         self.inventory_view_name = value
         self.inventory_page = 1
+        # Flush the actual tab/table update first. When the generator resumes,
+        # Reflex has completed the server-side state-delta preparation for the
+        # navigation event; browser paint time is intentionally not included.
+        yield
+
+        server_update_ms = (perf_counter() - started_at) * 1000
+        rows = self.active_inventory_all_rows
+        view_labels = {
+            "cpg": "CPG Inventory",
+            "bulk": "Bulk Inventory",
+            "wip": "WIP & Pre-WIP",
+            "aging_cpg": "Aging Risk CPG",
+            "aging_bulk": "Aging Risk Bulk",
+            "all": "All Inventory",
+            "review": "Needs Review",
+        }
+        diagnostic = (
+            f"{view_labels.get(previous_view, previous_view)} to "
+            f"{view_labels.get(value, value)} | server update "
+            f"{server_update_ms:,.0f} ms | {len(rows):,} table rows"
+        )
+        print(
+            "INVENTORY_NAV_DIAGNOSTIC "
+            + diagnostic,
+            flush=True,
+        )
 
     @rx.event
     def previous_inventory_page(self):
@@ -5990,10 +6119,11 @@ def inventory_data_grid(data: rx.Var) -> rx.Component:
     """Wide sortable inventory grid that never truncates column headings."""
     return rx.box(
         rx.data_table(
-            key=(
-                "inventory-table-" + DashboardState.inventory_view_name
-                + "-" + DashboardState.inventory_page_size_value
-            ),
+            # Keep the same Grid.js instance mounted while tabs change. The
+            # data and column props update normally; only a page-size change
+            # intentionally remounts the grid so Grid.js applies the new
+            # client-side pagination limit immediately.
+            key=("inventory-table-" + DashboardState.inventory_page_size_value),
             data=data,
             columns=DashboardState.inventory_columns,
             pagination=DashboardState.inventory_pagination,
@@ -8024,20 +8154,20 @@ def retail_availability_panel() -> rx.Component:
             ),
             rx.box(
                 rx.text("Brand", size="1", color=MUTED, weight="bold"),
-                rx.select(
+                native_filter_select(
                     DashboardState.retail_brand_options,
-                    value=DashboardState.retail_brand_filter,
-                    on_change=DashboardState.change_retail_brand_filter,
-                    width="210px",
+                    DashboardState.retail_brand_filter,
+                    DashboardState.change_retail_brand_filter,
+                    "210px",
                 ),
             ),
             rx.box(
                 rx.text("Strain", size="1", color=MUTED, weight="bold"),
-                rx.select(
+                native_filter_select(
                     DashboardState.retail_strain_options,
-                    value=DashboardState.retail_strain_filter,
-                    on_change=DashboardState.change_retail_strain_filter,
-                    width="220px",
+                    DashboardState.retail_strain_filter,
+                    DashboardState.change_retail_strain_filter,
+                    "220px",
                 ),
             ),
             rx.box(
@@ -9844,10 +9974,26 @@ def protected_dashboard() -> rx.Component:
                     class_name="qcc-tabs qcc-tabs-primary",
                     width="100%",
                 ),
-                rx.tabs.content(executive_dashboard_panel(), value="executive", padding_top="1.25rem"),
-                rx.tabs.content(sales_demand_workspace(), value="sales_demand", padding_top="1.25rem"),
-                rx.tabs.content(inventory_panel(), value="inventory", padding_top="1.25rem"),
-                rx.tabs.content(qa_panel(), value="qa", padding_top="1.25rem"),
+                rx.tabs.content(
+                    executive_dashboard_panel(),
+                    value="executive",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    sales_demand_workspace(),
+                    value="sales_demand",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    inventory_panel(),
+                    value="inventory",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    qa_panel(),
+                    value="qa",
+                    padding_top="1.25rem",
+                ),
                 rx.tabs.content(
                     rx.cond(
                         DashboardState.is_administrator,

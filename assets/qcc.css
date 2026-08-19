@@ -25,13 +25,23 @@ body {
   color: #ffffff;
   font-size: 14px;
   font-weight: 800;
-  padding: 12px 42px 12px 14px;
+  padding: 10px 42px 10px 14px;
   white-space: normal;
   position: relative;
   overflow: visible;
   box-sizing: border-box;
   line-height: 1.25;
-  min-height: 58px;
+  height: 72px !important;
+  min-height: 72px;
+  max-height: 72px;
+  vertical-align: middle;
+}
+
+.qcc-inventory-grid .gridjs-thead,
+.qcc-inventory-grid .gridjs-thead .gridjs-tr {
+  height: 72px !important;
+  min-height: 72px;
+  max-height: 72px;
 }
 
 .qcc-inventory-grid .gridjs-td {
@@ -113,6 +123,8 @@ body {
   white-space: normal;
   word-break: normal;
   color: #ffffff;
+  max-height: 52px;
+  line-height: 1.2;
 }
 
 .qcc-tabs {

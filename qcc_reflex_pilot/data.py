@@ -96,6 +96,43 @@ def _invalidate_dashboard_caches() -> None:
             cache["loaded_at"] = 0.0
             cache["payload"] = None
 
+
+def _remove_deleted_plans_from_caches(plan_ids: list[str]) -> None:
+    """Remove deleted plans without discarding the warm inventory context."""
+    deleted = {str(plan_id) for plan_id in plan_ids if str(plan_id)}
+    if not deleted:
+        return
+
+    # The operational context contains the expensive inventory snapshot plus
+    # three small production frames. Replace only the production frames so the
+    # post-delete Sales/WIP refresh can reuse the already-loaded inventory.
+    with _OPERATIONAL_CONTEXT_LOCK:
+        payload = _OPERATIONAL_CONTEXT.get("payload")
+        if payload:
+            updated = dict(payload)
+            for key in ("plans", "outputs", "sources"):
+                frame = payload.get(key)
+                if (
+                    isinstance(frame, pd.DataFrame)
+                    and not frame.empty
+                    and "plan_id" in frame.columns
+                ):
+                    updated[key] = frame[
+                        ~frame["plan_id"].astype(str).isin(deleted)
+                    ].copy()
+            _OPERATIONAL_CONTEXT["payload"] = updated
+            _OPERATIONAL_CONTEXT["loaded_at"] = time.monotonic()
+
+    # These compact derived payloads include saved-plan and committed-WIP
+    # values. Expire them, but leave the operational inventory context warm.
+    for lock, cache in (
+        (_DASHBOARD_CACHE_LOCK, _DASHBOARD_CACHE),
+        (_SALES_DASHBOARD_CACHE_LOCK, _SALES_DASHBOARD_CACHE),
+    ):
+        with lock:
+            cache["loaded_at"] = 0.0
+            cache["payload"] = None
+
 LAB_REQUIRED_COLUMNS = [
     "Lab License No.", "Lab Facility", "Packaged Lic. No.",
     "Packaged Facility", "Package", "Source Harvest Names",
@@ -1436,6 +1473,17 @@ def _ensure_production_schema() -> None:
                 "ALTER TABLE production_plans ADD COLUMN IF NOT EXISTS "
                 "production_line TEXT NOT NULL DEFAULT 'Unassigned'"
             )
+            # Plan deletions and WIP release filter each child table by
+            # plan_id. These indexes keep that work fast as plan history grows.
+            for statement in (
+                "CREATE INDEX IF NOT EXISTS idx_production_plan_audit_plan_id "
+                "ON production_plan_audit (plan_id)",
+                "CREATE INDEX IF NOT EXISTS idx_production_plan_sources_plan_id "
+                "ON production_plan_sources (plan_id)",
+                "CREATE INDEX IF NOT EXISTS idx_production_plan_outputs_plan_id "
+                "ON production_plan_outputs (plan_id)",
+            ):
+                connection.execute(statement)
             connection.commit()
         _PRODUCTION_SCHEMA_READY = True
 
@@ -1954,30 +2002,27 @@ def delete_reflex_production_plans(
                 ("qcc-production-planning",),
             )
             cursor.execute(
-                "SELECT plan_id FROM production_plans WHERE plan_id = ANY(%s)",
+                "DELETE FROM production_plan_audit WHERE plan_id = ANY(%s)",
+                (clean_ids,),
+            )
+            cursor.execute(
+                "DELETE FROM production_plan_sources WHERE plan_id = ANY(%s)",
+                (clean_ids,),
+            )
+            cursor.execute(
+                "DELETE FROM production_plan_outputs WHERE plan_id = ANY(%s)",
+                (clean_ids,),
+            )
+            cursor.execute(
+                "DELETE FROM production_plans WHERE plan_id = ANY(%s) "
+                "RETURNING plan_id",
                 (clean_ids,),
             )
             existing_ids = [str(row[0]) for row in cursor.fetchall()]
             if not existing_ids:
                 raise ValueError("The selected production plans were not found.")
-            cursor.execute(
-                "DELETE FROM production_plan_audit WHERE plan_id = ANY(%s)",
-                (existing_ids,),
-            )
-            cursor.execute(
-                "DELETE FROM production_plan_sources WHERE plan_id = ANY(%s)",
-                (existing_ids,),
-            )
-            cursor.execute(
-                "DELETE FROM production_plan_outputs WHERE plan_id = ANY(%s)",
-                (existing_ids,),
-            )
-            cursor.execute(
-                "DELETE FROM production_plans WHERE plan_id = ANY(%s)",
-                (existing_ids,),
-            )
         connection.commit()
-    _invalidate_dashboard_caches()
+    _remove_deleted_plans_from_caches(existing_ids)
     return existing_ids
 
 
