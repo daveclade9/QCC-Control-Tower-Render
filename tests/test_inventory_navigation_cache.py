@@ -32,6 +32,31 @@ class InventoryNavigationCacheTest(unittest.TestCase):
                 state.inventory_view_name = view_name
                 self.assertIs(getter(state), expected)
 
+    def test_navigation_diagnostic_records_slowest_view_transition(self):
+        state = SimpleNamespace(
+            inventory_view_name="all",
+            inventory_page=3,
+            inventory_navigation_diagnostic="old result",
+            active_inventory_all_rows=[["row 1"], ["row 2"]],
+        )
+        event = DashboardState.change_inventory_view.fn(
+            state, "aging_bulk"
+        )
+
+        next(event)
+        self.assertEqual(state.inventory_view_name, "aging_bulk")
+        self.assertEqual(state.inventory_page, 1)
+        self.assertEqual(state.inventory_navigation_diagnostic, "")
+
+        with self.assertRaises(StopIteration):
+            next(event)
+        self.assertIn(
+            "All Inventory to Aging Risk Bulk",
+            state.inventory_navigation_diagnostic,
+        )
+        self.assertIn("2 table rows", state.inventory_navigation_diagnostic)
+        self.assertIn("MB row payload", state.inventory_navigation_diagnostic)
+
 
 if __name__ == "__main__":
     unittest.main()

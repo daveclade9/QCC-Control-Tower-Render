@@ -1,4 +1,7 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.15
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.16
+
+Version 0.9.5.16 adds a staging-only Inventory navigation measurement showing
+server update time, table rows, and row-payload size after each tab change.
 
 Version 0.9.5.15 keeps the Inventory grid mounted between its subtabs and
 reuses each view's cached row matrix, reducing repeated server and browser work

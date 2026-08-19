@@ -11,6 +11,7 @@ import re
 from html import escape
 from calendar import month_name
 from datetime import date, datetime, timedelta
+from time import perf_counter
 from typing import Any, TypedDict
 from urllib.parse import parse_qs, quote_plus
 
@@ -66,7 +67,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.15"
+PILOT_VERSION = "0.9.5.16"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -474,6 +475,7 @@ class DashboardState(rx.State):
     inventory_view_name: str = "cpg"
     inventory_page: int = 1
     inventory_page_size: int = 10
+    inventory_navigation_diagnostic: str = ""
     transfer_page: int = 1
     transfer_page_size: int = 50
     sku_planning_page: int = 1
@@ -5603,8 +5605,41 @@ class DashboardState(rx.State):
 
     @rx.event
     def change_inventory_view(self, value: str):
+        previous_view = self.inventory_view_name
+        started_at = perf_counter()
+        self.inventory_navigation_diagnostic = ""
         self.inventory_view_name = value
         self.inventory_page = 1
+        # Flush the actual tab/table update first. When the generator resumes,
+        # Reflex has completed the server-side state-delta preparation for the
+        # navigation event; browser paint time is intentionally not included.
+        yield
+
+        server_update_ms = (perf_counter() - started_at) * 1000
+        rows = self.active_inventory_all_rows
+        payload_bytes = len(
+            json.dumps(rows, separators=(",", ":"), default=str).encode("utf-8")
+        )
+        view_labels = {
+            "cpg": "CPG Inventory",
+            "bulk": "Bulk Inventory",
+            "wip": "WIP & Pre-WIP",
+            "aging_cpg": "Aging Risk CPG",
+            "aging_bulk": "Aging Risk Bulk",
+            "all": "All Inventory",
+            "review": "Needs Review",
+        }
+        self.inventory_navigation_diagnostic = (
+            f"{view_labels.get(previous_view, previous_view)} to "
+            f"{view_labels.get(value, value)} | server update "
+            f"{server_update_ms:,.0f} ms | {len(rows):,} table rows | "
+            f"{payload_bytes / 1_048_576:,.2f} MB row payload"
+        )
+        print(
+            "INVENTORY_NAV_DIAGNOSTIC "
+            + self.inventory_navigation_diagnostic,
+            flush=True,
+        )
 
     @rx.event
     def previous_inventory_page(self):
@@ -8724,6 +8759,16 @@ def inventory_panel() -> rx.Component:
             value=DashboardState.inventory_view_name,
             on_change=DashboardState.change_inventory_view,
             width="100%",
+        ),
+        rx.cond(
+            DashboardState.inventory_navigation_diagnostic != "",
+            rx.callout(
+                DashboardState.inventory_navigation_diagnostic,
+                icon="activity",
+                color_scheme="blue",
+                size="1",
+                width="100%",
+            ),
         ),
         active_inventory_context(),
         inventory_view(

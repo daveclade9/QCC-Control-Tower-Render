@@ -1,4 +1,14 @@
-# QCC Control Tower Reflex 0.9.5.15
+# QCC Control Tower Reflex 0.9.5.16
+
+## 0.9.5.16 Inventory navigation diagnostics
+
+- Adds a staging diagnostic after each Inventory tab change showing the
+  server-update time, returned table-row count, and serialized row-payload size.
+- Writes the same measurement to Render logs with the
+  `INVENTORY_NAV_DIAGNOSTIC` prefix.
+- Measures server/state preparation separately from the user's perceived
+  browser-rendering time so the next optimization can target the actual delay.
+- Makes no Supabase schema or data changes.
 
 ## 0.9.5.15 Inventory navigation optimization
 
