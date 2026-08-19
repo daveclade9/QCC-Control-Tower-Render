@@ -447,7 +447,7 @@ def _vertical_flower_zpl(context: dict[str, Any]) -> str:
 ^FT133,248^A0B,16,12^FDTotal THC: {_pct(a.get('total_thc'))}  THCA: {_pct(a.get('thca'))}^FS
 ^FT153,248^A0B,16,12^FDTotal CBD: {_pct(a.get('total_cbd'))}  D9-THC: {_pct(a.get('d9_thc'))}^FS
 ^FT173,248^A0B,16,12^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
-^FO198,2^A0B,16,13^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
+^FO194,2^A0B,17,14^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
 ^FT220,244^A0B,15,6^FD{terp_line_1[:58]}^FS
 ^FT240,244^A0B,15,6^FD{terp_line_2[:58]}^FS
 ^FT269,238^A0B,15,8^FDHarvest Date: {context['harvest_date_short']}  Expiration Date: {context['expiration_date_short']}^FS

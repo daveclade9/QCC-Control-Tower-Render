@@ -78,7 +78,7 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertEqual(zpl.count("Total Cannabinoids:"), 2)
         self.assertLess(zpl.index("Total CBG:"), zpl.index("Total Terpenes:"))
         self.assertLess(zpl.index("Total Terpenes:"), zpl.index("Limonene:"))
-        self.assertIn("^FO198,2^A0B,16,13^FB250,1,0,C,0", zpl)
+        self.assertIn("^FO194,2^A0B,17,14^FB250,1,0,C,0", zpl)
         self.assertIn("^FT220,244", zpl)
         self.assertIn("^FT240,244", zpl)
         self.assertIn("1.10%    Linalool: 0.49%", zpl)

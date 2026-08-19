@@ -1,4 +1,11 @@
-# QCC Control Tower Reflex 0.9.5.27
+# QCC Control Tower Reflex 0.9.5.28
+
+## 0.9.5.28 Total Terpenes alignment
+
+- Moves the centered Total Terpenes line slightly upward so it sits more
+  evenly between Total CBG and the Limonene/Linalool row.
+- Slightly increases the Total Terpenes font without moving the surrounding
+  label content.
 
 ## 0.9.5.27 Vertical label alignment refinement
 
