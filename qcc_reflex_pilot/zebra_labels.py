@@ -181,8 +181,51 @@ _TERPENE_TERMS = (
 
 
 def _display_analyte_name(name: str) -> str:
-    text = re.sub(r"\s*\(%\)\s*$", "", name, flags=re.I)
-    return _clean_text(text, 24)
+    text = re.sub(r"\s*\(%\)\s*", " ", name, flags=re.I)
+    text = re.sub(r"\braw\s+plant\s+material\b", " ", text, flags=re.I)
+    text = re.sub(
+        r"^\s*(?:terpenes?|cannabinoids?)\s*[-:]\s*",
+        "",
+        text,
+        flags=re.I,
+    )
+    return _clean_text(text, 20).strip(" -:")
+
+
+def _terpene_identity(key: str, display_name: str) -> str:
+    """Collapse alternate Metrc names for the same individual terpene."""
+    for phrase in ("alpha pinene", "beta pinene"):
+        if phrase in key:
+            return phrase
+    for term in _TERPENE_TERMS:
+        if term != "terpene" and term in key:
+            return term
+    return _normalized_analyte_name(display_name)
+
+
+_TERPENE_DISPLAY_NAMES = {
+    "limonene": "Limonene",
+    "linalool": "Linalool",
+    "alpha pinene": "Alpha-Pinene",
+    "beta pinene": "Beta-Pinene",
+    "pinene": "Pinene",
+    "caryophyllene": "Caryophyllene",
+    "myrcene": "Myrcene",
+    "humulene": "Humulene",
+    "terpinolene": "Terpinolene",
+    "ocimene": "Ocimene",
+    "bisabolol": "Bisabolol",
+    "camphene": "Camphene",
+    "borneol": "Borneol",
+    "eucalyptol": "Eucalyptol",
+    "farnesene": "Farnesene",
+    "geraniol": "Geraniol",
+    "guaiol": "Guaiol",
+    "nerolidol": "Nerolidol",
+    "pulegone": "Pulegone",
+    "sabinene": "Sabinene",
+    "terpineol": "Terpineol",
+}
 
 
 def label_analytes(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -214,11 +257,19 @@ def label_analytes(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "total_cbg": total_cbg,
         "total_terpenes": _find_value(analytes, "total terpenes"),
     }
-    terpene_rows: list[tuple[str, float]] = []
+    terpene_by_identity: dict[str, tuple[str, float]] = {}
     for key, (name, value) in analytes.items():
-        if key == "total terpenes" or not any(term in key for term in _TERPENE_TERMS):
+        if (
+            re.search(r"(?:^|\s)total terpenes(?:\s|$)", key)
+            or not any(term in key for term in _TERPENE_TERMS)
+        ):
             continue
-        terpene_rows.append((_display_analyte_name(name), value))
+        display_name = _display_analyte_name(name)
+        identity = _terpene_identity(key, display_name)
+        display_name = _TERPENE_DISPLAY_NAMES.get(identity, display_name)
+        if display_name and identity and identity not in terpene_by_identity:
+            terpene_by_identity[identity] = (display_name, value)
+    terpene_rows = list(terpene_by_identity.values())
     terpene_rows.sort(key=lambda item: item[1], reverse=True)
     values["top_terpenes"] = terpene_rows[:3]
     total = values.get("total_terpenes")
@@ -329,7 +380,7 @@ def prepare_label_context(
 
 def _header(width: int, length: int) -> str:
     return (
-        "^XA\n^CI28\n^MMT\n^MTT\n^PW" + str(width)
+        "^XA\n^CI28\n^MMT\n^MTT\n^PR4,4\n~SD15\n^PW" + str(width)
         + "\n^LL" + str(length).zfill(4) + "\n^LS0\n"
     )
 
@@ -381,8 +432,8 @@ def _vertical_flower_zpl(context: dict[str, Any]) -> str:
 ^FT142,248^A0B,16,12^FDTotal THC: {_pct(a.get('total_thc'))}  THCA: {_pct(a.get('thca'))}^FS
 ^FT163,248^A0B,16,12^FDTotal CBD: {_pct(a.get('total_cbd'))}  D9-THC: {_pct(a.get('d9_thc'))}^FS
 ^FT184,248^A0B,16,12^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
-^FT222,244^A0B,15,8^FD{_clean_text(terp_line_1, 58)}^FS
-^FT243,244^A0B,15,8^FD{_clean_text(terp_line_2, 58)}^FS
+^FT222,244^A0B,15,6^FD{_clean_text(terp_line_1, 58)}^FS
+^FT243,244^A0B,15,6^FD{_clean_text(terp_line_2, 58)}^FS
 ^FT269,238^A0B,15,8^FDHarvest Date: {context['harvest_date_short']}  Expiration Date: {context['expiration_date_short']}^FS
 ^FT290,250^A0B,15,7^FDPesticides: {context['pesticides']}  Chemotype: {context['chemotype']}^FS
 ^FT315,250^A0B,13,11^FDLot #: {_clean_text(context['lot_number'], 40)}^FS

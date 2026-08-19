@@ -1,4 +1,17 @@
-# QCC Control Tower Reflex 0.9.5.23
+# QCC Control Tower Reflex 0.9.5.24
+
+## 0.9.5.24 Zebra terpene layout and print-density correction
+
+- Removes Metrc's percentage and `Raw Plant Material` suffixes from printed
+  terpene names without changing the laboratory results.
+- Prevents Total Terpenes from being counted as an individual terpene and
+  deduplicates alternate names for the same terpene.
+- Restores the correct remaining-terpenes calculation and retains
+  Alpha-Pinene as the third displayed terpene for the Diamond Bar reference.
+- Narrows the vertical terpene lines to keep Limonene and Linalool inside the
+  printable boundary.
+- Matches the approved ZebraDesigner files' speed and darkness commands:
+  `^PR4,4` and `~SD15`.
 
 ## 0.9.5.23 Raw plant material cannabinoid rules
 

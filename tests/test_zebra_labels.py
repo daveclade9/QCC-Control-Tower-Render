@@ -114,6 +114,11 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertEqual(context["analytes"]["total_thc"], 32.70)
         self.assertEqual(context["analytes"]["thca"], 27.02)
         self.assertEqual(context["analytes"]["total_terpenes"], 2.88)
+        self.assertEqual(
+            [name for name, _value in context["analytes"]["top_terpenes"]],
+            ["Limonene", "Linalool", "Alpha-Pinene"],
+        )
+        self.assertAlmostEqual(context["analytes"]["other_terpenes"], 0.83)
 
     def test_metrc_raw_plant_material_aliases_and_total_cbg_formula(self):
         analytes = [
@@ -146,6 +151,14 @@ class ZebraLabelRulesTest(unittest.TestCase):
         )
         self.assertEqual(errors, [])
         self.assertEqual(context["analytes"]["total_cbg"], 1.92)
+
+    def test_zpl_uses_reference_print_speed_and_darkness(self):
+        context, errors = prepare_label_context(
+            self.package(), DIAMOND_ANALYTES, "3.5g Flower"
+        )
+        zpl = build_zpl(context, errors)
+        self.assertIn("^PR4,4", zpl)
+        self.assertIn("~SD15", zpl)
 
     def test_lab_sample_tag_cannot_be_used_as_printed_uid(self):
         context, errors = prepare_label_context(
