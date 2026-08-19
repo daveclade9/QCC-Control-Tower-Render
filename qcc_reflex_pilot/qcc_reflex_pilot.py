@@ -67,7 +67,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.18"
+PILOT_VERSION = "0.9.5.19"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -851,6 +851,12 @@ class DashboardState(rx.State):
     @rx.event
     def change_retail_brand_filter(self, value: str):
         self.retail_brand_filter = value
+        valid_strains = self._retail_strains_for_brand(value)
+        if (
+            self.retail_strain_filter != "All Strains"
+            and self.retail_strain_filter not in valid_strains
+        ):
+            self.retail_strain_filter = "All Strains"
 
     @rx.event
     def change_retail_strain_filter(self, value: str):
@@ -4388,13 +4394,28 @@ class DashboardState(rx.State):
             if str(row.get(column, "")).strip()
         })]
 
+    def _retail_strains_for_brand(self, brand: str) -> list[str]:
+        selected_brand = str(brand or "").strip()
+        return sorted({
+            str(row.get("Strain", "")).strip()
+            for row in self.retail_delivery_history
+            if str(row.get("Strain", "")).strip()
+            and (
+                selected_brand == "All Brands"
+                or str(row.get("Brand", "")).strip() == selected_brand
+            )
+        })
+
     @rx.var(cache=True)
     def retail_brand_options(self) -> list[str]:
         return self._retail_options("Brand", "All Brands")
 
     @rx.var(cache=True)
     def retail_strain_options(self) -> list[str]:
-        return self._retail_options("Strain", "All Strains")
+        return [
+            "All Strains",
+            *self._retail_strains_for_brand(self.retail_brand_filter),
+        ]
 
     @rx.var(cache=True)
     def retail_sku_options(self) -> list[str]:
@@ -8133,20 +8154,20 @@ def retail_availability_panel() -> rx.Component:
             ),
             rx.box(
                 rx.text("Brand", size="1", color=MUTED, weight="bold"),
-                rx.select(
+                native_filter_select(
                     DashboardState.retail_brand_options,
-                    value=DashboardState.retail_brand_filter,
-                    on_change=DashboardState.change_retail_brand_filter,
-                    width="210px",
+                    DashboardState.retail_brand_filter,
+                    DashboardState.change_retail_brand_filter,
+                    "210px",
                 ),
             ),
             rx.box(
                 rx.text("Strain", size="1", color=MUTED, weight="bold"),
-                rx.select(
+                native_filter_select(
                     DashboardState.retail_strain_options,
-                    value=DashboardState.retail_strain_filter,
-                    on_change=DashboardState.change_retail_strain_filter,
-                    width="220px",
+                    DashboardState.retail_strain_filter,
+                    DashboardState.change_retail_strain_filter,
+                    "220px",
                 ),
             ),
             rx.box(

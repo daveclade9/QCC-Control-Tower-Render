@@ -1,4 +1,7 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.18
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.19
+
+Version 0.9.5.19 filters Retail Availability strains by the selected brand and
+adds cumulative native keyboard type-ahead to its Brand and Strain dropdowns.
 
 Version 0.9.5.18 prepares All Inventory and Aging Risk Bulk row caches in the
 background after Inventory loads and removes the temporary diagnostic display.

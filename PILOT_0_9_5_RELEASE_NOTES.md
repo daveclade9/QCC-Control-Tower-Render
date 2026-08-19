@@ -1,4 +1,14 @@
-# QCC Control Tower Reflex 0.9.5.18
+# QCC Control Tower Reflex 0.9.5.19
+
+## 0.9.5.19 Retail Availability dependent filters
+
+- Limits the Retail Availability Strain dropdown to strains associated with
+  the selected Brand in published retail-delivery history.
+- Resets an incompatible selected Strain to All Strains when Brand changes.
+- Uses the same aligned native dropdown as Global Filters for cumulative
+  keyboard type-ahead, so typing `D-I-A` advances toward Diamond Bar.
+- Leaves the retail map, delivery status, timeframe, SKU, and retailer logic
+  unchanged.
 
 ## 0.9.5.18 targeted Inventory prewarming
 
