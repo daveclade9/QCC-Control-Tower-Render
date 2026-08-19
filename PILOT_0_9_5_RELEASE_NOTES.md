@@ -1,4 +1,13 @@
-# QCC Control Tower Reflex 0.9.5.25
+# QCC Control Tower Reflex 0.9.5.26
+
+## 0.9.5.26 Vertical cultivation-label hierarchy
+
+- Doubles the perforation-guide thickness on the Clade9 3.5g vertical label.
+- Centers and visually bolds Total Cannabinoids immediately below the guide.
+- Moves centered Total Terpenes below Total CBG and above the individual
+  terpene rows.
+- Adds horizontal separation between the Limonene/Linalool row and the
+  Alpha-Pinene/Other row while retaining the confirmed lower label layout.
 
 ## 0.9.5.25 Production batch lot and vertical perforation guide
 
