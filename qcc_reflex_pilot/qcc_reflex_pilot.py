@@ -66,7 +66,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.13"
+PILOT_VERSION = "0.9.5.14"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -2300,7 +2300,10 @@ class DashboardState(rx.State):
         self.all_inventory = payload.get("all_inventory", [])
         self.needs_review = payload.get("needs_review", [])
         self._apply_optional_module_payload(payload)
-        self._set_initial_calendar_month()
+        # The fast operational payload already contains the small Production
+        # tables. Keep them ready instead of clearing and rereading them when
+        # the user first opens Production Planning.
+        self._apply_production_payload(payload)
         self._initialize_production_target()
         self.loading = False
         yield DashboardState.load_sales_background
@@ -9875,33 +9878,42 @@ def protected_dashboard() -> rx.Component:
                     class_name="qcc-tabs qcc-tabs-primary",
                     width="100%",
                 ),
-                value=DashboardState.workspace_view,
-                on_change=DashboardState.change_workspace_view,
-                width="100%",
-            ),
-            rx.box(
-                rx.match(
-                    DashboardState.workspace_view,
-                    ("executive", executive_dashboard_panel()),
-                    ("sales_demand", sales_demand_workspace()),
-                    ("inventory", inventory_panel()),
-                    ("qa", qa_panel()),
-                    (
-                        "administration",
-                        rx.cond(
-                            DashboardState.is_administrator,
-                            administration_panel(),
-                            rx.callout(
-                                "Administrator access is required.",
-                                icon="shield_alert",
-                                color_scheme="red",
-                            ),
+                rx.tabs.content(
+                    executive_dashboard_panel(),
+                    value="executive",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    sales_demand_workspace(),
+                    value="sales_demand",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    inventory_panel(),
+                    value="inventory",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    qa_panel(),
+                    value="qa",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    rx.cond(
+                        DashboardState.is_administrator,
+                        administration_panel(),
+                        rx.callout(
+                            "Administrator access is required.",
+                            icon="shield_alert",
+                            color_scheme="red",
                         ),
                     ),
-                    executive_dashboard_panel(),
+                    value="administration",
+                    padding_top="1.25rem",
                 ),
+                default_value="executive",
+                on_change=DashboardState.change_workspace_view,
                 width="100%",
-                padding_top="1.25rem",
             ),
             width="100%",
             max_width="1800px",

@@ -1,4 +1,13 @@
-# QCC Control Tower Reflex 0.9.5.13
+# QCC Control Tower Reflex 0.9.5.14
+
+## 0.9.5.14 faster repeat navigation
+
+- Restores client-managed top-level tabs so switching workspaces does not wait
+  for a server round trip.
+- Reuses Production plans and calendar data already included in the fast
+  Inventory/operational load instead of reading those tables a second time.
+- Retains the compact Inventory header and background Sales refresh from
+  0.9.5.13.
 
 ## 0.9.5.13 workspace and production loading
 

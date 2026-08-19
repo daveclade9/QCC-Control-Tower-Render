@@ -1,4 +1,8 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.13
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.14
+
+Version 0.9.5.14 restores immediate client-managed main-tab navigation and
+keeps the Production plans/calendar data that arrives with the operational
+Inventory load, avoiding a redundant first Production read.
 
 Version 0.9.5.13 mounts only the active main workspace, gives Production
 Planning a lightweight saved-plan/calendar load, and stabilizes Inventory
