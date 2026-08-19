@@ -115,6 +115,38 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertEqual(context["analytes"]["thca"], 27.02)
         self.assertEqual(context["analytes"]["total_terpenes"], 2.88)
 
+    def test_metrc_raw_plant_material_aliases_and_total_cbg_formula(self):
+        analytes = [
+            row for row in DIAMOND_ANALYTES
+            if row["Test"] not in {"D9-THC (%)", "Total CBG (%)"}
+        ]
+        analytes.extend([
+            {"Test": "THC (%) Raw Plant Material", "Result": 9.00, "Passed": "Yes"},
+            {"Test": "CBGa (%) Raw Plant Material", "Result": 2.00, "Passed": "Yes"},
+            {"Test": "CBG (%) Raw Plant Material", "Result": 0.166, "Passed": "Yes"},
+        ])
+        context, errors = prepare_label_context(
+            self.package(), analytes, "3.5g Flower"
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(context["analytes"]["d9_thc"], 9.00)
+        self.assertAlmostEqual(
+            context["analytes"]["total_cbg"],
+            2.00 * 0.877 + 0.166,
+        )
+
+    def test_reported_total_cbg_takes_priority_over_calculation(self):
+        analytes = [
+            *DIAMOND_ANALYTES,
+            {"Test": "CBGa (%) Raw Plant Material", "Result": 10.0, "Passed": "Yes"},
+            {"Test": "CBG (%) Raw Plant Material", "Result": 10.0, "Passed": "Yes"},
+        ]
+        context, errors = prepare_label_context(
+            self.package(), analytes, "3.5g Flower"
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(context["analytes"]["total_cbg"], 1.92)
+
     def test_lab_sample_tag_cannot_be_used_as_printed_uid(self):
         context, errors = prepare_label_context(
             self.package(source_package_labels=""),

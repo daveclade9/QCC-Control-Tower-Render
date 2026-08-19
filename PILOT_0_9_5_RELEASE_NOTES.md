@@ -1,4 +1,12 @@
-# QCC Control Tower Reflex 0.9.5.22
+# QCC Control Tower Reflex 0.9.5.23
+
+## 0.9.5.23 Raw plant material cannabinoid rules
+
+- Maps Metrc's `THC (%) Raw Plant Material` result to the printed D9-THC
+  label field.
+- Calculates Total CBG as `CBGA × 0.877 + CBG` when Metrc does not directly
+  report Total CBG.
+- Prefers a directly reported Total CBG result whenever it is available.
 
 ## 0.9.5.22 Metrc analyte-name compatibility
 

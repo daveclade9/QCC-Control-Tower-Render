@@ -187,13 +187,31 @@ def _display_analyte_name(name: str) -> str:
 
 def label_analytes(rows: list[dict[str, Any]]) -> dict[str, Any]:
     analytes = _analyte_map(rows)
+    cbga = _find_value(
+        analytes,
+        "cbga",
+        "cbga raw plant material",
+    )
+    cbg = _find_value(
+        analytes,
+        "cbg",
+        "cbg raw plant material",
+    )
+    total_cbg = _find_value(analytes, "total cbg")
+    if total_cbg is None and cbga is not None and cbg is not None:
+        total_cbg = cbga * 0.877 + cbg
     values = {
         "total_cannabinoids": _find_value(analytes, "total cannabinoids"),
         "total_thc": _find_value(analytes, "total thc"),
         "thca": _find_value(analytes, "thca"),
         "total_cbd": _find_value(analytes, "total cbd"),
-        "d9_thc": _find_value(analytes, "d9 thc", "delta 9 thc"),
-        "total_cbg": _find_value(analytes, "total cbg"),
+        "d9_thc": _find_value(
+            analytes,
+            "d9 thc",
+            "delta 9 thc",
+            "thc raw plant material",
+        ),
+        "total_cbg": total_cbg,
         "total_terpenes": _find_value(analytes, "total terpenes"),
     }
     terpene_rows: list[tuple[str, float]] = []
