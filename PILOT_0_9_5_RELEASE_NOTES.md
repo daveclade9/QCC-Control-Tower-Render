@@ -1,4 +1,11 @@
-# QCC Control Tower Reflex 0.9.5.20
+# QCC Control Tower Reflex 0.9.5.21
+
+## 0.9.5.21 Zebra analyte lookup correction
+
+- Shows a laboratory-loading status instead of prematurely reporting every
+  required Zebra value as missing.
+- Falls back to the globally unique Metrc package tag when an older laboratory
+  row has a blank or differently formatted packaged-license value.
 
 ## 0.9.5.20 Zebra cultivation-label pilot
 

@@ -1184,12 +1184,30 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
 
 
 def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, Any]]:
-    rows = safe_query_frame(
-        "SELECT test_date, test_name, result, test_passed "
-        "FROM lab_result_records WHERE package_tag = %s "
-        "AND packaged_license = %s ORDER BY test_date DESC, test_name",
-        (package_tag, packaged_license),
-    )
+    package_tag = str(package_tag or "").strip()
+    packaged_license = str(packaged_license or "").strip()
+    if not package_tag:
+        return []
+
+    # Metrc package tags are globally unique. Prefer the facility-scoped lookup,
+    # but fall back to the tag alone because older imported laboratory rows can
+    # contain a blank or differently formatted packaged-license value.
+    if packaged_license:
+        rows = safe_query_frame(
+            "SELECT test_date, test_name, result, test_passed "
+            "FROM lab_result_records WHERE package_tag = %s "
+            "AND packaged_license = %s ORDER BY test_date DESC, test_name",
+            (package_tag, packaged_license),
+        )
+    else:
+        rows = pd.DataFrame()
+    if rows.empty:
+        rows = safe_query_frame(
+            "SELECT test_date, test_name, result, test_passed "
+            "FROM lab_result_records WHERE package_tag = %s "
+            "ORDER BY test_date DESC, test_name",
+            (package_tag,),
+        )
     if rows.empty:
         return []
     rows["test_date"] = pd.to_datetime(rows["test_date"], errors="coerce").dt.strftime("%Y-%m-%d")

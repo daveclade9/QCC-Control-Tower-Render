@@ -76,7 +76,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.20"
+PILOT_VERSION = "0.9.5.21"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -1942,11 +1942,11 @@ class DashboardState(rx.State):
     def qa_zebra_validation_message(self) -> str:
         if not self.qa_selected_package:
             return "Select a passed laboratory record first."
+        if self.qa_selected_analytes_loading:
+            return "Loading the complete laboratory values for this label..."
         _context, errors = self._qa_zebra_context()
         if errors:
             return " ".join(errors)
-        if self.qa_selected_analytes_loading:
-            return "The detailed laboratory values are still loading."
         return "All required production-label fields are ready."
 
     @rx.var(cache=True)
