@@ -1,4 +1,6 @@
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from types import SimpleNamespace
 
 from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
@@ -36,7 +38,6 @@ class InventoryNavigationCacheTest(unittest.TestCase):
         state = SimpleNamespace(
             inventory_view_name="all",
             inventory_page=3,
-            inventory_navigation_diagnostic="old result",
             active_inventory_all_rows=[["row 1"], ["row 2"]],
         )
         event = DashboardState.change_inventory_view.fn(
@@ -46,24 +47,20 @@ class InventoryNavigationCacheTest(unittest.TestCase):
         next(event)
         self.assertEqual(state.inventory_view_name, "aging_bulk")
         self.assertEqual(state.inventory_page, 1)
-        self.assertEqual(state.inventory_navigation_diagnostic, "")
 
-        with self.assertRaises(StopIteration):
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(StopIteration):
             next(event)
         self.assertIn(
             "All Inventory to Aging Risk Bulk",
-            state.inventory_navigation_diagnostic,
+            output.getvalue(),
         )
-        self.assertIn("2 table rows", state.inventory_navigation_diagnostic)
-        self.assertIn("MB row payload", state.inventory_navigation_diagnostic)
+        self.assertIn("2 table rows", output.getvalue())
 
-    def test_duplicate_same_tab_event_does_not_replace_diagnostic(self):
+    def test_duplicate_same_tab_event_is_a_no_op(self):
         state = SimpleNamespace(
             inventory_view_name="aging_bulk",
-            inventory_page=1,
-            inventory_navigation_diagnostic=(
-                "All Inventory to Aging Risk Bulk | original result"
-            ),
+            inventory_page=4,
         )
         event = DashboardState.change_inventory_view.fn(
             state, "aging_bulk"
@@ -71,10 +68,22 @@ class InventoryNavigationCacheTest(unittest.TestCase):
 
         with self.assertRaises(StopIteration):
             next(event)
-        self.assertEqual(
-            state.inventory_navigation_diagnostic,
-            "All Inventory to Aging Risk Bulk | original result",
+        self.assertEqual(state.inventory_view_name, "aging_bulk")
+        self.assertEqual(state.inventory_page, 4)
+
+    def test_slowest_inventory_views_are_both_prewarmed(self):
+        state = SimpleNamespace(
+            all_inventory_rows=[["all 1"], ["all 2"]],
+            aging_bulk_rows=[["aging"]],
         )
+
+        all_count, aging_count, elapsed_ms = (
+            DashboardState._prewarm_slowest_inventory_views(state)
+        )
+
+        self.assertEqual(all_count, 2)
+        self.assertEqual(aging_count, 1)
+        self.assertGreaterEqual(elapsed_ms, 0)
 
 
 if __name__ == "__main__":

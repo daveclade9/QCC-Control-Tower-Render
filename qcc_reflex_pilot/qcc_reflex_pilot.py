@@ -67,7 +67,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.17"
+PILOT_VERSION = "0.9.5.18"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -475,7 +475,6 @@ class DashboardState(rx.State):
     inventory_view_name: str = "cpg"
     inventory_page: int = 1
     inventory_page_size: int = 10
-    inventory_navigation_diagnostic: str = ""
     transfer_page: int = 1
     transfer_page_size: int = 50
     sku_planning_page: int = 1
@@ -2354,6 +2353,22 @@ class DashboardState(rx.State):
                     self._apply_payload(payload)
                     self.using_demo_data = False
                     self.loading = False
+
+            # The Inventory update above is released to the browser before
+            # this second state lock. Prime only the two measured slow views
+            # while Sales and QA continue loading in their own tasks.
+            await asyncio.sleep(0)
+            async with self:
+                all_count, aging_bulk_count, warm_ms = (
+                    self._prewarm_slowest_inventory_views()
+                )
+            print(
+                "INVENTORY_PREWARM "
+                f"All Inventory={all_count:,} rows | "
+                f"Aging Risk Bulk={aging_bulk_count:,} rows | "
+                f"{warm_ms:,.0f} ms",
+                flush=True,
+            )
 
             for completed in asyncio.as_completed(auxiliary_tasks):
                 name, payload, error = await completed
@@ -5550,6 +5565,17 @@ class DashboardState(rx.State):
             return self.needs_review_rows
         return self.cpg_inventory_rows
 
+    def _prewarm_slowest_inventory_views(self) -> tuple[int, int, float]:
+        """Prime the two largest measured Inventory row-matrix caches."""
+        started_at = perf_counter()
+        all_count = len(self.all_inventory_rows)
+        aging_bulk_count = len(self.aging_bulk_rows)
+        return (
+            all_count,
+            aging_bulk_count,
+            (perf_counter() - started_at) * 1000,
+        )
+
     @rx.var(cache=True)
     def active_inventory_rows(self) -> list[list[Any]]:
         # The table owns paging so changing 10/25/50/100 immediately changes
@@ -5612,7 +5638,6 @@ class DashboardState(rx.State):
             return
         previous_view = self.inventory_view_name
         started_at = perf_counter()
-        self.inventory_navigation_diagnostic = ""
         self.inventory_view_name = value
         self.inventory_page = 1
         # Flush the actual tab/table update first. When the generator resumes,
@@ -5622,9 +5647,6 @@ class DashboardState(rx.State):
 
         server_update_ms = (perf_counter() - started_at) * 1000
         rows = self.active_inventory_all_rows
-        payload_bytes = len(
-            json.dumps(rows, separators=(",", ":"), default=str).encode("utf-8")
-        )
         view_labels = {
             "cpg": "CPG Inventory",
             "bulk": "Bulk Inventory",
@@ -5634,15 +5656,14 @@ class DashboardState(rx.State):
             "all": "All Inventory",
             "review": "Needs Review",
         }
-        self.inventory_navigation_diagnostic = (
+        diagnostic = (
             f"{view_labels.get(previous_view, previous_view)} to "
             f"{view_labels.get(value, value)} | server update "
-            f"{server_update_ms:,.0f} ms | {len(rows):,} table rows | "
-            f"{payload_bytes / 1_048_576:,.2f} MB row payload"
+            f"{server_update_ms:,.0f} ms | {len(rows):,} table rows"
         )
         print(
             "INVENTORY_NAV_DIAGNOSTIC "
-            + self.inventory_navigation_diagnostic,
+            + diagnostic,
             flush=True,
         )
 
@@ -8764,16 +8785,6 @@ def inventory_panel() -> rx.Component:
             value=DashboardState.inventory_view_name,
             on_change=DashboardState.change_inventory_view,
             width="100%",
-        ),
-        rx.cond(
-            DashboardState.inventory_navigation_diagnostic != "",
-            rx.callout(
-                DashboardState.inventory_navigation_diagnostic,
-                icon="activity",
-                color_scheme="blue",
-                size="1",
-                width="100%",
-            ),
         ),
         active_inventory_context(),
         inventory_view(

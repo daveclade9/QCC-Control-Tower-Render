@@ -1,4 +1,13 @@
-# QCC Control Tower Reflex 0.9.5.17
+# QCC Control Tower Reflex 0.9.5.18
+
+## 0.9.5.18 targeted Inventory prewarming
+
+- Prepares the cached row matrices for All Inventory and Aging Risk Bulk in
+  the background immediately after the Inventory snapshot reaches the user.
+- Removes the temporary blue diagnostic line from the Inventory interface.
+- Retains lightweight server timing in Render logs without recalculating the
+  serialized payload after every tab change.
+- Makes no Supabase schema or data changes.
 
 ## 0.9.5.17 diagnostic correction
 

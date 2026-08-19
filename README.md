@@ -1,4 +1,7 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.17
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.18
+
+Version 0.9.5.18 prepares All Inventory and Aging Risk Bulk row caches in the
+background after Inventory loads and removes the temporary diagnostic display.
 
 Version 0.9.5.17 preserves the original Inventory navigation diagnostic when
 the controlled tab emits a duplicate same-tab change event.
