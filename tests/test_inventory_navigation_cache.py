@@ -57,6 +57,25 @@ class InventoryNavigationCacheTest(unittest.TestCase):
         self.assertIn("2 table rows", state.inventory_navigation_diagnostic)
         self.assertIn("MB row payload", state.inventory_navigation_diagnostic)
 
+    def test_duplicate_same_tab_event_does_not_replace_diagnostic(self):
+        state = SimpleNamespace(
+            inventory_view_name="aging_bulk",
+            inventory_page=1,
+            inventory_navigation_diagnostic=(
+                "All Inventory to Aging Risk Bulk | original result"
+            ),
+        )
+        event = DashboardState.change_inventory_view.fn(
+            state, "aging_bulk"
+        )
+
+        with self.assertRaises(StopIteration):
+            next(event)
+        self.assertEqual(
+            state.inventory_navigation_diagnostic,
+            "All Inventory to Aging Risk Bulk | original result",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

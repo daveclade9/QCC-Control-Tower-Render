@@ -1,4 +1,11 @@
-# QCC Control Tower Reflex 0.9.5.16
+# QCC Control Tower Reflex 0.9.5.17
+
+## 0.9.5.17 diagnostic correction
+
+- Ignores duplicate same-tab change events emitted after a controlled
+  Inventory tab receives its selected value.
+- Preserves the original source-to-destination timing result instead of
+  replacing it with an incorrect `Aging Risk Bulk to Aging Risk Bulk` result.
 
 ## 0.9.5.16 Inventory navigation diagnostics
 

@@ -67,7 +67,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.16"
+PILOT_VERSION = "0.9.5.17"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -5605,6 +5605,11 @@ class DashboardState(rx.State):
 
     @rx.event
     def change_inventory_view(self, value: str):
+        # Radix can repeat on_change when a controlled tab receives its newly
+        # selected value. Ignore that no-op so it neither rebuilds state nor
+        # overwrites the real navigation measurement with "X to X".
+        if value == self.inventory_view_name:
+            return
         previous_view = self.inventory_view_name
         started_at = perf_counter()
         self.inventory_navigation_diagnostic = ""

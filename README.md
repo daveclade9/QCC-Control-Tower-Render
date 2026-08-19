@@ -1,4 +1,7 @@
-# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.16
+# QCC Control Tower - Reflex Inventory, Production & QA 0.9.5.17
+
+Version 0.9.5.17 preserves the original Inventory navigation diagnostic when
+the controlled tab emits a duplicate same-tab change event.
 
 Version 0.9.5.16 adds a staging-only Inventory navigation measurement showing
 server update time, table rows, and row-payload size after each tab change.
