@@ -1,4 +1,19 @@
-# QCC Control Tower Reflex 0.9.5.19
+# QCC Control Tower Reflex 0.9.5.20
+
+## 0.9.5.20 Zebra cultivation-label pilot
+
+- Adds validated ZPL generation for the ZD620 and ZD621 203-DPI printers.
+- Supports Clade9 3.5g vertical flower, all other horizontal flower, and
+  horizontal pre-roll layouts using the supplied production print files.
+- Resolves laboratory sample records back to their associated bulk source tag
+  and prevents the laboratory sample tag from being printed as the UID.
+- Assigns package suffixes A through G, net weight, serving size, layout, and
+  barcode automatically from the selected package format.
+- Calculates expiration as six calendar months plus forty-five days after the
+  harvest date and blocks label generation if required values are missing.
+- Adds an auditable one-test ZPL download to the Compliance Label Search and
+  Printing tab. Direct USB printing remains disabled until Zebra Browser Print
+  is installed and verified on the cultivation printing laptop.
 
 ## 0.9.5.19 Retail Availability dependent filters
 

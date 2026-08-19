@@ -39,6 +39,7 @@ from .rules import (
     prepare_transfer_analysis,
 )
 from .retailer_directory import CLADE9_LOCATIONS
+from .zebra_labels import expiration_from_harvest
 
 
 load_dotenv()
@@ -1024,9 +1025,16 @@ def _prepare_qa_packages(
         current["inventory_expiration_date"], errors="coerce"
     )
     cultivation_missing = current["expiration_date"].isna() & current["operation"].eq("Cultivation")
+
+    def cultivation_expiration(value: Any) -> pd.Timestamp:
+        harvest = _extract_oldest_harvest_date(value)
+        if pd.isna(harvest):
+            return pd.NaT
+        return pd.Timestamp(expiration_from_harvest(harvest.date()))
+
     current.loc[cultivation_missing, "expiration_date"] = current.loc[
         cultivation_missing, "source_harvest_names"
-    ].map(_extract_oldest_harvest_date) + pd.Timedelta(days=225)
+    ].map(cultivation_expiration)
 
     names = compliance["test_name"].astype(str).str.strip()
     compliance["metric"] = pd.NA
@@ -1195,7 +1203,8 @@ def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, 
 
 
 def log_qa_label_download(
-    package: dict[str, Any], template: dict[str, Any], printed_by: str
+    package: dict[str, Any], template: dict[str, Any], printed_by: str,
+    output_type: str = "html",
 ) -> None:
     initialize_qa_database()
     now = datetime.now().astimezone().isoformat()
@@ -1215,7 +1224,7 @@ def log_qa_label_download(
                 print_id, str(package.get("package_tag", "")),
                 str(package.get("source_harvest_names", "")),
                 str(template.get("Template ID", "")),
-                int(template.get("Version", 1) or 1), "html",
+                int(template.get("Version", 1) or 1), output_type,
                 json.dumps(package, default=str), now, printed_by,
             ),
         )
