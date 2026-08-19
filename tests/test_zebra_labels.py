@@ -1,6 +1,9 @@
 import unittest
 from datetime import date
 
+import pandas as pd
+
+from qcc_reflex_pilot.data import _prepare_qa_packages
 from qcc_reflex_pilot.zebra_labels import (
     build_zpl,
     expiration_from_harvest,
@@ -29,6 +32,7 @@ class ZebraLabelRulesTest(unittest.TestCase):
             "package_tag": "1A4110300002A31000037498",
             "source_package_labels": "1A4110300002A31000037497",
             "source_harvest_names": "DB-F4.8-07.13.2026-L1",
+            "production_batch_number": "DB-F4.8-07.13.2026-L1",
             "brand": "Clade9",
             "strain": "Diamond Bar",
             "sku_type": "Test Sample",
@@ -69,8 +73,50 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertIn("^PW457", zpl)
         self.assertIn("^LL0254", zpl)
         self.assertIn("Diamond Bar", zpl)
+        self.assertIn("^FO80,8^GB2,14,2,B,0^FS", zpl)
+        self.assertIn("^FT100,248", zpl)
         self.assertIn("1A4110300002A31000037497-A", zpl)
         self.assertNotIn("1A4110300002A31000037498-A", zpl)
+
+    def test_production_batch_number_is_the_default_lot(self):
+        context, errors = prepare_label_context(
+            self.package(
+                source_harvest_names="Diamond Bar Harvest 07.13.2026",
+                production_batch_number="DB-F4.8-07.13.2026-L1",
+            ),
+            DIAMOND_ANALYTES,
+            "3.5g Flower",
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(context["lot_number"], "DB-F4.8-07.13.2026-L1")
+
+    def test_lab_sample_resolves_bulk_production_batch_number(self):
+        lab_results = pd.DataFrame([{
+            "packaged_license": "C000313",
+            "packaged_facility": "QCC Cultivation",
+            "package_tag": "1A4110300002A31000037498",
+            "source_harvest_names": "Diamond Bar Harvest 07.13.2026",
+            "source_package_labels": "1A4110300002A31000037497",
+            "item": "Diamond Bar Test Sample",
+            "category": "Raw Plant Material",
+            "lab_testing_status": "TestPassed",
+            "test_date": "2026-07-20",
+            "lab_facility": "Example Lab",
+            "test_name": "Total THC (%)",
+            "result": 32.7,
+        }])
+        inventory_packages = pd.DataFrame([{
+            "package_tag": "1A4110300002A31000037497",
+            "brand": "Clade9",
+            "strain": "Diamond Bar",
+            "sku_type": "Bulk Flower",
+            "production_batch_number": "DB-F4.8-07.13.2026-L1",
+        }])
+        prepared = _prepare_qa_packages(lab_results, inventory_packages)
+        self.assertEqual(
+            prepared.iloc[0]["production_batch_number"],
+            "DB-F4.8-07.13.2026-L1",
+        )
 
     def test_package_format_controls_suffix_weight_and_quantity(self):
         context, errors = prepare_label_context(

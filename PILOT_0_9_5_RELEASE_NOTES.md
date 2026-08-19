@@ -1,4 +1,14 @@
-# QCC Control Tower Reflex 0.9.5.24
+# QCC Control Tower Reflex 0.9.5.25
+
+## 0.9.5.25 Production batch lot and vertical perforation guide
+
+- Uses the bulk package's Metrc Production Batch Number as the production
+  label Lot Number, with the former harvest-name value retained only as a
+  fallback for older inventory snapshots.
+- Resolves the laboratory sample's source package tag back to the bulk
+  inventory record before selecting its Production Batch Number.
+- Adds the dotted perforation guide directly below the strain on the Clade9
+  3.5g vertical label and compacts the remaining rows within the same label.
 
 ## 0.9.5.24 Zebra terpene layout and print-density correction
 

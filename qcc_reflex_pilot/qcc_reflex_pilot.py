@@ -76,7 +76,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.24"
+PILOT_VERSION = "0.9.5.25"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -1211,7 +1211,9 @@ class DashboardState(rx.State):
         harvest = extract_harvest_date(selected.get("source_harvest_names", ""))
         self.qa_zebra_harvest_date = harvest.isoformat() if harvest else ""
         self.qa_zebra_lot_number = str(
-            selected.get("source_harvest_names", "") or ""
+            selected.get("production_batch_number", "")
+            or selected.get("source_harvest_names", "")
+            or ""
         )
         self.qa_zebra_package_format = default_package_format(
             selected.get("sku_type", selected.get("qa_test_type", ""))

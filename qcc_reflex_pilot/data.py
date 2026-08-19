@@ -39,7 +39,7 @@ from .rules import (
     prepare_transfer_analysis,
 )
 from .retailer_directory import CLADE9_LOCATIONS
-from .zebra_labels import expiration_from_harvest
+from .zebra_labels import expiration_from_harvest, extract_metrc_tags
 
 
 load_dotenv()
@@ -986,6 +986,7 @@ def _prepare_qa_packages(
             ("strain", "inventory_strain"),
             ("sku_type", "inventory_sku_type"),
             ("expiration_date", "inventory_expiration_date"),
+            ("production_batch_number", "inventory_production_batch_number"),
         ]:
             if source in inventory_packages:
                 wanted.append(source)
@@ -994,12 +995,29 @@ def _prepare_qa_packages(
             inventory_packages[wanted].drop_duplicates("package_tag").rename(columns=rename),
             on="package_tag", how="left",
         )
+        current["bulk_package_tag"] = current["source_package_labels"].map(
+            lambda value: (extract_metrc_tags(value) or [""])[0]
+        )
+        if "production_batch_number" in inventory_packages:
+            batch_lookup = (
+                inventory_packages[["package_tag", "production_batch_number"]]
+                .drop_duplicates("package_tag", keep="last")
+                .rename(columns={
+                    "package_tag": "bulk_package_tag",
+                    "production_batch_number": "source_production_batch_number",
+                })
+            )
+            current = current.merge(batch_lookup, on="bulk_package_tag", how="left")
     for column in [
         "inventory_brand", "inventory_strain", "inventory_sku_type",
-        "inventory_expiration_date",
+        "inventory_expiration_date", "inventory_production_batch_number",
+        "source_production_batch_number",
     ]:
         if column not in current:
             current[column] = pd.NA
+    current["production_batch_number"] = current[
+        "source_production_batch_number"
+    ].combine_first(current["inventory_production_batch_number"])
 
     fallback_rows = current.rename(columns={"category": "item_category"}).copy()
     fallback_rows["unit_weight_grams"] = pd.NA
