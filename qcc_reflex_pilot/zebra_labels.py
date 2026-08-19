@@ -428,22 +428,28 @@ def _vertical_flower_zpl(context: dict[str, Any]) -> str:
     terpenes = list(a.get("top_terpenes", []))
     while len(terpenes) < 3:
         terpenes.append(("", None))
-    terp_line_1 = f"{terpenes[0][0]}: {_pct(terpenes[0][1])}  {terpenes[1][0]}: {_pct(terpenes[1][1])}"
-    terp_line_2 = f"{terpenes[2][0]}: {_pct(terpenes[2][1])}  Other: {_pct(a.get('other_terpenes'))}"
+    terp_line_1 = (
+        f"{_clean_text(terpenes[0][0], 22)}: {_pct(terpenes[0][1])}    "
+        f"{_clean_text(terpenes[1][0], 22)}: {_pct(terpenes[1][1])}"
+    )
+    terp_line_2 = (
+        f"{_clean_text(terpenes[2][0], 22)}: {_pct(terpenes[2][1])}    "
+        f"Other: {_pct(a.get('other_terpenes'))}"
+    )
     perforation_guide = "\n".join(
-        f"^FO80,{offset}^GB4,16,4,B,0^FS" for offset in range(8, 249, 24)
+        f"^FO80,{offset}^GB5,16,5,B,0^FS" for offset in range(8, 249, 24)
     )
     return _header(457, 254) + f"""
 ^FT47,209^A0B,27,27^FD{_clean_text(context['strain'], 24)}^FS
 {perforation_guide}
-^FT100,242^A0B,17,13^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
-^FT101,242^A0B,17,13^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
+^FO100,2^A0B,19,14^FB250,1,0,C,0^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
+^FO101,2^A0B,19,14^FB250,1,0,C,0^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
 ^FT133,248^A0B,16,12^FDTotal THC: {_pct(a.get('total_thc'))}  THCA: {_pct(a.get('thca'))}^FS
 ^FT153,248^A0B,16,12^FDTotal CBD: {_pct(a.get('total_cbd'))}  D9-THC: {_pct(a.get('d9_thc'))}^FS
 ^FT173,248^A0B,16,12^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
-^FT198,226^A0B,16,13^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
-^FT221,244^A0B,15,6^FD{_clean_text(terp_line_1, 58)}^FS
-^FT247,244^A0B,15,6^FD{_clean_text(terp_line_2, 58)}^FS
+^FO198,2^A0B,16,13^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
+^FT220,244^A0B,15,6^FD{terp_line_1[:58]}^FS
+^FT240,244^A0B,15,6^FD{terp_line_2[:58]}^FS
 ^FT269,238^A0B,15,8^FDHarvest Date: {context['harvest_date_short']}  Expiration Date: {context['expiration_date_short']}^FS
 ^FT290,250^A0B,15,7^FDPesticides: {context['pesticides']}  Chemotype: {context['chemotype']}^FS
 ^FT315,250^A0B,13,11^FDLot #: {_clean_text(context['lot_number'], 40)}^FS

@@ -1,4 +1,12 @@
-# QCC Control Tower Reflex 0.9.5.26
+# QCC Control Tower Reflex 0.9.5.27
+
+## 0.9.5.27 Vertical label alignment refinement
+
+- Slightly thickens the dotted perforation guide on the Clade9 3.5g label.
+- Uses a true centered field block and a slightly larger font for Total
+  Cannabinoids.
+- Restores compact vertical spacing between the two individual-terpene rows
+  while increasing the horizontal separation within each pair.
 
 ## 0.9.5.26 Vertical cultivation-label hierarchy
 
