@@ -76,7 +76,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.28"
+PILOT_VERSION = "0.9.5.29"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"

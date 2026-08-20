@@ -437,29 +437,30 @@ def _vertical_flower_zpl(context: dict[str, Any]) -> str:
         f"Other: {_pct(a.get('other_terpenes'))}"
     )
     perforation_guide = "\n".join(
-        f"^FO80,{offset}^GB5,16,5,B,0^FS" for offset in range(8, 249, 24)
+        f"^FO80,{offset}^GB8,16,8,B,0^FS" for offset in range(8, 249, 24)
     )
     return _header(457, 254) + f"""
-^FT47,209^A0B,27,27^FD{_clean_text(context['strain'], 24)}^FS
+^FT47,209^A0B,28,28^FD{_clean_text(context['strain'], 24)}^FS
 {perforation_guide}
-^FO100,2^A0B,19,14^FB250,1,0,C,0^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
-^FO101,2^A0B,19,14^FB250,1,0,C,0^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
-^FT133,248^A0B,16,12^FDTotal THC: {_pct(a.get('total_thc'))}  THCA: {_pct(a.get('thca'))}^FS
-^FT153,248^A0B,16,12^FDTotal CBD: {_pct(a.get('total_cbd'))}  D9-THC: {_pct(a.get('d9_thc'))}^FS
-^FT173,248^A0B,16,12^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
-^FO194,2^A0B,17,14^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
-^FT220,244^A0B,15,6^FD{terp_line_1[:58]}^FS
-^FT240,244^A0B,15,6^FD{terp_line_2[:58]}^FS
-^FT269,238^A0B,15,8^FDHarvest Date: {context['harvest_date_short']}  Expiration Date: {context['expiration_date_short']}^FS
-^FT290,250^A0B,15,7^FDPesticides: {context['pesticides']}  Chemotype: {context['chemotype']}^FS
-^FT315,250^A0B,13,11^FDLot #: {_clean_text(context['lot_number'], 40)}^FS
-^FT332,250^A0B,13,11^FDUID: {context['bulk_uid']}^FS
-^FT357,206^A0B,13,11^FDPKG by: The QCC Group LLC^FS
-^FT372,185^A0B,13,11^FDGrow Method: {context['grow_method']}^FS
-^FT387,193^A0B,13,13^FDClass 1 - Cultivator^FS
-^BY1,3,21^FT412,254^BCB,,Y,N^FD{context['barcode_value']}^FS
-^FT437,212^A0B,13,13^FDLicense Number: C000313^FS
-^FT451,212^A0B,13,11^FDNet WT: {context['net_weight']}  Serving Size: {context['serving_size']}^FS
+^FO100,2^A0B,21,16^FB250,1,0,C,0^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
+^FO101,2^A0B,21,16^FB250,1,0,C,0^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
+^FT142,248^A0B,17,14^FDTotal THC: {_pct(a.get('total_thc'))}     THCA: {_pct(a.get('thca'))}^FS
+^FT163,248^A0B,17,14^FDTotal CBD: {_pct(a.get('total_cbd'))}     D9-THC: {_pct(a.get('d9_thc'))}^FS
+^FT184,248^A0B,17,14^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
+^FO203,2^A0B,18,15^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
+^FO204,2^A0B,18,15^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
+^FT222,244^A0B,17,9^FD{terp_line_1[:58]}^FS
+^FT243,244^A0B,17,9^FD{terp_line_2[:58]}^FS
+^FT269,238^A0B,17,9^FDHarvest Date: {context['harvest_date_short']}  Expiration Date: {context['expiration_date_short']}^FS
+^FT290,250^A0B,17,7^FDPesticides: {context['pesticides']}  Chemotype: {context['chemotype']}^FS
+^FT315,250^A0B,14,12^FDLot #: {_clean_text(context['lot_number'], 40)}^FS
+^FT332,250^A0B,14,12^FDUID: {context['bulk_uid']}^FS
+^FT357,206^A0B,14,12^FDPKG by: The QCC Group LLC^FS
+^FT372,185^A0B,14,12^FDGrow Method: {context['grow_method']}^FS
+^FT387,193^A0B,14,14^FDClass 1 - Cultivator^FS
+^BY1,3,22^FT412,254^BCB,,Y,N^FD{context['barcode_value']}^FS
+^FT437,212^A0B,14,14^FDLicense Number: C000313^FS
+^FT451,212^A0B,14,12^FDNet WT: {context['net_weight']}  Serving Size: {context['serving_size']}^FS
 ^PQ{context['quantity']},0,1,Y
 ^XZ
 """

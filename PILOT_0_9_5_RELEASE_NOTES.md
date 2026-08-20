@@ -1,4 +1,13 @@
-# QCC Control Tower Reflex 0.9.5.28
+# QCC Control Tower Reflex 0.9.5.29
+
+## 0.9.5.29 ZebraDesigner visual matching pass
+
+- Matches the vertical label's printer-native body sizes and row coordinates
+  to the confirmed ZebraDesigner printer file.
+- Enlarges and strengthens the centered Total Cannabinoids and Total
+  Terpenes headings to more closely reproduce their Arial Black appearance.
+- Matches the original strain size, supporting-text scale, barcode height,
+  and heavier perforation guide without changing any production-label data.
 
 ## 0.9.5.28 Total Terpenes alignment
 
