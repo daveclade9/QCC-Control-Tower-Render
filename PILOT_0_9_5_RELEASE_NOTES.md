@@ -1,4 +1,11 @@
-# QCC Control Tower Reflex 0.9.5.30
+# QCC Control Tower Reflex 0.9.5.31
+
+## 0.9.5.31 Total Terpenes vertical-position correction
+
+- Moves only the centered **Total Terpenes** heading nine printer dots upward
+  (approximately 1.1 mm at 203 DPI) so it clears the Limonene/Linalool row.
+- Preserves the approved font size, weight, centering, terpene rows, dates, and
+  every other vertical-label position.
 
 ## 0.9.5.30 Vertical-label spacing correction
 
