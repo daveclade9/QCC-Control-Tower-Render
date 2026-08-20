@@ -1,4 +1,13 @@
-# QCC Control Tower Reflex 0.9.5.32
+# QCC Control Tower Reflex 0.9.5.33
+
+## 0.9.5.33 Lab-precision Total CBG
+
+- Calculates Total CBG from the laboratory's higher-precision CBGa and CBG
+  **mg/g** readings when both are present.
+- Applies `(CBGa mg/g × 0.877 + CBG mg/g) ÷ 10` to convert the calculated
+  result back to the percent printed on the compliance label.
+- Retains an explicitly reported Total CBG percentage as the first choice and
+  falls back to the percent/mass component calculation when mg/g is unavailable.
 
 ## 0.9.5.32 Operator-selected package format
 

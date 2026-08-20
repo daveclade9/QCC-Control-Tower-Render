@@ -214,6 +214,27 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(context["analytes"]["total_cbg"], 1.92)
 
+    def test_total_cbg_prefers_mg_per_g_components_and_converts_to_percent(self):
+        analytes = [
+            row for row in DIAMOND_ANALYTES
+            if row["Test"] != "Total CBG (%)"
+        ]
+        analytes.extend([
+            {"Test": "CBGa (%) Raw Plant Material", "Result": 2.00, "Passed": "Yes"},
+            {"Test": "CBG (%) Raw Plant Material", "Result": 0.41, "Passed": "Yes"},
+            {"Test": "CBGa (mg/g) Raw Plant Material", "Result": 20.05, "Passed": "Yes"},
+            {"Test": "CBG (mg/g) Raw Plant Material", "Result": 4.08, "Passed": "Yes"},
+        ])
+        context, errors = prepare_label_context(
+            self.package(), analytes, "3.5g Flower"
+        )
+        self.assertEqual(errors, [])
+        self.assertAlmostEqual(
+            context["analytes"]["total_cbg"],
+            (20.05 * 0.877 + 4.08) / 10,
+        )
+        self.assertIn("Total CBG: 2.17%", build_zpl(context, errors))
+
     def test_zpl_uses_reference_print_speed_and_darkness(self):
         context, errors = prepare_label_context(
             self.package(), DIAMOND_ANALYTES, "3.5g Flower"

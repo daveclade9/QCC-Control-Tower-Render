@@ -172,6 +172,40 @@ def _find_value(
     return None
 
 
+def _find_mg_per_g_value(
+    analytes: dict[str, tuple[str, float]], *patterns: str
+) -> float | None:
+    """Return an analyte result explicitly reported on an mg/g basis."""
+    for key, (_name, value) in analytes.items():
+        if not re.search(r"(?:^|\s)mg\s+g(?:\s|$)", key):
+            continue
+        if any(
+            re.search(rf"(?:^|\s){re.escape(pattern)}(?:\s|$)", key)
+            for pattern in patterns
+        ):
+            return value
+    return None
+
+
+def _find_percent_value(
+    analytes: dict[str, tuple[str, float]], *patterns: str
+) -> float | None:
+    """Return a percent/mass result without mistaking mg/g for percent."""
+    for pattern in patterns:
+        exact = analytes.get(pattern)
+        if exact:
+            return exact[1]
+    for key, (_name, value) in analytes.items():
+        if re.search(r"(?:^|\s)mg\s+g(?:\s|$)", key):
+            continue
+        if any(
+            re.search(rf"(?:^|\s){re.escape(pattern)}(?:\s|$)", key)
+            for pattern in patterns
+        ):
+            return value
+    return None
+
+
 _TERPENE_TERMS = (
     "terpene", "myrcene", "limonene", "pinene", "caryophyllene", "linalool",
     "humulene", "terpinolene", "ocimene", "bisabolol", "camphene", "borneol",
@@ -230,19 +264,30 @@ _TERPENE_DISPLAY_NAMES = {
 
 def label_analytes(rows: list[dict[str, Any]]) -> dict[str, Any]:
     analytes = _analyte_map(rows)
-    cbga = _find_value(
+    cbga_percent = _find_percent_value(
         analytes,
         "cbga",
         "cbga raw plant material",
     )
-    cbg = _find_value(
+    cbg_percent = _find_percent_value(
         analytes,
         "cbg",
         "cbg raw plant material",
     )
-    total_cbg = _find_value(analytes, "total cbg")
-    if total_cbg is None and cbga is not None and cbg is not None:
-        total_cbg = cbga * 0.877 + cbg
+    cbga_mg_per_g = _find_mg_per_g_value(analytes, "cbga")
+    cbg_mg_per_g = _find_mg_per_g_value(analytes, "cbg")
+    total_cbg = _find_percent_value(analytes, "total cbg")
+    if (
+        total_cbg is None
+        and cbga_mg_per_g is not None
+        and cbg_mg_per_g is not None
+    ):
+        # The laboratory derives Total CBG from the higher-precision mg/g
+        # readings. Convert the calculated mg/g result back to percent for the
+        # compliance label (10 mg/g equals 1 percent by mass).
+        total_cbg = (cbga_mg_per_g * 0.877 + cbg_mg_per_g) / 10.0
+    elif total_cbg is None and cbga_percent is not None and cbg_percent is not None:
+        total_cbg = cbga_percent * 0.877 + cbg_percent
     values = {
         "total_cannabinoids": _find_value(analytes, "total cannabinoids"),
         "total_thc": _find_value(analytes, "total thc"),
