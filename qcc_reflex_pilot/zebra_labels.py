@@ -276,18 +276,18 @@ def label_analytes(rows: list[dict[str, Any]]) -> dict[str, Any]:
     )
     cbga_mg_per_g = _find_mg_per_g_value(analytes, "cbga")
     cbg_mg_per_g = _find_mg_per_g_value(analytes, "cbg")
-    total_cbg = _find_percent_value(analytes, "total cbg")
-    if (
-        total_cbg is None
-        and cbga_mg_per_g is not None
-        and cbg_mg_per_g is not None
-    ):
+    reported_total_cbg = _find_percent_value(analytes, "total cbg")
+    if cbga_mg_per_g is not None and cbg_mg_per_g is not None:
         # The laboratory derives Total CBG from the higher-precision mg/g
         # readings. Convert the calculated mg/g result back to percent for the
         # compliance label (10 mg/g equals 1 percent by mass).
         total_cbg = (cbga_mg_per_g * 0.877 + cbg_mg_per_g) / 10.0
-    elif total_cbg is None and cbga_percent is not None and cbg_percent is not None:
+    elif reported_total_cbg is not None:
+        total_cbg = reported_total_cbg
+    elif cbga_percent is not None and cbg_percent is not None:
         total_cbg = cbga_percent * 0.877 + cbg_percent
+    else:
+        total_cbg = None
     values = {
         "total_cannabinoids": _find_value(analytes, "total cannabinoids"),
         "total_thc": _find_value(analytes, "total thc"),

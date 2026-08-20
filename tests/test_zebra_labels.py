@@ -228,7 +228,7 @@ class ZebraLabelRulesTest(unittest.TestCase):
             2.00 * 0.877 + 0.166,
         )
 
-    def test_reported_total_cbg_takes_priority_over_calculation(self):
+    def test_reported_total_cbg_takes_priority_over_percent_components(self):
         analytes = [
             *DIAMOND_ANALYTES,
             {"Test": "CBGa (%) Raw Plant Material", "Result": 10.0, "Passed": "Yes"},
@@ -242,8 +242,8 @@ class ZebraLabelRulesTest(unittest.TestCase):
 
     def test_total_cbg_prefers_mg_per_g_components_and_converts_to_percent(self):
         analytes = [
-            row for row in DIAMOND_ANALYTES
-            if row["Test"] != "Total CBG (%)"
+            {**row, "Result": 2.16} if row["Test"] == "Total CBG (%)" else row
+            for row in DIAMOND_ANALYTES
         ]
         analytes.extend([
             {"Test": "CBGa (%) Raw Plant Material", "Result": 2.00, "Passed": "Yes"},

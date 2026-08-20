@@ -1,4 +1,10 @@
-# QCC Control Tower Reflex 0.9.5.34
+# QCC Control Tower Reflex 0.9.5.35
+
+## 0.9.5.35 Authoritative mg/g Total CBG
+
+- Makes the calculated mg/g-based Total CBG authoritative whenever both CBGa and CBG mg/g readings are present.
+- Prevents a lower-precision reported percentage such as 2.16% from overriding the lab-precision calculation of 2.17%.
+- Keeps the reported Total CBG percentage as the fallback when component mg/g readings are missing, followed by the percent-component calculation.
 
 ## 0.9.5.34 G13 Clade9 label routing
 
