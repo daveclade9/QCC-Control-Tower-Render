@@ -447,11 +447,11 @@ def _vertical_flower_zpl(context: dict[str, Any]) -> str:
 ^FT142,248^A0B,17,14^FDTotal THC: {_pct(a.get('total_thc'))}     THCA: {_pct(a.get('thca'))}^FS
 ^FT163,248^A0B,17,14^FDTotal CBD: {_pct(a.get('total_cbd'))}     D9-THC: {_pct(a.get('d9_thc'))}^FS
 ^FT184,248^A0B,17,14^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
-^FO203,2^A0B,18,15^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
-^FO204,2^A0B,18,15^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
-^FT222,244^A0B,17,9^FD{terp_line_1[:58]}^FS
-^FT243,244^A0B,17,9^FD{terp_line_2[:58]}^FS
-^FT269,238^A0B,17,9^FDHarvest Date: {context['harvest_date_short']}  Expiration Date: {context['expiration_date_short']}^FS
+^FO199,2^A0B,18,15^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
+^FO200,2^A0B,18,15^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
+^FT225,244^A0B,17,9^FD{terp_line_1[:58]}^FS
+^FT246,244^A0B,17,9^FD{terp_line_2[:58]}^FS
+^FT269,238^A0B,17,9^FDHarvest Date: {context['harvest_date_short']}      Expiration Date: {context['expiration_date_short']}^FS
 ^FT290,250^A0B,17,7^FDPesticides: {context['pesticides']}  Chemotype: {context['chemotype']}^FS
 ^FT315,250^A0B,14,12^FDLot #: {_clean_text(context['lot_number'], 40)}^FS
 ^FT332,250^A0B,14,12^FDUID: {context['bulk_uid']}^FS

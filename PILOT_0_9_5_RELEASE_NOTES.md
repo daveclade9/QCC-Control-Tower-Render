@@ -1,4 +1,13 @@
-# QCC Control Tower Reflex 0.9.5.29
+# QCC Control Tower Reflex 0.9.5.30
+
+## 0.9.5.30 Vertical-label spacing correction
+
+- Separates the centered Total Terpenes heading from the
+  Limonene/Linalool row without changing any approved font sizes.
+- Preserves the compact terpene section while keeping the second terpene row
+  clear of the date line.
+- Restores the wider ZebraDesigner spacing between Harvest Date and
+  Expiration Date.
 
 ## 0.9.5.29 ZebraDesigner visual matching pass
 
