@@ -1,4 +1,13 @@
-# QCC Control Tower Reflex 0.9.5.31
+# QCC Control Tower Reflex 0.9.5.32
+
+## 0.9.5.32 Operator-selected package format
+
+- Preserves the operator's selected **Package Format** when a different COA or
+  METRC laboratory tag is selected.
+- Prevents a COA's historical SKU description from silently changing a 3.5g
+  vertical label into a 7g horizontal label.
+- Keeps the selected format authoritative for layout, net weight, serving size,
+  and barcode package suffix.
 
 ## 0.9.5.31 Total Terpenes vertical-position correction
 

@@ -76,7 +76,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.31"
+PILOT_VERSION = "0.9.5.32"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -1215,9 +1215,14 @@ class DashboardState(rx.State):
             or selected.get("source_harvest_names", "")
             or ""
         )
-        self.qa_zebra_package_format = default_package_format(
-            selected.get("sku_type", selected.get("qa_test_type", ""))
-        )
+        # A COA describes the tested material, not necessarily the finished
+        # package size that will be printed from it. Preserve the operator's
+        # explicit Package Format selection when switching laboratory records.
+        # Only infer a default if state contains no supported selection.
+        if self.qa_zebra_package_format not in PACKAGE_FORMAT_OPTIONS:
+            self.qa_zebra_package_format = default_package_format(
+                selected.get("sku_type", selected.get("qa_test_type", ""))
+            )
         self.qa_zebra_quantity = 1
         self.qa_zebra_message = ""
         self.qa_zebra_error = ""
