@@ -1,4 +1,11 @@
-# QCC Control Tower Reflex 0.9.5.33
+# QCC Control Tower Reflex 0.9.5.34
+
+## 0.9.5.34 G13 Clade9 label routing
+
+- Adds G13 and South Central Purps to the shared Clade9 strain-identification
+  rules already used by inventory and QA brand inference.
+- Ensures a G13 COA selected with **3.5g Flower** is identified as Clade9 and
+  routed to the approved vertical label with 3.5g values and the `-A` suffix.
 
 ## 0.9.5.33 Lab-precision Total CBG
 

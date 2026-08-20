@@ -57,6 +57,32 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertEqual(label_layout("Craft Kings", "3.5g Flower"), "Flower Horizontal")
         self.assertEqual(label_layout("Clade9", "1g Pre-Roll"), "Pre-Roll Horizontal")
 
+    def test_g13_lab_sample_is_identified_as_clade9_and_prints_vertical_35g(self):
+        lab_results = pd.DataFrame([{
+            "packaged_license": "C000313",
+            "packaged_facility": "QCC Cultivation",
+            "package_tag": "1A4110300002A31000037125",
+            "source_harvest_names": "G13 Harvest 07.13.2026",
+            "source_package_labels": "1A4110300002A31000037124",
+            "item": "G13 Test Sample",
+            "category": "Raw Plant Material",
+            "lab_testing_status": "TestPassed",
+            "test_date": "2026-07-20",
+            "lab_facility": "Example Lab",
+            "test_name": "Total THC (%)",
+            "result": 30.0,
+        }])
+        prepared = _prepare_qa_packages(lab_results, pd.DataFrame())
+        package = prepared.iloc[0].to_dict()
+        self.assertEqual(package["brand"], "Clade9")
+        context, _errors = prepare_label_context(
+            package, DIAMOND_ANALYTES, "3.5g Flower",
+            bulk_uid="1A4110300002A31000037124",
+        )
+        self.assertEqual(context["layout"], "Flower Vertical")
+        self.assertEqual(context["net_weight"], "3.5g")
+        self.assertEqual(context["suffix"], "A")
+
     def test_lab_sample_results_print_the_associated_bulk_uid(self):
         context, errors = prepare_label_context(
             self.package(), DIAMOND_ANALYTES, "3.5g Flower"

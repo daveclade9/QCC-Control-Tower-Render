@@ -61,6 +61,8 @@ CLADE9_STRAIN_PATTERNS = {
     "RPG #42": r"\brpg\s*#?\s*42\b",
     "Blue Dream": r"\bblue\s+dream\b",
     "Lemon Cherry Gelato": r"\blemon\s+cherry\s+gelato\b",
+    "G13": r"\bg\s*13\b",
+    "South Central Purps": r"\bsouth\s+central\s+purps\b",
     "Lip Smackerz": r"\blip\s*smackerz\b|\blipsmackerz\b",
     "Pine Tar": r"\bpine\s*tar\b|\bpinetar\b",
 }
