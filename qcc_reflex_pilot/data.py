@@ -2518,10 +2518,12 @@ def promote_legitimate_manufacturing_samples(
             continue
 
         result.at[index, "production_stage"] = "Packaged Goods"
-        result.at[index, "is_finished_retail_sku"] = True
-        result.at[index, "include_in_cpg"] = True
-        result.at[index, "is_retention_sample"] = False
-        result.at[index, "needs_review"] = False
+        # Supabase returns these eligibility flags as integer 0/1 columns.
+        # Preserve that dtype so pandas does not reject boolean assignments.
+        result.at[index, "is_finished_retail_sku"] = 1
+        result.at[index, "include_in_cpg"] = 1
+        result.at[index, "is_retention_sample"] = 0
+        result.at[index, "needs_review"] = 0
         result.at[index, "review_reason"] = ""
     return result
 

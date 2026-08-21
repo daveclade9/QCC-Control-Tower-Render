@@ -18,12 +18,19 @@ def test_promotes_sample_when_stage_is_the_only_review_issue() -> None:
         "include_in_cpg": False,
         "is_retention_sample": False,
     }])
+    for column in (
+        "needs_review",
+        "is_finished_retail_sku",
+        "include_in_cpg",
+        "is_retention_sample",
+    ):
+        packages[column] = packages[column].astype("int64")
 
     promoted = promote_legitimate_manufacturing_samples(packages).iloc[0]
 
     assert promoted["production_stage"] == "Packaged Goods"
-    assert bool(promoted["include_in_cpg"])
-    assert not bool(promoted["needs_review"])
+    assert promoted["include_in_cpg"] == 1
+    assert promoted["needs_review"] == 0
     assert promoted["review_reason"] == ""
 
 
