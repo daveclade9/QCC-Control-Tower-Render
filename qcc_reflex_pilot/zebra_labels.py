@@ -470,6 +470,13 @@ def _horizontal_flower_zpl(context: dict[str, Any]) -> str:
 
 def _vertical_flower_zpl(context: dict[str, Any]) -> str:
     a = context["analytes"]
+    strain_name = _clean_text(context["strain"], 24)
+    if strain_name.casefold() == "private reserve og":
+        strain_field = (
+            f"^FO47,2^A0B,26,26^FB250,1,0,C,0^FD{strain_name}^FS"
+        )
+    else:
+        strain_field = f"^FT47,209^A0B,28,28^FD{strain_name}^FS"
     terpenes = list(a.get("top_terpenes", []))
     while len(terpenes) < 3:
         terpenes.append(("", None))
@@ -485,7 +492,7 @@ def _vertical_flower_zpl(context: dict[str, Any]) -> str:
         f"^FO80,{offset}^GB8,16,8,B,0^FS" for offset in range(8, 249, 24)
     )
     return _header(457, 254) + f"""
-^FT47,209^A0B,28,28^FD{_clean_text(context['strain'], 24)}^FS
+{strain_field}
 {perforation_guide}
 ^FO100,2^A0B,21,16^FB250,1,0,C,0^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
 ^FO101,2^A0B,21,16^FB250,1,0,C,0^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
