@@ -37,6 +37,12 @@ def test_repairs_source_production_batch_ages() -> None:
         "1A4110300006019000006984", "production_date_source"
     ] == "Source Production Batch"
     assert repaired.loc[
+        "1A4110300006019000006984", "production_date"
+    ] == "2026-08-05"
+    assert repaired.loc[
+        "1A4110300006019000006986", "aging_start_date"
+    ] == "2026-07-23"
+    assert repaired.loc[
         "1A4110300006019000006986", "days_remaining_in_sale_window"
     ] == 152
 

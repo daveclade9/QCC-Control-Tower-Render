@@ -2436,8 +2436,9 @@ def repair_manufacturing_inventory_ages(
             continue
 
         age_days = (pd.Timestamp(as_of) - batch_date.normalize()).days
-        result.at[index, "production_date"] = batch_date
-        result.at[index, "aging_start_date"] = batch_date
+        batch_date_text = batch_date.strftime("%Y-%m-%d")
+        result.at[index, "production_date"] = batch_date_text
+        result.at[index, "aging_start_date"] = batch_date_text
         result.at[index, "inventory_age_days"] = age_days
         result.at[index, "production_date_source"] = date_source
         if "180 Days" in str(row.get("aging_policy", "")) or str(
