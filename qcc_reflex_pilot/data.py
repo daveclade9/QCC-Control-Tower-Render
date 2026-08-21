@@ -1367,6 +1367,9 @@ def load_latest_inventory_bundle() -> tuple[dict[str, Any], pd.DataFrame, pd.Dat
                     inventory_packages = repair_manufacturing_inventory_ages(
                         inventory_packages
                     )
+                    inventory_packages = promote_legitimate_manufacturing_samples(
+                        inventory_packages
+                    )
             return snapshot, inventory_skus, inventory_packages
         except Exception as error:
             last_error = error
@@ -2445,6 +2448,81 @@ def repair_manufacturing_inventory_ages(
             row.get("production_stage", "")
         ) in {"Packaged Goods", "Failed - On Hold"}:
             result.at[index, "days_remaining_in_sale_window"] = 180 - age_days
+    return result
+
+
+def promote_legitimate_manufacturing_samples(
+    packages: pd.DataFrame,
+) -> pd.DataFrame:
+    """Treat passed manufacturing samples as CPG unless another issue exists."""
+    if packages.empty or "item" not in packages.columns:
+        return packages
+    result = packages.copy()
+    for column, default in [
+        ("review_reason", ""),
+        ("needs_review", False),
+        ("production_stage", ""),
+        ("qa_status", ""),
+        ("aging_start_date", pd.NA),
+        ("inventory_age_days", pd.NA),
+        ("is_finished_retail_sku", False),
+        ("include_in_cpg", False),
+        ("is_retention_sample", False),
+    ]:
+        if column not in result.columns:
+            result[column] = default
+
+    if "source_license_type" in result.columns:
+        license_type = result["source_license_type"].fillna("").astype(str)
+    elif "license_type" in result.columns:
+        license_type = result["license_type"].fillna("").astype(str)
+    else:
+        return packages
+
+    sample_rows = (
+        license_type.str.contains("manufactur", case=False, regex=False)
+        & result["item"].fillna("").astype(str).str.contains(
+            r"\bsamples?\b", case=False, regex=True
+        )
+    )
+    for index, row in result.loc[sample_rows].iterrows():
+        if str(row.get("qa_status", "")).strip() != "Test Passed":
+            continue
+
+        reasons = [
+            reason.strip()
+            for reason in str(row.get("review_reason", "")).split(";")
+            if reason.strip()
+        ]
+        blocking_reasons = []
+        for reason in reasons:
+            if reason == "Production stage unclear":
+                continue
+            if (
+                reason == "Manufacturing production date needs review"
+                and pd.notna(pd.to_datetime(
+                    row.get("aging_start_date"), errors="coerce"
+                ))
+            ):
+                continue
+            blocking_reasons.append(reason)
+
+        age = pd.to_numeric(row.get("inventory_age_days"), errors="coerce")
+        if pd.isna(pd.to_datetime(row.get("aging_start_date"), errors="coerce")):
+            blocking_reasons.append("Manufacturing production date needs review")
+        if pd.notna(age) and age < 0:
+            blocking_reasons.append("Negative inventory age")
+        if bool(row.get("needs_review")) and not reasons:
+            blocking_reasons.append("Unspecified review issue")
+        if blocking_reasons:
+            continue
+
+        result.at[index, "production_stage"] = "Packaged Goods"
+        result.at[index, "is_finished_retail_sku"] = True
+        result.at[index, "include_in_cpg"] = True
+        result.at[index, "is_retention_sample"] = False
+        result.at[index, "needs_review"] = False
+        result.at[index, "review_reason"] = ""
     return result
 
 

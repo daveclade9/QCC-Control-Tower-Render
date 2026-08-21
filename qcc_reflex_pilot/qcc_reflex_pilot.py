@@ -5825,6 +5825,19 @@ class DashboardState(rx.State):
         return self._filtered_unit_total(self.active_inventory_data)
 
     @rx.var(cache=True)
+    def active_inventory_samples(self) -> str:
+        count = sum(
+            bool(re.search(r"\bsamples?\b", str(row.get("Item", "")), re.I))
+            and not bool(row.get("View Needs Review", False))
+            for row in self.active_inventory_data
+        )
+        return f"{count:,}"
+
+    @rx.var(cache=True)
+    def active_inventory_shows_samples(self) -> bool:
+        return self.inventory_view_name in {"cpg", "aging_cpg", "all"}
+
+    @rx.var(cache=True)
     def active_inventory_weight(self) -> str:
         return self._filtered_weight_total(self.active_inventory_data)
 
@@ -8695,16 +8708,35 @@ def inventory_view(
     summarize_event: Any,
 ) -> rx.Component:
     return rx.vstack(
-        rx.grid(
-            metric_card("Filtered Records", count, "Visible package records"),
-            metric_card("Filtered Units", units, "Each-based packaged units"),
-            metric_card(
-                DashboardState.inventory_weight_metric_label,
-                weight,
-                DashboardState.inventory_weight_caption,
+        rx.cond(
+            DashboardState.active_inventory_shows_samples,
+            rx.grid(
+                metric_card("Filtered Records", count, "Visible package records"),
+                metric_card("Filtered Units", units, "Each-based packaged units"),
+                metric_card(
+                    "Filtered Samples",
+                    DashboardState.active_inventory_samples,
+                    "Visible legitimate sample packages",
+                ),
+                metric_card(
+                    DashboardState.inventory_weight_metric_label,
+                    weight,
+                    DashboardState.inventory_weight_caption,
+                ),
+                columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+                gap="4", width="100%",
             ),
-            columns=rx.breakpoints(initial="1", sm="3"),
-            gap="4", width="100%",
+            rx.grid(
+                metric_card("Filtered Records", count, "Visible package records"),
+                metric_card("Filtered Units", units, "Each-based packaged units"),
+                metric_card(
+                    DashboardState.inventory_weight_metric_label,
+                    weight,
+                    DashboardState.inventory_weight_caption,
+                ),
+                columns=rx.breakpoints(initial="1", sm="3"),
+                gap="4", width="100%",
+            ),
         ),
         rx.hstack(
             rx.badge("Click any column heading to sort", color_scheme="teal", size="3"),
