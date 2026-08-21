@@ -100,7 +100,10 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertIn("^LL0254", zpl)
         self.assertIn("Diamond Bar", zpl)
         self.assertIn("^FO80,8^GB8,16,8,B,0^FS", zpl)
-        self.assertIn("^FT47,209^A0B,28,28", zpl)
+        self.assertIn(
+            "^FO47,2^A0B,28,28^FB250,1,0,C,0^FDDiamond Bar^FS",
+            zpl,
+        )
         self.assertIn("^FO100,2^A0B,21,16^FB250,1,0,C,0", zpl)
         self.assertEqual(zpl.count("Total Cannabinoids:"), 2)
         self.assertLess(zpl.index("Total CBG:"), zpl.index("Total Terpenes:"))
@@ -120,20 +123,38 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertIn("1A4110300002A31000037497-A", zpl)
         self.assertNotIn("1A4110300002A31000037498-A", zpl)
 
-    def test_private_reserve_og_uses_smaller_centered_strain_title(self):
+    def test_vertical_strain_titles_are_centered_and_sized_to_fit(self):
         context, errors = prepare_label_context(
             self.package(), DIAMOND_ANALYTES, "3.5g Flower"
         )
         self.assertEqual(errors, [])
-        context["strain"] = "Private Reserve OG"
+        cases = {
+            "J1": 28,
+            "Diamond Dust": 28,
+            "Private Reserve OG": 26,
+            "South Central Purps": 24,
+        }
+        for strain_name, font_size in cases.items():
+            with self.subTest(strain_name=strain_name):
+                context["strain"] = strain_name
+                zpl = build_zpl(context, errors)
+                self.assertIn(
+                    f"^FO47,2^A0B,{font_size},{font_size}"
+                    f"^FB250,1,0,C,0^FD{strain_name}^FS",
+                    zpl,
+                )
+
+    def test_lip_smackerz_is_canonicalized_for_label_printing(self):
+        context, errors = prepare_label_context(
+            self.package(), DIAMOND_ANALYTES, "3.5g Flower"
+        )
+        self.assertEqual(errors, [])
+        context["strain"] = "Lip Smackerz"
 
         zpl = build_zpl(context, errors)
 
-        self.assertIn(
-            "^FO47,2^A0B,26,26^FB250,1,0,C,0^FDPrivate Reserve OG^FS",
-            zpl,
-        )
-        self.assertNotIn("^FT47,209^A0B,28,28^FDPrivate Reserve OG^FS", zpl)
+        self.assertIn("^FDLipsmackerz^FS", zpl)
+        self.assertNotIn("^FDLip Smackerz^FS", zpl)
 
     def test_production_batch_number_is_the_default_lot(self):
         context, errors = prepare_label_context(

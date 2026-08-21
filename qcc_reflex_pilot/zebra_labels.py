@@ -52,6 +52,36 @@ def _clean_text(value: Any, limit: int = 80) -> str:
     return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
+def _label_strain_name(value: Any) -> str:
+    """Return the canonical strain spelling used on printed labels."""
+    strain_name = _clean_text(value, 24)
+    normalized = re.sub(r"[^a-z0-9]+", "", strain_name.casefold())
+    if normalized == "lipsmackerz":
+        return "Lipsmackerz"
+    return strain_name
+
+
+def _vertical_strain_title_size(strain_name: str) -> int:
+    """Choose a safe Font 0 size using an estimated proportional width."""
+    width_units = 0.0
+    for character in strain_name:
+        if character.isspace():
+            width_units += 0.30
+        elif character in "ilI1|":
+            width_units += 0.26
+        elif character in "mwMW@":
+            width_units += 0.68
+        elif character.isupper():
+            width_units += 0.50
+        else:
+            width_units += 0.42
+
+    for font_size in (28, 26, 24, 22):
+        if width_units * font_size <= 202:
+            return font_size
+    return 20
+
+
 def extract_metrc_tags(value: Any) -> list[str]:
     """Extract unique METRC package tags in source order."""
     matches = re.findall(r"1A[A-Z0-9]{20,30}", str(value or "").upper())
@@ -470,13 +500,12 @@ def _horizontal_flower_zpl(context: dict[str, Any]) -> str:
 
 def _vertical_flower_zpl(context: dict[str, Any]) -> str:
     a = context["analytes"]
-    strain_name = _clean_text(context["strain"], 24)
-    if strain_name.casefold() == "private reserve og":
-        strain_field = (
-            f"^FO47,2^A0B,26,26^FB250,1,0,C,0^FD{strain_name}^FS"
-        )
-    else:
-        strain_field = f"^FT47,209^A0B,28,28^FD{strain_name}^FS"
+    strain_name = _label_strain_name(context["strain"])
+    strain_font_size = _vertical_strain_title_size(strain_name)
+    strain_field = (
+        f"^FO47,2^A0B,{strain_font_size},{strain_font_size}"
+        f"^FB250,1,0,C,0^FD{strain_name}^FS"
+    )
     terpenes = list(a.get("top_terpenes", []))
     while len(terpenes) < 3:
         terpenes.append(("", None))
