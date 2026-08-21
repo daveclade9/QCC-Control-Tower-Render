@@ -1364,6 +1364,9 @@ def load_latest_inventory_bundle() -> tuple[dict[str, Any], pd.DataFrame, pd.Dat
                     inventory_packages = pd.DataFrame(
                         cursor.fetchall(), columns=package_columns
                     )
+                    inventory_packages = repair_manufacturing_inventory_ages(
+                        inventory_packages
+                    )
             return snapshot, inventory_skus, inventory_packages
         except Exception as error:
             last_error = error
@@ -2343,6 +2346,105 @@ def native_number(value: Any, decimals: int = 2) -> float:
 def iso_date(value: Any) -> str:
     parsed = pd.to_datetime(value, errors="coerce")
     return parsed.strftime("%Y-%m-%d") if pd.notna(parsed) else ""
+
+
+def _batch_date_candidates(value: Any, as_of: date) -> list[pd.Timestamp]:
+    """Extract plausible manufacturing dates embedded in Metrc batch text."""
+    if value is None or pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    earliest = pd.Timestamp("2020-01-01")
+    latest = pd.Timestamp(as_of) + pd.Timedelta(days=366)
+    parsed: list[pd.Timestamp] = []
+
+    def add(year: int, month: int, day: int) -> bool:
+        try:
+            candidate = pd.Timestamp(year=year, month=month, day=day)
+        except ValueError:
+            return False
+        if not earliest <= candidate <= latest:
+            return False
+        parsed.append(candidate)
+        return True
+
+    for month, day, year in re.findall(
+        r"(0?[1-9]|1[0-2])[._/-](0?[1-9]|[12]\d|3[01])"
+        r"[._/-]((?:19|20)\d{2})(?!\d)",
+        text,
+    ):
+        full_year = int(year) + (2000 if len(year) == 2 else 0)
+        add(full_year, int(month), int(day))
+
+    for compact in re.findall(r"(?<!\d)(\d{6})(?!\d)", text):
+        first_two = int(compact[:2])
+        yymmdd = (2000 + first_two, int(compact[2:4]), int(compact[4:6]))
+        mmddyy = (2000 + int(compact[4:6]), first_two, int(compact[2:4]))
+        candidates = [yymmdd, mmddyy] if 20 <= first_two <= 39 else [mmddyy, yymmdd]
+        for year, month, day in candidates:
+            if add(year, month, day):
+                break
+
+    return sorted(set(parsed))
+
+
+def repair_manufacturing_inventory_ages(
+    packages: pd.DataFrame, as_of: date | None = None
+) -> pd.DataFrame:
+    """Validate manufactured-product age against the two Metrc batch fields."""
+    if packages.empty or "source_license_type" not in packages.columns:
+        return packages
+    result = packages.copy()
+    as_of = as_of or date.today()
+    for column in [
+        "source_production_batch", "production_batch_number",
+        "production_date_source", "production_date", "aging_start_date",
+        "inventory_age_days", "days_remaining_in_sale_window",
+    ]:
+        if column not in result.columns:
+            result[column] = pd.NA
+
+    manufacturing = result["source_license_type"].fillna("").astype(str).str.contains(
+        "manufactur", case=False, regex=False
+    )
+    for index, row in result.loc[manufacturing].iterrows():
+        batch_date = pd.NaT
+        date_source = "Date Needs Review"
+        for column, label in [
+            ("source_production_batch", "Source Production Batch"),
+            ("production_batch_number", "Production Batch Number"),
+        ]:
+            candidates = _batch_date_candidates(row.get(column), as_of)
+            if candidates:
+                batch_date = candidates[-1]
+                date_source = label
+                break
+
+        if pd.isna(batch_date):
+            stored_date = pd.to_datetime(row.get("production_date"), errors="coerce")
+            if pd.notna(stored_date):
+                batch_date = stored_date.normalize()
+                date_source = str(
+                    row.get("production_date_source") or "Published Production Date"
+                )
+
+        if pd.isna(batch_date):
+            result.at[index, "inventory_age_days"] = None
+            result.at[index, "days_remaining_in_sale_window"] = None
+            result.at[index, "production_date_source"] = "Date Needs Review"
+            continue
+
+        age_days = (pd.Timestamp(as_of) - batch_date.normalize()).days
+        result.at[index, "production_date"] = batch_date
+        result.at[index, "aging_start_date"] = batch_date
+        result.at[index, "inventory_age_days"] = age_days
+        result.at[index, "production_date_source"] = date_source
+        if "180 Days" in str(row.get("aging_policy", "")) or str(
+            row.get("production_stage", "")
+        ) in {"Packaged Goods", "Failed - On Hold"}:
+            result.at[index, "days_remaining_in_sale_window"] = 180 - age_days
+    return result
 
 
 def record_list(frame: pd.DataFrame) -> list[dict[str, Any]]:
