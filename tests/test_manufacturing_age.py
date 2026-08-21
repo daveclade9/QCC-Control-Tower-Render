@@ -81,3 +81,52 @@ def test_uses_production_batch_number_and_never_invents_zero() -> None:
     assert repaired.loc[
         "missing", "production_date_source"
     ] == "Date Needs Review"
+
+
+def test_clears_only_the_resolved_manufacturing_date_review() -> None:
+    packages = pd.DataFrame([
+        {
+            "package_tag": "1A4110300006019000006875",
+            "source_license_type": "Manufacturing",
+            "source_production_batch": "",
+            "production_batch_number": "Sativa Blend-F3.6-07.20.2026",
+            "production_stage": "Packaged Goods",
+            "aging_policy": "Manufactured Finished Good - 180 Days",
+            "needs_review": 1,
+            "review_reason": "Manufacturing production date needs review",
+        },
+        {
+            "package_tag": "independent-issue",
+            "source_license_type": "Manufacturing",
+            "source_production_batch": "",
+            "production_batch_number": "Sativa Blend-F3.6-07.20.2026",
+            "production_stage": "Packaged Goods",
+            "aging_policy": "Manufactured Finished Good - 180 Days",
+            "needs_review": 1,
+            "review_reason": (
+                "Manufacturing production date needs review; Administrative hold"
+            ),
+        },
+    ])
+    packages["needs_review"] = packages["needs_review"].astype("int64")
+
+    repaired = repair_manufacturing_inventory_ages(
+        packages, as_of=date(2026, 8, 20)
+    ).set_index("package_tag")
+
+    assert repaired.loc[
+        "1A4110300006019000006875", "production_date"
+    ] == "2026-07-20"
+    assert repaired.loc[
+        "1A4110300006019000006875", "inventory_age_days"
+    ] == 31
+    assert repaired.loc[
+        "1A4110300006019000006875", "needs_review"
+    ] == 0
+    assert repaired.loc[
+        "1A4110300006019000006875", "review_reason"
+    ] == ""
+    assert repaired.loc["independent-issue", "needs_review"] == 1
+    assert repaired.loc[
+        "independent-issue", "review_reason"
+    ] == "Administrative hold"

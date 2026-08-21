@@ -2448,6 +2448,25 @@ def repair_manufacturing_inventory_ages(
             row.get("production_stage", "")
         ) in {"Packaged Goods", "Failed - On Hold"}:
             result.at[index, "days_remaining_in_sale_window"] = 180 - age_days
+
+        # A published snapshot can retain the original missing-date review
+        # flag even after one of the two Metrc batch fields supplies a valid
+        # production date. Clear only that stale reason, preserving every
+        # independent review issue on the package.
+        if "review_reason" in result.columns and "needs_review" in result.columns:
+            reasons = [
+                reason.strip()
+                for reason in str(row.get("review_reason", "")).split(";")
+                if reason.strip()
+            ]
+            stale_reason = "Manufacturing production date needs review"
+            if stale_reason in reasons:
+                remaining_reasons = [
+                    reason for reason in reasons if reason != stale_reason
+                ]
+                result.at[index, "review_reason"] = "; ".join(remaining_reasons)
+                if not remaining_reasons:
+                    result.at[index, "needs_review"] = 0
     return result
 
 
