@@ -45,11 +45,19 @@ body {
 }
 
 .qcc-inventory-grid .gridjs-td {
-  padding: 9px 12px;
-  white-space: normal;
+  padding: 7px 12px;
+  white-space: nowrap;
   vertical-align: middle;
   overflow: hidden;
+  text-overflow: ellipsis;
   box-sizing: border-box;
+  height: 48px !important;
+  max-height: 48px !important;
+}
+
+.qcc-inventory-grid .gridjs-tbody .gridjs-tr {
+  height: 48px !important;
+  max-height: 48px !important;
 }
 
 .qcc-inventory-grid .gridjs-th:nth-child(1),
