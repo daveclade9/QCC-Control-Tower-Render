@@ -39,6 +39,7 @@ from .rules import (
     prepare_transfer_analysis,
 )
 from .retailer_directory import CLADE9_LOCATIONS
+from .zebra_labels import expiration_from_harvest, extract_metrc_tags
 
 
 load_dotenv()
@@ -985,6 +986,7 @@ def _prepare_qa_packages(
             ("strain", "inventory_strain"),
             ("sku_type", "inventory_sku_type"),
             ("expiration_date", "inventory_expiration_date"),
+            ("production_batch_number", "inventory_production_batch_number"),
         ]:
             if source in inventory_packages:
                 wanted.append(source)
@@ -993,12 +995,29 @@ def _prepare_qa_packages(
             inventory_packages[wanted].drop_duplicates("package_tag").rename(columns=rename),
             on="package_tag", how="left",
         )
+        current["bulk_package_tag"] = current["source_package_labels"].map(
+            lambda value: (extract_metrc_tags(value) or [""])[0]
+        )
+        if "production_batch_number" in inventory_packages:
+            batch_lookup = (
+                inventory_packages[["package_tag", "production_batch_number"]]
+                .drop_duplicates("package_tag", keep="last")
+                .rename(columns={
+                    "package_tag": "bulk_package_tag",
+                    "production_batch_number": "source_production_batch_number",
+                })
+            )
+            current = current.merge(batch_lookup, on="bulk_package_tag", how="left")
     for column in [
         "inventory_brand", "inventory_strain", "inventory_sku_type",
-        "inventory_expiration_date",
+        "inventory_expiration_date", "inventory_production_batch_number",
+        "source_production_batch_number",
     ]:
         if column not in current:
             current[column] = pd.NA
+    current["production_batch_number"] = current[
+        "source_production_batch_number"
+    ].combine_first(current["inventory_production_batch_number"])
 
     fallback_rows = current.rename(columns={"category": "item_category"}).copy()
     fallback_rows["unit_weight_grams"] = pd.NA
@@ -1024,9 +1043,16 @@ def _prepare_qa_packages(
         current["inventory_expiration_date"], errors="coerce"
     )
     cultivation_missing = current["expiration_date"].isna() & current["operation"].eq("Cultivation")
+
+    def cultivation_expiration(value: Any) -> pd.Timestamp:
+        harvest = _extract_oldest_harvest_date(value)
+        if pd.isna(harvest):
+            return pd.NaT
+        return pd.Timestamp(expiration_from_harvest(harvest.date()))
+
     current.loc[cultivation_missing, "expiration_date"] = current.loc[
         cultivation_missing, "source_harvest_names"
-    ].map(_extract_oldest_harvest_date) + pd.Timedelta(days=225)
+    ].map(cultivation_expiration)
 
     names = compliance["test_name"].astype(str).str.strip()
     compliance["metric"] = pd.NA
@@ -1176,12 +1202,30 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
 
 
 def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, Any]]:
-    rows = safe_query_frame(
-        "SELECT test_date, test_name, result, test_passed "
-        "FROM lab_result_records WHERE package_tag = %s "
-        "AND packaged_license = %s ORDER BY test_date DESC, test_name",
-        (package_tag, packaged_license),
-    )
+    package_tag = str(package_tag or "").strip()
+    packaged_license = str(packaged_license or "").strip()
+    if not package_tag:
+        return []
+
+    # Metrc package tags are globally unique. Prefer the facility-scoped lookup,
+    # but fall back to the tag alone because older imported laboratory rows can
+    # contain a blank or differently formatted packaged-license value.
+    if packaged_license:
+        rows = safe_query_frame(
+            "SELECT test_date, test_name, result, test_passed "
+            "FROM lab_result_records WHERE package_tag = %s "
+            "AND packaged_license = %s ORDER BY test_date DESC, test_name",
+            (package_tag, packaged_license),
+        )
+    else:
+        rows = pd.DataFrame()
+    if rows.empty:
+        rows = safe_query_frame(
+            "SELECT test_date, test_name, result, test_passed "
+            "FROM lab_result_records WHERE package_tag = %s "
+            "ORDER BY test_date DESC, test_name",
+            (package_tag,),
+        )
     if rows.empty:
         return []
     rows["test_date"] = pd.to_datetime(rows["test_date"], errors="coerce").dt.strftime("%Y-%m-%d")
@@ -1195,7 +1239,8 @@ def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, 
 
 
 def log_qa_label_download(
-    package: dict[str, Any], template: dict[str, Any], printed_by: str
+    package: dict[str, Any], template: dict[str, Any], printed_by: str,
+    output_type: str = "html",
 ) -> None:
     initialize_qa_database()
     now = datetime.now().astimezone().isoformat()
@@ -1215,7 +1260,7 @@ def log_qa_label_download(
                 print_id, str(package.get("package_tag", "")),
                 str(package.get("source_harvest_names", "")),
                 str(template.get("Template ID", "")),
-                int(template.get("Version", 1) or 1), "html",
+                int(template.get("Version", 1) or 1), output_type,
                 json.dumps(package, default=str), now, printed_by,
             ),
         )
@@ -1318,6 +1363,12 @@ def load_latest_inventory_bundle() -> tuple[dict[str, Any], pd.DataFrame, pd.Dat
                     package_columns = [column.name for column in cursor.description]
                     inventory_packages = pd.DataFrame(
                         cursor.fetchall(), columns=package_columns
+                    )
+                    inventory_packages = repair_manufacturing_inventory_ages(
+                        inventory_packages
+                    )
+                    inventory_packages = promote_legitimate_manufacturing_samples(
+                        inventory_packages
                     )
             return snapshot, inventory_skus, inventory_packages
         except Exception as error:
@@ -2298,6 +2349,202 @@ def native_number(value: Any, decimals: int = 2) -> float:
 def iso_date(value: Any) -> str:
     parsed = pd.to_datetime(value, errors="coerce")
     return parsed.strftime("%Y-%m-%d") if pd.notna(parsed) else ""
+
+
+def _batch_date_candidates(value: Any, as_of: date) -> list[pd.Timestamp]:
+    """Extract plausible manufacturing dates embedded in Metrc batch text."""
+    if value is None or pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    earliest = pd.Timestamp("2020-01-01")
+    latest = pd.Timestamp(as_of) + pd.Timedelta(days=366)
+    parsed: list[pd.Timestamp] = []
+
+    def add(year: int, month: int, day: int) -> bool:
+        try:
+            candidate = pd.Timestamp(year=year, month=month, day=day)
+        except ValueError:
+            return False
+        if not earliest <= candidate <= latest:
+            return False
+        parsed.append(candidate)
+        return True
+
+    for month, day, year in re.findall(
+        r"(0?[1-9]|1[0-2])[._/-](0?[1-9]|[12]\d|3[01])"
+        r"[._/-]((?:19|20)\d{2})(?!\d)",
+        text,
+    ):
+        full_year = int(year) + (2000 if len(year) == 2 else 0)
+        add(full_year, int(month), int(day))
+
+    for compact in re.findall(r"(?<!\d)(\d{6})(?!\d)", text):
+        first_two = int(compact[:2])
+        yymmdd = (2000 + first_two, int(compact[2:4]), int(compact[4:6]))
+        mmddyy = (2000 + int(compact[4:6]), first_two, int(compact[2:4]))
+        candidates = [yymmdd, mmddyy] if 20 <= first_two <= 39 else [mmddyy, yymmdd]
+        for year, month, day in candidates:
+            if add(year, month, day):
+                break
+
+    return sorted(set(parsed))
+
+
+def repair_manufacturing_inventory_ages(
+    packages: pd.DataFrame, as_of: date | None = None
+) -> pd.DataFrame:
+    """Validate manufactured-product age against the two Metrc batch fields."""
+    if packages.empty or "source_license_type" not in packages.columns:
+        return packages
+    result = packages.copy()
+    as_of = as_of or date.today()
+    for column in [
+        "source_production_batch", "production_batch_number",
+        "production_date_source", "production_date", "aging_start_date",
+        "inventory_age_days", "days_remaining_in_sale_window",
+    ]:
+        if column not in result.columns:
+            result[column] = pd.NA
+
+    manufacturing = result["source_license_type"].fillna("").astype(str).str.contains(
+        "manufactur", case=False, regex=False
+    )
+    for index, row in result.loc[manufacturing].iterrows():
+        batch_date = pd.NaT
+        date_source = "Date Needs Review"
+        for column, label in [
+            ("source_production_batch", "Source Production Batch"),
+            ("production_batch_number", "Production Batch Number"),
+        ]:
+            candidates = _batch_date_candidates(row.get(column), as_of)
+            if candidates:
+                batch_date = candidates[-1]
+                date_source = label
+                break
+
+        if pd.isna(batch_date):
+            stored_date = pd.to_datetime(row.get("production_date"), errors="coerce")
+            if pd.notna(stored_date):
+                batch_date = stored_date.normalize()
+                date_source = str(
+                    row.get("production_date_source") or "Published Production Date"
+                )
+
+        if pd.isna(batch_date):
+            result.at[index, "inventory_age_days"] = None
+            result.at[index, "days_remaining_in_sale_window"] = None
+            result.at[index, "production_date_source"] = "Date Needs Review"
+            continue
+
+        age_days = (pd.Timestamp(as_of) - batch_date.normalize()).days
+        batch_date_text = batch_date.strftime("%Y-%m-%d")
+        result.at[index, "production_date"] = batch_date_text
+        result.at[index, "aging_start_date"] = batch_date_text
+        result.at[index, "inventory_age_days"] = age_days
+        result.at[index, "production_date_source"] = date_source
+        if "180 Days" in str(row.get("aging_policy", "")) or str(
+            row.get("production_stage", "")
+        ) in {"Packaged Goods", "Failed - On Hold"}:
+            result.at[index, "days_remaining_in_sale_window"] = 180 - age_days
+
+        # A published snapshot can retain the original missing-date review
+        # flag even after one of the two Metrc batch fields supplies a valid
+        # production date. Clear only that stale reason, preserving every
+        # independent review issue on the package.
+        if "review_reason" in result.columns and "needs_review" in result.columns:
+            reasons = [
+                reason.strip()
+                for reason in str(row.get("review_reason", "")).split(";")
+                if reason.strip()
+            ]
+            stale_reason = "Manufacturing production date needs review"
+            if stale_reason in reasons:
+                remaining_reasons = [
+                    reason for reason in reasons if reason != stale_reason
+                ]
+                result.at[index, "review_reason"] = "; ".join(remaining_reasons)
+                if not remaining_reasons:
+                    result.at[index, "needs_review"] = 0
+    return result
+
+
+def promote_legitimate_manufacturing_samples(
+    packages: pd.DataFrame,
+) -> pd.DataFrame:
+    """Treat passed manufacturing samples as CPG unless another issue exists."""
+    if packages.empty or "item" not in packages.columns:
+        return packages
+    result = packages.copy()
+    for column, default in [
+        ("review_reason", ""),
+        ("needs_review", False),
+        ("production_stage", ""),
+        ("qa_status", ""),
+        ("aging_start_date", pd.NA),
+        ("inventory_age_days", pd.NA),
+        ("is_finished_retail_sku", False),
+        ("include_in_cpg", False),
+        ("is_retention_sample", False),
+    ]:
+        if column not in result.columns:
+            result[column] = default
+
+    if "source_license_type" in result.columns:
+        license_type = result["source_license_type"].fillna("").astype(str)
+    elif "license_type" in result.columns:
+        license_type = result["license_type"].fillna("").astype(str)
+    else:
+        return packages
+
+    sample_rows = (
+        license_type.str.contains("manufactur", case=False, regex=False)
+        & result["item"].fillna("").astype(str).str.contains(
+            r"\bsamples?\b", case=False, regex=True
+        )
+    )
+    for index, row in result.loc[sample_rows].iterrows():
+        if str(row.get("qa_status", "")).strip() != "Test Passed":
+            continue
+
+        reasons = [
+            reason.strip()
+            for reason in str(row.get("review_reason", "")).split(";")
+            if reason.strip()
+        ]
+        blocking_reasons = []
+        for reason in reasons:
+            if reason == "Production stage unclear":
+                continue
+            if (
+                reason == "Manufacturing production date needs review"
+                and pd.notna(pd.to_datetime(
+                    row.get("aging_start_date"), errors="coerce"
+                ))
+            ):
+                continue
+            blocking_reasons.append(reason)
+
+        age = pd.to_numeric(row.get("inventory_age_days"), errors="coerce")
+        if pd.isna(pd.to_datetime(row.get("aging_start_date"), errors="coerce")):
+            blocking_reasons.append("Manufacturing production date needs review")
+        if pd.notna(age) and age < 0:
+            blocking_reasons.append("Negative inventory age")
+        if bool(row.get("needs_review")) and not reasons:
+            blocking_reasons.append("Unspecified review issue")
+        if blocking_reasons:
+            continue
+
+        result.at[index, "production_stage"] = "Packaged Goods"
+        # Supabase returns these eligibility flags as integer 0/1 columns.
+        # Preserve that dtype so pandas does not reject boolean assignments.
+        result.at[index, "is_finished_retail_sku"] = 1
+        result.at[index, "include_in_cpg"] = 1
+        result.at[index, "is_retention_sample"] = 0
+        result.at[index, "needs_review"] = 0
+        result.at[index, "review_reason"] = ""
+    return result
 
 
 def record_list(frame: pd.DataFrame) -> list[dict[str, Any]]:

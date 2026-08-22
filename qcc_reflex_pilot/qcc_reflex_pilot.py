@@ -56,6 +56,15 @@ from .auth import (
     verify_supabase_access_token,
 )
 from .label_catalog import NICE_LABEL_CATALOG
+from .zebra_labels import (
+    PACKAGE_FORMAT_OPTIONS,
+    ZEBRA_PRINTER_OPTIONS,
+    build_zpl,
+    default_package_format,
+    extract_harvest_date,
+    extract_metrc_tags,
+    prepare_label_context,
+)
 from .retailer_directory import (
     find_clade9_location,
     normalized_retailer_name,
@@ -67,7 +76,7 @@ from .rules import (
 )
 
 
-PILOT_VERSION = "0.9.5.19"
+PILOT_VERSION = "0.9.5.35"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -393,6 +402,14 @@ class DashboardState(rx.State):
     qa_label_catalog_search: str = ""
     qa_selected_native_template: str = ""
     qa_recent_selections: list[dict[str, str]] = []
+    qa_zebra_package_format: str = "3.5g Flower"
+    qa_zebra_bulk_uid: str = ""
+    qa_zebra_harvest_date: str = ""
+    qa_zebra_lot_number: str = ""
+    qa_zebra_printer: str = ZEBRA_PRINTER_OPTIONS[0]
+    qa_zebra_quantity: int = 1
+    qa_zebra_message: str = ""
+    qa_zebra_error: str = ""
     inventory_stage_filter: str = "All Production Stages"
     inventory_license_filter: str = "All Licenses"
     inventory_qa_filter: str = "All QA Statuses"
@@ -1137,6 +1154,8 @@ class DashboardState(rx.State):
         if selected is None:
             self.qa_selected_package = {}
             self.qa_selected_analytes = []
+            self.qa_zebra_message = ""
+            self.qa_zebra_error = ""
             return
         self.qa_selected_package = dict(selected)
         self.qa_selected_package.setdefault("record_origin", "Lab Results / COA")
@@ -1183,6 +1202,30 @@ class DashboardState(rx.State):
                 if row.get("Package Tag") != recent["Package Tag"]
             ],
         ][:8]
+        self._initialize_zebra_label_inputs(selected)
+
+    def _initialize_zebra_label_inputs(self, selected: dict[str, Any]) -> None:
+        """Prepare editable production-label values from the selected COA."""
+        source_tags = extract_metrc_tags(selected.get("source_package_labels", ""))
+        self.qa_zebra_bulk_uid = source_tags[0] if len(source_tags) == 1 else ""
+        harvest = extract_harvest_date(selected.get("source_harvest_names", ""))
+        self.qa_zebra_harvest_date = harvest.isoformat() if harvest else ""
+        self.qa_zebra_lot_number = str(
+            selected.get("production_batch_number", "")
+            or selected.get("source_harvest_names", "")
+            or ""
+        )
+        # A COA describes the tested material, not necessarily the finished
+        # package size that will be printed from it. Preserve the operator's
+        # explicit Package Format selection when switching laboratory records.
+        # Only infer a default if state contains no supported selection.
+        if self.qa_zebra_package_format not in PACKAGE_FORMAT_OPTIONS:
+            self.qa_zebra_package_format = default_package_format(
+                selected.get("sku_type", selected.get("qa_test_type", ""))
+            )
+        self.qa_zebra_quantity = 1
+        self.qa_zebra_message = ""
+        self.qa_zebra_error = ""
 
     @rx.event
     def select_qa_package(self, package_tag: str, packaged_license: str):
@@ -1257,6 +1300,41 @@ class DashboardState(rx.State):
     @rx.event
     def change_qa_manual_expiration(self, value: str):
         self.qa_manual_expiration = value
+
+    @rx.event
+    def change_qa_zebra_package_format(self, value: str):
+        self.qa_zebra_package_format = value
+        self.qa_zebra_message = ""
+        self.qa_zebra_error = ""
+
+    @rx.event
+    def change_qa_zebra_bulk_uid(self, value: str):
+        self.qa_zebra_bulk_uid = value.strip().upper()
+        self.qa_zebra_message = ""
+        self.qa_zebra_error = ""
+
+    @rx.event
+    def change_qa_zebra_harvest_date(self, value: str):
+        self.qa_zebra_harvest_date = value
+        self.qa_zebra_message = ""
+        self.qa_zebra_error = ""
+
+    @rx.event
+    def change_qa_zebra_lot_number(self, value: str):
+        self.qa_zebra_lot_number = value
+        self.qa_zebra_message = ""
+        self.qa_zebra_error = ""
+
+    @rx.event
+    def change_qa_zebra_printer(self, value: str):
+        self.qa_zebra_printer = value
+
+    @rx.event
+    def change_qa_zebra_quantity(self, value: str):
+        try:
+            self.qa_zebra_quantity = max(1, min(int(value), 9999))
+        except (TypeError, ValueError):
+            self.qa_zebra_quantity = 1
 
     @rx.event
     def refresh_qa(self):
@@ -1834,6 +1912,57 @@ class DashboardState(rx.State):
     def qa_filtered_analyte_count(self) -> int:
         return len(self.qa_selected_analyte_rows)
 
+    def _qa_zebra_context(self) -> tuple[dict[str, Any], list[str]]:
+        return prepare_label_context(
+            self.qa_selected_package,
+            self.qa_selected_analytes,
+            self.qa_zebra_package_format,
+            bulk_uid=self.qa_zebra_bulk_uid,
+            harvest_date=self.qa_zebra_harvest_date,
+            lot_number=self.qa_zebra_lot_number,
+            quantity=self.qa_zebra_quantity,
+        )
+
+    @rx.var(cache=True)
+    def qa_zebra_preview(self) -> list[list[str]]:
+        if not self.qa_selected_package:
+            return []
+        context, _errors = self._qa_zebra_context()
+        return [
+            ["Lab Sample Tag", str(context.get("lab_tag", ""))],
+            ["Printed Bulk UID", str(context.get("bulk_uid", ""))],
+            ["Barcode", str(context.get("barcode_value", ""))],
+            ["Package Format", str(context.get("package_format", ""))],
+            ["Automatic Layout", str(context.get("layout", ""))],
+            ["Net / Serving", (
+                str(context.get("net_weight", "")) + " / "
+                + str(context.get("serving_size", ""))
+            )],
+            ["Harvest Date", str(context.get("harvest_date", ""))],
+            ["Expiration Date", str(context.get("expiration_date", ""))],
+            ["Lot", str(context.get("lot_number", ""))],
+            ["Printer", self.qa_zebra_printer],
+            ["Quantity", str(context.get("quantity", 1))],
+        ]
+
+    @rx.var(cache=True)
+    def qa_zebra_validation_message(self) -> str:
+        if not self.qa_selected_package:
+            return "Select a passed laboratory record first."
+        if self.qa_selected_analytes_loading:
+            return "Loading the complete laboratory values for this label..."
+        _context, errors = self._qa_zebra_context()
+        if errors:
+            return " ".join(errors)
+        return "All required production-label fields are ready."
+
+    @rx.var(cache=True)
+    def qa_zebra_ready(self) -> bool:
+        if not self.qa_selected_package or self.qa_selected_analytes_loading:
+            return False
+        _context, errors = self._qa_zebra_context()
+        return not errors
+
     @rx.var(cache=True)
     def qa_general_compliance_summary(self) -> list[list[Any]]:
         if not self.qa_selected_package:
@@ -1904,6 +2033,55 @@ class DashboardState(rx.State):
         return rx.download(
             data=html.encode("utf-8"),
             filename=f"qa_label_{record.get('package_tag', 'record')}.html",
+        )
+
+    @rx.event
+    def download_zebra_zpl(self):
+        """Generate a validated printer-ready test file for the local Zebra."""
+        self.qa_zebra_message = ""
+        self.qa_zebra_error = ""
+        if not self._require_active_session():
+            self.qa_zebra_error = "Your session expired. Sign in again to generate a label."
+            return
+        if self.qa_selected_analytes_loading:
+            self.qa_zebra_error = "Wait for the complete laboratory values to finish loading."
+            return
+        context, errors = self._qa_zebra_context()
+        try:
+            zpl = build_zpl(context, errors)
+        except ValueError as error:
+            self.qa_zebra_error = str(error)
+            return
+        audit_template = {
+            "Template ID": "qcc-zebra-cultivation-v1",
+            "Version": 1,
+            "Footer": context.get("layout", ""),
+        }
+        audit_record = {
+            **self.qa_selected_package,
+            "printed_bulk_uid": context.get("bulk_uid", ""),
+            "package_format": context.get("package_format", ""),
+            "layout": context.get("layout", ""),
+            "quantity": context.get("quantity", 1),
+            "printer": self.qa_zebra_printer,
+            "expiration_date": context.get("expiration_date", ""),
+        }
+        log_qa_label_download(
+            audit_record,
+            audit_template,
+            self.auth_email or self.auth_name,
+            output_type="zpl",
+        )
+        safe_name = re.sub(
+            r"[^A-Za-z0-9_-]+", "_", str(context.get("strain", "label"))
+        ).strip("_") or "label"
+        self.qa_zebra_message = (
+            "Validated Zebra ZPL generated. Send one test file through Zebra Setup "
+            "Utilities before enabling direct browser printing."
+        )
+        return rx.download(
+            data=zpl.encode("utf-8"),
+            filename=f"{safe_name}_{context.get('suffix', '')}_TEST.zpl",
         )
 
     @rx.event
@@ -5647,6 +5825,19 @@ class DashboardState(rx.State):
         return self._filtered_unit_total(self.active_inventory_data)
 
     @rx.var(cache=True)
+    def active_inventory_samples(self) -> str:
+        count = sum(
+            bool(re.search(r"\bsamples?\b", str(row.get("Item", "")), re.I))
+            and not bool(row.get("View Needs Review", False))
+            for row in self.active_inventory_data
+        )
+        return f"{count:,}"
+
+    @rx.var(cache=True)
+    def active_inventory_shows_samples(self) -> bool:
+        return self.inventory_view_name in {"cpg", "aging_cpg", "all"}
+
+    @rx.var(cache=True)
     def active_inventory_weight(self) -> str:
         return self._filtered_weight_total(self.active_inventory_data)
 
@@ -8517,16 +8708,35 @@ def inventory_view(
     summarize_event: Any,
 ) -> rx.Component:
     return rx.vstack(
-        rx.grid(
-            metric_card("Filtered Records", count, "Visible package records"),
-            metric_card("Filtered Units", units, "Each-based packaged units"),
-            metric_card(
-                DashboardState.inventory_weight_metric_label,
-                weight,
-                DashboardState.inventory_weight_caption,
+        rx.cond(
+            DashboardState.active_inventory_shows_samples,
+            rx.grid(
+                metric_card("Filtered Records", count, "Visible package records"),
+                metric_card("Filtered Units", units, "Each-based packaged units"),
+                metric_card(
+                    "Filtered Samples",
+                    DashboardState.active_inventory_samples,
+                    "Visible legitimate sample packages",
+                ),
+                metric_card(
+                    DashboardState.inventory_weight_metric_label,
+                    weight,
+                    DashboardState.inventory_weight_caption,
+                ),
+                columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+                gap="4", width="100%",
             ),
-            columns=rx.breakpoints(initial="1", sm="3"),
-            gap="4", width="100%",
+            rx.grid(
+                metric_card("Filtered Records", count, "Visible package records"),
+                metric_card("Filtered Units", units, "Each-based packaged units"),
+                metric_card(
+                    DashboardState.inventory_weight_metric_label,
+                    weight,
+                    DashboardState.inventory_weight_caption,
+                ),
+                columns=rx.breakpoints(initial="1", sm="3"),
+                gap="4", width="100%",
+            ),
         ),
         rx.hstack(
             rx.badge("Click any column heading to sort", color_scheme="teal", size="3"),
@@ -9174,6 +9384,133 @@ def qa_analyte_category_badge(row: rx.Var) -> rx.Component:
     )
 
 
+def qa_zebra_label_card() -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.flex(
+                rx.box(
+                    rx.heading("Zebra Cultivation Label Pilot", size="4", color=DARK),
+                    rx.text(
+                        "Generates validated ZPL for the ZD620/ZD621. The laboratory "
+                        "sample supplies the results; the associated bulk source tag is printed.",
+                        color=MUTED, size="1",
+                    ),
+                ),
+                rx.spacer(),
+                rx.badge("STAGING TEST", color_scheme="orange", size="2"),
+                align="center", gap="3", width="100%", wrap="wrap",
+            ),
+            rx.grid(
+                rx.box(
+                    rx.text("Package Format", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        PACKAGE_FORMAT_OPTIONS,
+                        value=DashboardState.qa_zebra_package_format,
+                        on_change=DashboardState.change_qa_zebra_package_format,
+                        width="100%",
+                    ),
+                ),
+                rx.box(
+                    rx.text("Target Printer", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        ZEBRA_PRINTER_OPTIONS,
+                        value=DashboardState.qa_zebra_printer,
+                        on_change=DashboardState.change_qa_zebra_printer,
+                        width="100%",
+                    ),
+                ),
+                rx.box(
+                    rx.text("Print Quantity", size="1", weight="bold", color=MUTED),
+                    rx.input(
+                        type="number", min="1", max="9999", step="1",
+                        value=DashboardState.qa_zebra_quantity.to_string(),
+                        on_change=DashboardState.change_qa_zebra_quantity,
+                        width="100%",
+                    ),
+                ),
+                rx.box(
+                    rx.text("Harvest Date", size="1", weight="bold", color=MUTED),
+                    rx.input(
+                        type="date",
+                        value=DashboardState.qa_zebra_harvest_date,
+                        on_change=DashboardState.change_qa_zebra_harvest_date,
+                        width="100%",
+                    ),
+                ),
+                columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+                gap="3", width="100%",
+            ),
+            rx.grid(
+                rx.box(
+                    rx.text("Associated Bulk METRC Tag", size="1", weight="bold", color=MUTED),
+                    rx.input(
+                        value=DashboardState.qa_zebra_bulk_uid,
+                        on_change=DashboardState.change_qa_zebra_bulk_uid,
+                        placeholder="Bulk source tag printed on the label",
+                        width="100%",
+                    ),
+                ),
+                rx.box(
+                    rx.text("Lot Number", size="1", weight="bold", color=MUTED),
+                    rx.input(
+                        value=DashboardState.qa_zebra_lot_number,
+                        on_change=DashboardState.change_qa_zebra_lot_number,
+                        width="100%",
+                    ),
+                ),
+                columns=rx.breakpoints(initial="1", md="2"),
+                gap="3", width="100%",
+            ),
+            rx.grid(
+                rx.foreach(DashboardState.qa_zebra_preview, qa_compliance_summary_item),
+                columns=rx.breakpoints(initial="1", sm="2", lg="3"),
+                gap="2", width="100%",
+            ),
+            rx.cond(
+                DashboardState.qa_zebra_ready,
+                rx.callout(
+                    DashboardState.qa_zebra_validation_message,
+                    icon="circle-check", color_scheme="teal", width="100%",
+                ),
+                rx.callout(
+                    DashboardState.qa_zebra_validation_message,
+                    icon="triangle-alert", color_scheme="orange", width="100%",
+                ),
+            ),
+            rx.cond(
+                DashboardState.qa_zebra_message != "",
+                rx.callout(
+                    DashboardState.qa_zebra_message,
+                    icon="circle-check", color_scheme="teal", width="100%",
+                ),
+            ),
+            rx.cond(
+                DashboardState.qa_zebra_error != "",
+                rx.callout(
+                    DashboardState.qa_zebra_error,
+                    icon="triangle-alert", color_scheme="red", width="100%",
+                ),
+            ),
+            rx.flex(
+                rx.button(
+                    "Download One-Test Zebra ZPL",
+                    on_click=DashboardState.download_zebra_zpl,
+                    disabled=~DashboardState.qa_zebra_ready,
+                    background=ACCENT, color="white", size="3",
+                ),
+                rx.text(
+                    "The downloaded test file does not print automatically. Direct USB "
+                    "printing will be enabled after Zebra Browser Print is verified locally.",
+                    size="1", color=MUTED, max_width="560px",
+                ),
+                align="center", gap="3", wrap="wrap", width="100%",
+            ),
+            width="100%", spacing="3",
+        ),
+        width="100%", border_top="5px solid #f59e0b",
+    )
+
+
 def qa_compliance_summary_dialog() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
@@ -9406,6 +9743,7 @@ def qa_label_panel() -> rx.Component:
                     columns=rx.breakpoints(initial="1", sm="3"),
                     gap="3", width="100%",
                 ),
+                qa_zebra_label_card(),
                 rx.box(
                     rx.text("Printable Label Template", size="1", weight="bold", color=MUTED),
                     rx.select(

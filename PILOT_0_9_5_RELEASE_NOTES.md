@@ -1,4 +1,144 @@
-# QCC Control Tower Reflex 0.9.5.19
+# QCC Control Tower Reflex 0.9.5.35
+
+## 0.9.5.35 Authoritative mg/g Total CBG
+
+- Makes the calculated mg/g-based Total CBG authoritative whenever both CBGa and CBG mg/g readings are present.
+- Prevents a lower-precision reported percentage such as 2.16% from overriding the lab-precision calculation of 2.17%.
+- Keeps the reported Total CBG percentage as the fallback when component mg/g readings are missing, followed by the percent-component calculation.
+
+## 0.9.5.34 G13 Clade9 label routing
+
+- Adds G13 and South Central Purps to the shared Clade9 strain-identification
+  rules already used by inventory and QA brand inference.
+- Ensures a G13 COA selected with **3.5g Flower** is identified as Clade9 and
+  routed to the approved vertical label with 3.5g values and the `-A` suffix.
+
+## 0.9.5.33 Lab-precision Total CBG
+
+- Calculates Total CBG from the laboratory's higher-precision CBGa and CBG
+  **mg/g** readings when both are present.
+- Applies `(CBGa mg/g × 0.877 + CBG mg/g) ÷ 10` to convert the calculated
+  result back to the percent printed on the compliance label.
+- Retains an explicitly reported Total CBG percentage as the first choice and
+  falls back to the percent/mass component calculation when mg/g is unavailable.
+
+## 0.9.5.32 Operator-selected package format
+
+- Preserves the operator's selected **Package Format** when a different COA or
+  METRC laboratory tag is selected.
+- Prevents a COA's historical SKU description from silently changing a 3.5g
+  vertical label into a 7g horizontal label.
+- Keeps the selected format authoritative for layout, net weight, serving size,
+  and barcode package suffix.
+
+## 0.9.5.31 Total Terpenes vertical-position correction
+
+- Moves only the centered **Total Terpenes** heading nine printer dots upward
+  (approximately 1.1 mm at 203 DPI) so it clears the Limonene/Linalool row.
+- Preserves the approved font size, weight, centering, terpene rows, dates, and
+  every other vertical-label position.
+
+## 0.9.5.30 Vertical-label spacing correction
+
+- Separates the centered Total Terpenes heading from the
+  Limonene/Linalool row without changing any approved font sizes.
+- Preserves the compact terpene section while keeping the second terpene row
+  clear of the date line.
+- Restores the wider ZebraDesigner spacing between Harvest Date and
+  Expiration Date.
+
+## 0.9.5.29 ZebraDesigner visual matching pass
+
+- Matches the vertical label's printer-native body sizes and row coordinates
+  to the confirmed ZebraDesigner printer file.
+- Enlarges and strengthens the centered Total Cannabinoids and Total
+  Terpenes headings to more closely reproduce their Arial Black appearance.
+- Matches the original strain size, supporting-text scale, barcode height,
+  and heavier perforation guide without changing any production-label data.
+
+## 0.9.5.28 Total Terpenes alignment
+
+- Moves the centered Total Terpenes line slightly upward so it sits more
+  evenly between Total CBG and the Limonene/Linalool row.
+- Slightly increases the Total Terpenes font without moving the surrounding
+  label content.
+
+## 0.9.5.27 Vertical label alignment refinement
+
+- Slightly thickens the dotted perforation guide on the Clade9 3.5g label.
+- Uses a true centered field block and a slightly larger font for Total
+  Cannabinoids.
+- Restores compact vertical spacing between the two individual-terpene rows
+  while increasing the horizontal separation within each pair.
+
+## 0.9.5.26 Vertical cultivation-label hierarchy
+
+- Doubles the perforation-guide thickness on the Clade9 3.5g vertical label.
+- Centers and visually bolds Total Cannabinoids immediately below the guide.
+- Moves centered Total Terpenes below Total CBG and above the individual
+  terpene rows.
+- Adds horizontal separation between the Limonene/Linalool row and the
+  Alpha-Pinene/Other row while retaining the confirmed lower label layout.
+
+## 0.9.5.25 Production batch lot and vertical perforation guide
+
+- Uses the bulk package's Metrc Production Batch Number as the production
+  label Lot Number, with the former harvest-name value retained only as a
+  fallback for older inventory snapshots.
+- Resolves the laboratory sample's source package tag back to the bulk
+  inventory record before selecting its Production Batch Number.
+- Adds the dotted perforation guide directly below the strain on the Clade9
+  3.5g vertical label and compacts the remaining rows within the same label.
+
+## 0.9.5.24 Zebra terpene layout and print-density correction
+
+- Removes Metrc's percentage and `Raw Plant Material` suffixes from printed
+  terpene names without changing the laboratory results.
+- Prevents Total Terpenes from being counted as an individual terpene and
+  deduplicates alternate names for the same terpene.
+- Restores the correct remaining-terpenes calculation and retains
+  Alpha-Pinene as the third displayed terpene for the Diamond Bar reference.
+- Narrows the vertical terpene lines to keep Limonene and Linalool inside the
+  printable boundary.
+- Matches the approved ZebraDesigner files' speed and darkness commands:
+  `^PR4,4` and `~SD15`.
+
+## 0.9.5.23 Raw plant material cannabinoid rules
+
+- Maps Metrc's `THC (%) Raw Plant Material` result to the printed D9-THC
+  label field.
+- Calculates Total CBG as `CBGA × 0.877 + CBG` when Metrc does not directly
+  report Total CBG.
+- Prefers a directly reported Total CBG result whenever it is available.
+
+## 0.9.5.22 Metrc analyte-name compatibility
+
+- Recognizes required label analytes when Metrc includes a panel/category
+  prefix or measurement-basis suffix around the analyte name.
+- Retains token-boundary matching so similarly named cannabinoids are not
+  confused with one another.
+
+## 0.9.5.21 Zebra analyte lookup correction
+
+- Shows a laboratory-loading status instead of prematurely reporting every
+  required Zebra value as missing.
+- Falls back to the globally unique Metrc package tag when an older laboratory
+  row has a blank or differently formatted packaged-license value.
+
+## 0.9.5.20 Zebra cultivation-label pilot
+
+- Adds validated ZPL generation for the ZD620 and ZD621 203-DPI printers.
+- Supports Clade9 3.5g vertical flower, all other horizontal flower, and
+  horizontal pre-roll layouts using the supplied production print files.
+- Resolves laboratory sample records back to their associated bulk source tag
+  and prevents the laboratory sample tag from being printed as the UID.
+- Assigns package suffixes A through G, net weight, serving size, layout, and
+  barcode automatically from the selected package format.
+- Calculates expiration as six calendar months plus forty-five days after the
+  harvest date and blocks label generation if required values are missing.
+- Adds an auditable one-test ZPL download to the Compliance Label Search and
+  Printing tab. Direct USB printing remains disabled until Zebra Browser Print
+  is installed and verified on the cultivation printing laptop.
 
 ## 0.9.5.19 Retail Availability dependent filters
 
