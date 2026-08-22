@@ -100,7 +100,10 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertIn("^LL0254", zpl)
         self.assertIn("Diamond Bar", zpl)
         self.assertIn("^FO80,8^GB8,16,8,B,0^FS", zpl)
-        self.assertIn("^FT47,209^A0B,28,28", zpl)
+        self.assertIn(
+            "^FO47,2^A0B,28,28^FB250,1,0,C,0^FDDiamond Bar^FS",
+            zpl,
+        )
         self.assertIn("^FO100,2^A0B,21,16^FB250,1,0,C,0", zpl)
         self.assertEqual(zpl.count("Total Cannabinoids:"), 2)
         self.assertLess(zpl.index("Total CBG:"), zpl.index("Total Terpenes:"))
@@ -119,6 +122,81 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertIn("0.46%    Other: 0.83%", zpl)
         self.assertIn("1A4110300002A31000037497-A", zpl)
         self.assertNotIn("1A4110300002A31000037498-A", zpl)
+
+    def test_vertical_strain_titles_are_centered_and_sized_to_fit(self):
+        context, errors = prepare_label_context(
+            self.package(), DIAMOND_ANALYTES, "3.5g Flower"
+        )
+        self.assertEqual(errors, [])
+        cases = {
+            "J1": 28,
+            "Diamond Dust": 28,
+            "Private Reserve OG": 26,
+            "South Central Purps": 24,
+        }
+        for strain_name, font_size in cases.items():
+            with self.subTest(strain_name=strain_name):
+                context["strain"] = strain_name
+                zpl = build_zpl(context, errors)
+                self.assertIn(
+                    f"^FO47,2^A0B,{font_size},{font_size}"
+                    f"^FB250,1,0,C,0^FD{strain_name}^FS",
+                    zpl,
+                )
+
+    def test_lip_smackerz_is_canonicalized_for_label_printing(self):
+        context, errors = prepare_label_context(
+            self.package(), DIAMOND_ANALYTES, "3.5g Flower"
+        )
+        self.assertEqual(errors, [])
+        context["strain"] = "Lip Smackerz"
+
+        zpl = build_zpl(context, errors)
+
+        self.assertIn("^FDLipsmackerz^FS", zpl)
+        self.assertNotIn("^FDLip Smackerz^FS", zpl)
+
+    def test_horizontal_flower_layout_uses_the_revised_shared_positions(self):
+        context, errors = prepare_label_context(
+            self.package(
+                production_batch_number="DB-F1.7-03.23.2026",
+            ),
+            DIAMOND_ANALYTES,
+            "7g Flower",
+        )
+        self.assertEqual(errors, [])
+
+        zpl = build_zpl(context, errors)
+
+        self.assertIn("^FT145,29^A0N,25,28^FDDiamond Bar^FS", zpl)
+        self.assertIn("^FT7,52^A0N,17,14^FDTotal Cannabinoids:", zpl)
+        self.assertIn("^FT248,52^A0N,17,14^FDTotal Terpenes:", zpl)
+        self.assertIn("^FT17,70^A0N,15,15^FDTotal THC:", zpl)
+        self.assertIn("^FT222,70^A0N,15,13^FD", zpl)
+        self.assertIn("^FT6,158^A0N,13,9^FDHarvest Date:", zpl)
+        self.assertIn("^FT128,158^A0N,13,9^FDExpiration Date:", zpl)
+        self.assertIn("^FT6,176^A0N,13,8^FDPesticides:", zpl)
+        self.assertIn("^FT94,176^A0N,13,8^FDChemotype:", zpl)
+        self.assertIn("^FDLot #: DB-F1.7-03.23.2026-L1^FS", zpl)
+        self.assertIn("^FT255,155^A0N,12,12^FDClass 1 - Cultivator^FS", zpl)
+        self.assertIn("^FT255,172^A0N,12,12^FDPKG by: The QCC Group LLC^FS", zpl)
+        self.assertIn("^FT269,189^A0N,12,12^FDGrow Method: Indoor^FS", zpl)
+        self.assertIn("^FT260,206^A0N,12,12^FDLicense Number: C000313^FS", zpl)
+        self.assertIn("^BY1,3,20^FT183,227^BCN,,Y,N", zpl)
+        self.assertIn("^FT5,244^A0N,13,13^FDNet WT: 7g", zpl)
+
+    def test_horizontal_flower_lot_keeps_an_existing_lot_sequence(self):
+        context, errors = prepare_label_context(
+            self.package(production_batch_number="DB-F1.7-03.23.2026-L2"),
+            DIAMOND_ANALYTES,
+            "7g Flower",
+        )
+        self.assertEqual(errors, [])
+
+        zpl = build_zpl(context, errors)
+
+        self.assertIn("^FDLot #: DB-F1.7-03.23.2026-L2^FS", zpl)
+        self.assertNotIn("-L2-L1", zpl)
 
     def test_production_batch_number_is_the_default_lot(self):
         context, errors = prepare_label_context(

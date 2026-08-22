@@ -52,6 +52,36 @@ def _clean_text(value: Any, limit: int = 80) -> str:
     return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
+def _label_strain_name(value: Any) -> str:
+    """Return the canonical strain spelling used on printed labels."""
+    strain_name = _clean_text(value, 24)
+    normalized = re.sub(r"[^a-z0-9]+", "", strain_name.casefold())
+    if normalized == "lipsmackerz":
+        return "Lipsmackerz"
+    return strain_name
+
+
+def _vertical_strain_title_size(strain_name: str) -> int:
+    """Choose a safe Font 0 size using an estimated proportional width."""
+    width_units = 0.0
+    for character in strain_name:
+        if character.isspace():
+            width_units += 0.30
+        elif character in "ilI1|":
+            width_units += 0.26
+        elif character in "mwMW@":
+            width_units += 0.68
+        elif character.isupper():
+            width_units += 0.50
+        else:
+            width_units += 0.42
+
+    for font_size in (28, 26, 24, 22):
+        if width_units * font_size <= 202:
+            return font_size
+    return 20
+
+
 def extract_metrc_tags(value: Any) -> list[str]:
     """Extract unique METRC package tags in source order."""
     matches = re.findall(r"1A[A-Z0-9]{20,30}", str(value or "").upper())
@@ -437,31 +467,50 @@ def _header(width: int, length: int) -> str:
 
 def _horizontal_flower_zpl(context: dict[str, Any]) -> str:
     a = context["analytes"]
+    strain_name = _label_strain_name(context["strain"])
+    lot_number = _clean_text(context["lot_number"], 40)
+    if lot_number and not re.search(r"-L\d+$", lot_number, flags=re.IGNORECASE):
+        lot_number = f"{lot_number}-L1"
     terpenes = list(a.get("top_terpenes", []))
     while len(terpenes) < 3:
         terpenes.append(("", None))
     return _header(457, 254) + f"""
-^FT145,26^A0N,25,28^FD{_clean_text(context['strain'], 24)}^FS
-^FT5,49^A0N,16,13^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
-^FT246,49^A0N,16,13^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
-^FT15,70^A0N,14,14^FDTotal THC: {_pct(a.get('total_thc'))}^FS
-^FT15,87^A0N,14,14^FDTHCA: {_pct(a.get('thca'))}^FS
-^FT15,104^A0N,14,14^FDTotal CBD: {_pct(a.get('total_cbd'))}^FS
-^FT15,121^A0N,14,14^FDD9-THC: {_pct(a.get('d9_thc'))}^FS
-^FT15,138^A0N,14,14^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
-^FT220,70^A0N,14,12^FD{_clean_text(terpenes[0][0], 22)}: {_pct(terpenes[0][1])}^FS
-^FT220,87^A0N,14,12^FD{_clean_text(terpenes[1][0], 22)}: {_pct(terpenes[1][1])}^FS
-^FT220,104^A0N,14,12^FD{_clean_text(terpenes[2][0], 22)}: {_pct(terpenes[2][1])}^FS
-^FT220,121^A0N,14,12^FDOther: {_pct(a.get('other_terpenes'))}^FS
-^FT5,156^A0N,13,9^FDHarvest Date: {context['harvest_date_short']}  Expiration Date: {context['expiration_date_short']}^FS
-^FT5,174^A0N,13,8^FDPesticides: {context['pesticides']}  Chemotype: {context['chemotype']}^FS
-^FT5,193^A0N,13,11^FDLot #: {_clean_text(context['lot_number'], 40)}^FS
-^FT5,211^A0N,13,11^FDUID: {context['bulk_uid']}^FS
-^FT255,157^A0N,12,12^FDPKG by: The QCC Group LLC^FS
-^FT269,174^A0N,12,12^FDGrow Method: {context['grow_method']}^FS
-^FT269,191^A0N,12,12^FDClass 1 - Cultivator^FS
-^FT260,208^A0N,12,12^FDLicense Number: C000313^FS
-^BY1,3,20^FT185,227^BCN,,Y,N^FD{context['barcode_value']}^FS
+^FT145,29^A0N,25,28^FD{strain_name}^FS
+^FT7,52^A0N,17,14^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
+^FT8,52^A0N,17,14^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
+^FT248,52^A0N,17,14^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
+^FT249,52^A0N,17,14^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
+^FT17,70^A0N,15,15^FDTotal THC: {_pct(a.get('total_thc'))}^FS
+^FT18,70^A0N,15,15^FDTotal THC: {_pct(a.get('total_thc'))}^FS
+^FT17,87^A0N,15,15^FDTHCA: {_pct(a.get('thca'))}^FS
+^FT18,87^A0N,15,15^FDTHCA: {_pct(a.get('thca'))}^FS
+^FT17,104^A0N,15,15^FDTotal CBD: {_pct(a.get('total_cbd'))}^FS
+^FT18,104^A0N,15,15^FDTotal CBD: {_pct(a.get('total_cbd'))}^FS
+^FT17,121^A0N,15,15^FDD9-THC: {_pct(a.get('d9_thc'))}^FS
+^FT18,121^A0N,15,15^FDD9-THC: {_pct(a.get('d9_thc'))}^FS
+^FT17,138^A0N,15,15^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
+^FT18,138^A0N,15,15^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
+^FT222,70^A0N,15,13^FD{_clean_text(terpenes[0][0], 22)}: {_pct(terpenes[0][1])}^FS
+^FT223,70^A0N,15,13^FD{_clean_text(terpenes[0][0], 22)}: {_pct(terpenes[0][1])}^FS
+^FT222,87^A0N,15,13^FD{_clean_text(terpenes[1][0], 22)}: {_pct(terpenes[1][1])}^FS
+^FT223,87^A0N,15,13^FD{_clean_text(terpenes[1][0], 22)}: {_pct(terpenes[1][1])}^FS
+^FT222,104^A0N,15,13^FD{_clean_text(terpenes[2][0], 22)}: {_pct(terpenes[2][1])}^FS
+^FT223,104^A0N,15,13^FD{_clean_text(terpenes[2][0], 22)}: {_pct(terpenes[2][1])}^FS
+^FT222,121^A0N,15,13^FDOther: {_pct(a.get('other_terpenes'))}^FS
+^FT223,121^A0N,15,13^FDOther: {_pct(a.get('other_terpenes'))}^FS
+^FT6,158^A0N,13,9^FDHarvest Date: {context['harvest_date_short']}^FS
+^FT128,158^A0N,13,9^FDExpiration Date: {context['expiration_date_short']}^FS
+^FT6,176^A0N,13,8^FDPesticides: {context['pesticides']}^FS
+^FT94,176^A0N,13,8^FDChemotype: {context['chemotype']}^FS
+^FT5,195^A0N,13,11^FDLot #: {lot_number}^FS
+^FT6,195^A0N,13,11^FDLot #: {lot_number}^FS
+^FT5,213^A0N,13,11^FDUID: {context['bulk_uid']}^FS
+^FT6,213^A0N,13,11^FDUID: {context['bulk_uid']}^FS
+^FT255,155^A0N,12,12^FDClass 1 - Cultivator^FS
+^FT255,172^A0N,12,12^FDPKG by: The QCC Group LLC^FS
+^FT269,189^A0N,12,12^FDGrow Method: {context['grow_method']}^FS
+^FT260,206^A0N,12,12^FDLicense Number: C000313^FS
+^BY1,3,20^FT183,227^BCN,,Y,N^FD{context['barcode_value']}^FS
 ^FT5,244^A0N,13,13^FDNet WT: {context['net_weight']}  Serving Size: {context['serving_size']}^FS
 ^PQ{context['quantity']},0,1,Y
 ^XZ
@@ -470,6 +519,12 @@ def _horizontal_flower_zpl(context: dict[str, Any]) -> str:
 
 def _vertical_flower_zpl(context: dict[str, Any]) -> str:
     a = context["analytes"]
+    strain_name = _label_strain_name(context["strain"])
+    strain_font_size = _vertical_strain_title_size(strain_name)
+    strain_field = (
+        f"^FO47,2^A0B,{strain_font_size},{strain_font_size}"
+        f"^FB250,1,0,C,0^FD{strain_name}^FS"
+    )
     terpenes = list(a.get("top_terpenes", []))
     while len(terpenes) < 3:
         terpenes.append(("", None))
@@ -485,7 +540,7 @@ def _vertical_flower_zpl(context: dict[str, Any]) -> str:
         f"^FO80,{offset}^GB8,16,8,B,0^FS" for offset in range(8, 249, 24)
     )
     return _header(457, 254) + f"""
-^FT47,209^A0B,28,28^FD{_clean_text(context['strain'], 24)}^FS
+{strain_field}
 {perforation_guide}
 ^FO100,2^A0B,21,16^FB250,1,0,C,0^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
 ^FO101,2^A0B,21,16^FB250,1,0,C,0^FDTotal Cannabinoids: {_pct(a.get('total_cannabinoids'))}^FS
