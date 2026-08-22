@@ -156,6 +156,48 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertIn("^FDLipsmackerz^FS", zpl)
         self.assertNotIn("^FDLip Smackerz^FS", zpl)
 
+    def test_horizontal_flower_layout_uses_the_revised_shared_positions(self):
+        context, errors = prepare_label_context(
+            self.package(
+                production_batch_number="DB-F1.7-03.23.2026",
+            ),
+            DIAMOND_ANALYTES,
+            "7g Flower",
+        )
+        self.assertEqual(errors, [])
+
+        zpl = build_zpl(context, errors)
+
+        self.assertIn("^FT145,29^A0N,25,28^FDDiamond Bar^FS", zpl)
+        self.assertIn("^FT7,52^A0N,17,14^FDTotal Cannabinoids:", zpl)
+        self.assertIn("^FT248,52^A0N,17,14^FDTotal Terpenes:", zpl)
+        self.assertIn("^FT17,70^A0N,15,15^FDTotal THC:", zpl)
+        self.assertIn("^FT222,70^A0N,15,13^FD", zpl)
+        self.assertIn("^FT6,158^A0N,13,9^FDHarvest Date:", zpl)
+        self.assertIn("^FT128,158^A0N,13,9^FDExpiration Date:", zpl)
+        self.assertIn("^FT6,176^A0N,13,8^FDPesticides:", zpl)
+        self.assertIn("^FT94,176^A0N,13,8^FDChemotype:", zpl)
+        self.assertIn("^FDLot #: DB-F1.7-03.23.2026-L1^FS", zpl)
+        self.assertIn("^FT255,155^A0N,12,12^FDClass 1 - Cultivator^FS", zpl)
+        self.assertIn("^FT255,172^A0N,12,12^FDPKG by: The QCC Group LLC^FS", zpl)
+        self.assertIn("^FT269,189^A0N,12,12^FDGrow Method: Indoor^FS", zpl)
+        self.assertIn("^FT260,206^A0N,12,12^FDLicense Number: C000313^FS", zpl)
+        self.assertIn("^BY1,3,20^FT183,227^BCN,,Y,N", zpl)
+        self.assertIn("^FT5,244^A0N,13,13^FDNet WT: 7g", zpl)
+
+    def test_horizontal_flower_lot_keeps_an_existing_lot_sequence(self):
+        context, errors = prepare_label_context(
+            self.package(production_batch_number="DB-F1.7-03.23.2026-L2"),
+            DIAMOND_ANALYTES,
+            "7g Flower",
+        )
+        self.assertEqual(errors, [])
+
+        zpl = build_zpl(context, errors)
+
+        self.assertIn("^FDLot #: DB-F1.7-03.23.2026-L2^FS", zpl)
+        self.assertNotIn("-L2-L1", zpl)
+
     def test_production_batch_number_is_the_default_lot(self):
         context, errors = prepare_label_context(
             self.package(
