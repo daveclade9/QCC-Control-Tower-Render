@@ -40,6 +40,7 @@ from .rules import (
 )
 from .retailer_directory import CLADE9_LOCATIONS
 from .zebra_labels import expiration_from_harvest, extract_metrc_tags
+from .availability_demand import build_availability_demand_analysis
 
 
 load_dotenv()
@@ -1726,6 +1727,287 @@ def _cursor_frame(cursor: Any) -> pd.DataFrame:
     return pd.DataFrame(
         cursor.fetchall(), columns=[column.name for column in cursor.description]
     )
+
+
+def _ensure_clone_allocation_table(cursor: Any) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS qcc_clone_allocations (
+            allocation_id TEXT PRIMARY KEY,
+            cycle_name TEXT NOT NULL,
+            flower_room TEXT NOT NULL,
+            flower_entry_date DATE NOT NULL,
+            clone_cut_date DATE NOT NULL,
+            veg_transfer_date DATE NOT NULL,
+            harvest_date DATE NOT NULL,
+            available_date DATE NOT NULL,
+            overage_percent INTEGER NOT NULL,
+            post_harvest_days INTEGER NOT NULL,
+            bench_plans JSONB NOT NULL,
+            strain_summary JSONB NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL
+        )
+        """
+    )
+
+
+def create_clone_allocation(
+    *,
+    cycle_name: str,
+    flower_room: str,
+    flower_entry_date: str,
+    clone_cut_date: str,
+    veg_transfer_date: str,
+    harvest_date: str,
+    available_date: str,
+    overage_percent: int,
+    post_harvest_days: int,
+    bench_plans: list[dict[str, Any]],
+    strain_summary: list[dict[str, Any]],
+    created_by: str = "QCC Reflex User",
+) -> str:
+    """Save a shared facility clone allocation in Supabase."""
+    if psycopg is None or not database_url():
+        raise RuntimeError(
+            "A live Supabase connection is required to save clone allocations."
+        )
+    if not str(cycle_name or "").strip():
+        raise ValueError("Enter a cycle or crop name before saving.")
+    if not strain_summary:
+        raise ValueError("Allocate at least one strain before saving.")
+    now_text = datetime.now().astimezone().isoformat()
+    seed = json.dumps(
+        {
+            "cycle": cycle_name,
+            "room": flower_room,
+            "flower_entry": flower_entry_date,
+            "created": now_text,
+        },
+        sort_keys=True,
+    )
+    allocation_id = (
+        "QCC-CA-"
+        + datetime.now().strftime("%Y%m%d-")
+        + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:10].upper()
+    )
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_clone_allocation_table(cursor)
+            cursor.execute(
+                "INSERT INTO qcc_clone_allocations ("
+                "allocation_id, cycle_name, flower_room, flower_entry_date, "
+                "clone_cut_date, veg_transfer_date, harvest_date, available_date, "
+                "overage_percent, post_harvest_days, bench_plans, strain_summary, "
+                "created_by, created_at) VALUES ("
+                + ", ".join(["%s"] * 14)
+                + ")",
+                (
+                    allocation_id,
+                    str(cycle_name).strip(),
+                    str(flower_room).strip(),
+                    str(flower_entry_date),
+                    str(clone_cut_date),
+                    str(veg_transfer_date),
+                    str(harvest_date),
+                    str(available_date),
+                    int(overage_percent),
+                    int(post_harvest_days),
+                    json.dumps(bench_plans, default=str),
+                    json.dumps(strain_summary, default=str),
+                    str(created_by or "QCC Reflex User"),
+                    now_text,
+                ),
+            )
+        connection.commit()
+    return allocation_id
+
+
+def load_clone_allocations(limit: int = 50) -> list[dict[str, Any]]:
+    """Return recent shared clone allocations, newest first."""
+    if psycopg is None or not database_url():
+        return []
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_clone_allocation_table(cursor)
+            cursor.execute(
+                "SELECT allocation_id, cycle_name, flower_room, "
+                "flower_entry_date, clone_cut_date, veg_transfer_date, "
+                "harvest_date, available_date, overage_percent, "
+                "post_harvest_days, bench_plans, strain_summary, created_by, "
+                "created_at FROM qcc_clone_allocations "
+                "ORDER BY created_at DESC LIMIT %s",
+                (max(1, min(250, int(limit))),),
+            )
+            frame = _cursor_frame(cursor)
+        connection.commit()
+    if frame.empty:
+        return []
+    rows: list[dict[str, Any]] = []
+    for record in frame.to_dict("records"):
+        bench_plans = record.get("bench_plans") or []
+        strain_summary = record.get("strain_summary") or []
+        if isinstance(bench_plans, str):
+            bench_plans = json.loads(bench_plans)
+        if isinstance(strain_summary, str):
+            strain_summary = json.loads(strain_summary)
+        target_plants = sum(
+            int(row.get("target_plants", 0) or 0) for row in strain_summary
+        )
+        clone_cuts = sum(
+            int(row.get("recommended_clones", 0) or 0) for row in strain_summary
+        )
+        rows.append(
+            {
+                "allocation_id": str(record.get("allocation_id", "")),
+                "cycle_name": str(record.get("cycle_name", "")),
+                "flower_room": str(record.get("flower_room", "")),
+                "flower_entry_date": str(record.get("flower_entry_date", "")),
+                "clone_cut_date": str(record.get("clone_cut_date", "")),
+                "veg_transfer_date": str(record.get("veg_transfer_date", "")),
+                "harvest_date": str(record.get("harvest_date", "")),
+                "available_date": str(record.get("available_date", "")),
+                "overage_percent": int(record.get("overage_percent", 30) or 30),
+                "post_harvest_days": int(
+                    record.get("post_harvest_days", 30) or 30
+                ),
+                "bench_plans": list(bench_plans),
+                "strain_summary": list(strain_summary),
+                "strains": ", ".join(
+                    str(row.get("strain", "")) for row in strain_summary
+                    if str(row.get("strain", "")).strip()
+                ),
+                "target_plants": target_plants,
+                "clone_cuts": clone_cuts,
+                "created_by": str(record.get("created_by", "")),
+                "created_at": str(record.get("created_at", "")),
+            }
+        )
+    return rows
+
+
+def _ensure_clone_planning_table(cursor: Any) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS qcc_clone_plans (
+            plan_id TEXT PRIMARY KEY,
+            crop TEXT NOT NULL,
+            flower_room TEXT NOT NULL,
+            clone_cut_date DATE NOT NULL,
+            demand_model TEXT NOT NULL,
+            status TEXT NOT NULL,
+            allocations JSONB NOT NULL,
+            bench_assignments JSONB NOT NULL,
+            override_reason TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL
+        )
+        """
+    )
+
+
+def save_clone_plan(
+    *,
+    crop: str,
+    flower_room: str,
+    clone_cut_date: str,
+    demand_model: str,
+    status: str,
+    allocations: dict[str, float],
+    bench_assignments: list[dict[str, Any]] | None = None,
+    override_reason: str = "",
+    updated_by: str = "QCC Reflex User",
+) -> str:
+    """Create or update the shared planning record for one crop."""
+    if psycopg is None or not database_url():
+        raise RuntimeError("A live Supabase connection is required to save clone plans.")
+    crop_text = str(crop or "").strip()
+    if not crop_text:
+        raise ValueError("A crop is required before saving a clone plan.")
+    status_text = str(status or "Draft").strip().title()
+    if status_text not in {"Draft", "Approved"}:
+        raise ValueError("Clone-plan status must be Draft or Approved.")
+    plan_id = "QCC-CP-" + re.sub(r"[^A-Za-z0-9]+", "-", crop_text).strip("-").upper()
+    now_text = datetime.now().astimezone().isoformat()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_clone_planning_table(cursor)
+            cursor.execute(
+                "INSERT INTO qcc_clone_plans (plan_id, crop, flower_room, "
+                "clone_cut_date, demand_model, status, allocations, "
+                "bench_assignments, override_reason, updated_by, updated_at) "
+                "VALUES (" + ", ".join(["%s"] * 11) + ") "
+                "ON CONFLICT (plan_id) DO UPDATE SET flower_room=EXCLUDED.flower_room, "
+                "clone_cut_date=EXCLUDED.clone_cut_date, demand_model=EXCLUDED.demand_model, "
+                "status=EXCLUDED.status, allocations=EXCLUDED.allocations, "
+                "bench_assignments=EXCLUDED.bench_assignments, "
+                "override_reason=EXCLUDED.override_reason, updated_by=EXCLUDED.updated_by, "
+                "updated_at=EXCLUDED.updated_at",
+                (
+                    plan_id, crop_text, str(flower_room), str(clone_cut_date),
+                    str(demand_model), status_text,
+                    json.dumps(allocations, default=str),
+                    json.dumps(bench_assignments or [], default=str),
+                    str(override_reason or ""), str(updated_by or "QCC Reflex User"),
+                    now_text,
+                ),
+            )
+        connection.commit()
+    return plan_id
+
+
+def load_clone_plans() -> list[dict[str, Any]]:
+    """Return every saved clone plan, newest first, for unrestricted lookback."""
+    if psycopg is None or not database_url():
+        return []
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_clone_planning_table(cursor)
+            cursor.execute(
+                "SELECT plan_id, crop, flower_room, clone_cut_date, demand_model, "
+                "status, allocations, bench_assignments, override_reason, "
+                "updated_by, updated_at FROM qcc_clone_plans "
+                "ORDER BY clone_cut_date DESC, updated_at DESC"
+            )
+            frame = _cursor_frame(cursor)
+        connection.commit()
+    if frame.empty:
+        return []
+    rows: list[dict[str, Any]] = []
+    for record in frame.to_dict("records"):
+        allocations = record.get("allocations") or {}
+        bench_assignments = record.get("bench_assignments") or []
+        if isinstance(allocations, str):
+            allocations = json.loads(allocations)
+        if isinstance(bench_assignments, str):
+            bench_assignments = json.loads(bench_assignments)
+        rows.append(
+            {
+                "plan_id": str(record.get("plan_id", "")),
+                "crop": str(record.get("crop", "")),
+                "flower_room": str(record.get("flower_room", "")),
+                "clone_cut_date": str(record.get("clone_cut_date", "")),
+                "demand_model": str(record.get("demand_model", "")),
+                "status": str(record.get("status", "Draft")),
+                "allocations": dict(allocations),
+                "bench_assignments": list(bench_assignments),
+                "bench_equivalents": round(
+                    sum(float(value or 0) for value in allocations.values()), 1
+                ),
+                "strains": len(
+                    [value for value in allocations.values() if float(value or 0) > 0]
+                ),
+                "allocation_benches": ", ".join(
+                    f"{strain}: {float(value):.1f}"
+                    for strain, value in allocations.items()
+                    if float(value or 0) > 0
+                ) or "No benches assigned",
+                "override_reason": str(record.get("override_reason", "")),
+                "updated_by": str(record.get("updated_by", "")),
+                "updated_at": str(record.get("updated_at", "")),
+            }
+        )
+    return rows
 
 
 def create_reflex_production_plan(
@@ -3500,6 +3782,8 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
             "sku_types": options("SKU Type"),
             "monthly": [], "top_skus": [], "business_pulse": [],
             "velocity": [], "velocity_windows": {"All Time": []},
+            "availability_demand_summary": [],
+            "availability_demand_weekly": [],
             "stockouts": [], "customers": [], "exceptions": [],
             "retail_delivery_history": [],
             "retailer_locations": [],
@@ -3582,6 +3866,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         velocity_windows.update({
             "1 Week": [], "60 Days": [], "90 Days": [], "120 Days": [],
         })
+    availability_demand = build_availability_demand_analysis(demand, velocity)
     # The Sales background load reuses the inventory context and must not
     # rebuild every inventory table a second time during the same login.
     inventory_views = (
@@ -3715,6 +4000,8 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         "business_pulse": record_list(business_pulse.round(2)),
         "velocity": record_list(velocity),
         "velocity_windows": velocity_windows,
+        "availability_demand_summary": availability_demand["summary"],
+        "availability_demand_weekly": availability_demand["weekly"],
         "stockouts": record_list(stockouts),
         "saved_plans": record_list(saved_plans),
         "saved_plan_cards": saved_plan_cards,

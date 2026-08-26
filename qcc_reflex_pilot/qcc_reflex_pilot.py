@@ -21,6 +21,7 @@ import pandas as pd
 from .data import (
     calculate_flower_batch_mix,
     calculate_single_output_yield,
+    create_clone_allocation,
     create_reflex_production_template,
     create_reflex_production_plan,
     database_url,
@@ -31,6 +32,9 @@ from .data import (
     import_lab_results_bytes,
     load_qa_analytes,
     load_qa_module_data,
+    load_clone_allocations,
+    load_clone_plans,
+    save_clone_plan,
     load_production_module_data,
     log_qa_label_download,
     potential_wip_for_sku,
@@ -74,9 +78,55 @@ from .rules import (
     compatible_inventory_brand,
     normalize_strain_name,
 )
+from .cultivation import (
+    BenchPlan,
+    CLADE9_CLONE_STRAINS,
+    CLONE_PLANNING_FIRST_CROP,
+    CLONE_PLANNING_FIRST_CUT_DATE,
+    CRAFT_KINGS_CLONE_STRAINS,
+    DEFAULT_POST_HARVEST_DAYS,
+    UPCOMING_CROP_ALLOCATIONS,
+    bench_plant_capacity,
+    cultivation_timeline,
+    clone_plan_edit_window,
+    clone_plan_is_editable,
+    clone_planning_periods,
+    prior_clone_planning_periods,
+    crop_is_scheduled_supply,
+    cultivation_flower_supply_bucket,
+    default_split_percentages,
+    estimated_yield_pounds,
+    inventory_counts_as_current_cultivation_supply,
+    normalized_strain,
+    projected_harvest_dates,
+    projected_risk,
+    recommend_clone_trays,
+    room_bench_plans,
+    sku_fill_grams,
+    valid_bench_equivalent,
+)
+from .historical_yield import (
+    HISTORICAL_CYCLE_COLUMNS,
+    HISTORICAL_HARVEST_COLUMNS,
+    HISTORICAL_ROOM_COLUMNS,
+    HISTORICAL_STRAIN_COLUMNS,
+    HISTORICAL_STRAIN_OBSERVATIONS,
+    historical_cycle_table_data,
+    historical_cycle_rows,
+    historical_harvest_table_data,
+    historical_harvest_rows,
+    historical_kpis,
+    historical_room_chart_rows,
+    historical_room_table_data,
+    historical_room_rows,
+    historical_strain_chart_rows,
+    historical_strain_options,
+    historical_strain_rows,
+    historical_strain_table_data,
+)
 
 
-PILOT_VERSION = "0.9.5.35"
+PILOT_VERSION = "0.9.6.8-cultivation"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -309,6 +359,42 @@ SavedPlanCard = TypedDict(
         "Formulation Details": str,
     },
 )
+CultivationAllocationRow = TypedDict(
+    "CultivationAllocationRow",
+    {
+        "id": str,
+        "bench": str,
+        "strain": str,
+        "square_feet": float,
+        "target_plants": int,
+        "requested_overage_percent": int,
+        "trays": int,
+        "recommended_clones": int,
+        "actual_overage_percent": float,
+    },
+)
+ClonePlanMatrixValue = TypedDict(
+    "ClonePlanMatrixValue",
+    {
+        "value": float,
+        "highlight": bool,
+        "show_breakdown": bool,
+        "tested_lbs": float,
+        "untested_lbs": float,
+        "passed_quarantine_lbs": float,
+        "current_total_lbs": float,
+    },
+)
+ClonePlanMatrixRow = TypedDict(
+    "ClonePlanMatrixRow",
+    {
+        "strain": str,
+        "metric": str,
+        "allocation": float,
+        "weekly_demand": float,
+        "values": list[ClonePlanMatrixValue],
+    },
+)
 
 
 class DashboardState(rx.State):
@@ -512,6 +598,59 @@ class DashboardState(rx.State):
     retail_start_address_input: str = ""
     retail_start_address: str = ""
 
+    cultivation_view: str = "clone_planning"
+    cultivation_history_room_filter: str = "All Flower Rooms"
+    cultivation_history_table_view: str = "Individual Harvests"
+    cultivation_history_rows_per_page: str = "10"
+    cultivation_history_strain_filter: str = "All Strains"
+    cultivation_demand_brand_filter: str = "All Brands"
+    cultivation_demand_strain_filter: str = "All Strains"
+    cultivation_demand_sku_filter: str = "All Compared SKUs"
+    cultivation_demand_rows_per_page: str = "25"
+    cultivation_clone_strain_scope: str = "Clade9 Strains"
+    cultivation_new_strain_name: str = ""
+    cultivation_provisional_strains: list[str] = ["Hood Candy", "Jelly Cake"]
+    cultivation_new_strain_message: str = ""
+    cultivation_new_strain_error: str = ""
+    cultivation_clone_plan_demand_model: str = "Experimental Availability-Adjusted"
+    cultivation_clone_plan_allocations: dict[str, float] = {}
+    cultivation_clone_plan_entry_version: int = 0
+    cultivation_clone_plan_status: str = "Draft"
+    cultivation_clone_plan_dirty: bool = False
+    cultivation_clone_plan_override: bool = False
+    cultivation_clone_plan_override_reason: str = ""
+    cultivation_clone_plan_saving: bool = False
+    cultivation_clone_plan_message: str = ""
+    cultivation_clone_plan_error: str = ""
+    cultivation_clone_plan_history: list[dict[str, Any]] = []
+    cultivation_clone_plan_history_loaded: bool = False
+    cultivation_clone_plan_lookback: str = "Last 4 Plans"
+    cultivation_historical_plan_crop: str = "F4.10"
+    cultivation_historical_plan_allocations: dict[str, float] = {}
+    cultivation_historical_plan_edit_id: str = ""
+    cultivation_historical_plan_edit_status: str = "Approved"
+    cultivation_historical_plan_saving: bool = False
+    cultivation_historical_plan_entry_version: int = 0
+    cultivation_flower_room: str = "Flower Room 1"
+    cultivation_cycle_name: str = ""
+    cultivation_flower_entry_date: str = (
+        date.today() + timedelta(days=40)
+    ).isoformat()
+    cultivation_plant_density: float = 0.75
+    cultivation_overage_percent: int = 30
+    cultivation_post_harvest_days: int = DEFAULT_POST_HARVEST_DAYS
+    cultivation_layout_editing: bool = False
+    cultivation_bench_plans: list[BenchPlan] = room_bench_plans("Flower Room 1")
+    cultivation_saved_allocations: list[dict[str, Any]] = []
+    cultivation_saved_loaded: bool = False
+    cultivation_saving: bool = False
+    cultivation_bench_label: str = ""
+    cultivation_strain: str = ""
+    cultivation_bench_square_feet: float = 0.0
+    cultivation_allocations: list[CultivationAllocationRow] = []
+    cultivation_message: str = ""
+    cultivation_error: str = ""
+
     units_metric: str = "0"
     value_metric: str = "$0"
     customers_metric: str = "0"
@@ -538,6 +677,8 @@ class DashboardState(rx.State):
     top_skus: list[dict[str, Any]] = []
     business_pulse: list[dict[str, Any]] = []
     velocity: list[dict[str, Any]] = []
+    availability_demand_summary: list[dict[str, Any]] = []
+    availability_demand_weekly: list[dict[str, Any]] = []
     stockouts: list[dict[str, Any]] = []
     saved_plans: list[dict[str, Any]] = []
     saved_plan_cards: list[SavedPlanCard] = []
@@ -2463,6 +2604,12 @@ class DashboardState(rx.State):
         self.velocity = self.velocity_windows.get(
             self.sku_velocity_period, payload["velocity"]
         )
+        self.availability_demand_summary = payload.get(
+            "availability_demand_summary", []
+        )
+        self.availability_demand_weekly = payload.get(
+            "availability_demand_weekly", []
+        )
         self.stockouts = payload["stockouts"]
         self.saved_plans = payload["saved_plans"]
         self.saved_plan_cards = payload.get("saved_plan_cards", [])
@@ -2613,6 +2760,12 @@ class DashboardState(rx.State):
         self.velocity = self.velocity_windows.get(
             self.sku_velocity_period, payload.get("velocity", [])
         )
+        self.availability_demand_summary = payload.get(
+            "availability_demand_summary", []
+        )
+        self.availability_demand_weekly = payload.get(
+            "availability_demand_weekly", []
+        )
         self.retailer_locations = payload.get(
             "retailer_locations", self.retailer_locations
         )
@@ -2723,6 +2876,12 @@ class DashboardState(rx.State):
         self.customers = payload.get("customers", [])
         self.exceptions = payload.get("exceptions", [])
         self._transfer_data = payload.get("transfer_data", [])
+        self.availability_demand_summary = payload.get(
+            "availability_demand_summary", []
+        )
+        self.availability_demand_weekly = payload.get(
+            "availability_demand_weekly", []
+        )
         self.transfer_import_log = payload.get("transfer_import_log", [])
         self.cpg_inventory = payload.get("cpg_inventory", [])
         self.bulk_inventory = payload.get("bulk_inventory", [])
@@ -4377,6 +4536,12 @@ class DashboardState(rx.State):
     @rx.event
     def change_workspace_view(self, value: str):
         self.workspace_view = value
+        if value == "cultivation":
+            if not self.cultivation_saved_loaded:
+                yield DashboardState.load_saved_clone_allocations
+            if not self.cultivation_clone_plan_history_loaded:
+                yield DashboardState.load_cultivation_clone_plan_history
+            return
         if value == "qa":
             if not self.qa_loaded and not self.qa_loading:
                 yield DashboardState.load_qa_background(False)
@@ -4391,6 +4556,1675 @@ class DashboardState(rx.State):
         if self.sales_demand_view in self.sales_loaded_views:
             return
         yield DashboardState.load_sales_background
+
+    @rx.event
+    def change_cultivation_view(self, value: str):
+        self.cultivation_view = value
+        if value == "clone_allocation":
+            period = clone_planning_periods(1)[0]
+            was_current_plan = (
+                self.cultivation_flower_room == period["room"]
+                and self.cultivation_cycle_name == period["crop"]
+                and self.cultivation_flower_entry_date == period["flower_entry_date"]
+            )
+            self.cultivation_flower_room = period["room"]
+            self.cultivation_cycle_name = period["crop"]
+            self.cultivation_flower_entry_date = period["flower_entry_date"]
+            if not was_current_plan:
+                self.cultivation_bench_plans = room_bench_plans(
+                    period["room"], self.cultivation_plant_density
+                )
+        if value == "clone_planning" and not self.cultivation_clone_plan_history_loaded:
+            yield DashboardState.load_cultivation_clone_plan_history
+
+    @rx.event
+    def change_cultivation_history_room_filter(self, value: str):
+        self.cultivation_history_room_filter = value
+
+    @rx.event
+    def change_cultivation_history_table_view(self, value: str):
+        self.cultivation_history_table_view = value
+
+    @rx.event
+    def change_cultivation_history_rows_per_page(self, value: str):
+        self.cultivation_history_rows_per_page = (
+            value if value in {"10", "25", "50"} else "10"
+        )
+
+    @rx.event
+    def change_cultivation_history_strain_filter(self, value: str):
+        self.cultivation_history_strain_filter = value
+
+    @rx.event
+    def change_cultivation_demand_strain_filter(self, value: str):
+        self.cultivation_demand_strain_filter = value
+
+    @rx.event
+    def change_cultivation_demand_brand_filter(self, value: str):
+        self.cultivation_demand_brand_filter = value
+        self.cultivation_demand_strain_filter = "All Strains"
+
+    @rx.event
+    def change_cultivation_demand_sku_filter(self, value: str):
+        self.cultivation_demand_sku_filter = value
+
+    @rx.event
+    def change_cultivation_demand_rows_per_page(self, value: str):
+        self.cultivation_demand_rows_per_page = (
+            value if value in {"25", "50", "100"} else "25"
+        )
+
+    @rx.event
+    def change_cultivation_clone_plan_lookback(self, value: str):
+        self.cultivation_clone_plan_lookback = (
+            value if value in {"Last 4 Plans", "Last 8 Plans"} else "Last 4 Plans"
+        )
+
+    @rx.event
+    def change_cultivation_historical_plan_crop(self, value: str):
+        valid = {period["crop"] for period in prior_clone_planning_periods(8)}
+        if value in valid:
+            self.cultivation_historical_plan_crop = value
+            self.cultivation_historical_plan_allocations = {}
+            self.cultivation_historical_plan_entry_version += 1
+            self.cultivation_clone_plan_error = ""
+            self.cultivation_clone_plan_message = ""
+
+    @rx.event
+    def change_cultivation_historical_plan_allocation(
+        self, strain: str, value: str
+    ):
+        self.cultivation_clone_plan_error = ""
+        try:
+            parsed = valid_bench_equivalent(value)
+        except ValueError as error:
+            self.cultivation_clone_plan_error = str(error)
+            return
+        updated = dict(self.cultivation_historical_plan_allocations)
+        if parsed <= 0:
+            updated.pop(strain, None)
+        else:
+            updated[strain] = parsed
+        self.cultivation_historical_plan_allocations = updated
+
+    @rx.event
+    def change_cultivation_clone_strain_scope(self, value: str):
+        self.cultivation_clone_strain_scope = (
+            value
+            if value in {"Clade9 Strains", "Clade9 + Craft Kings Strains"}
+            else "Clade9 Strains"
+        )
+
+    @rx.event
+    def change_cultivation_new_strain_name(self, value: str):
+        self.cultivation_new_strain_name = value
+        self.cultivation_new_strain_error = ""
+        self.cultivation_new_strain_message = ""
+
+    @rx.event
+    def add_cultivation_provisional_strain(self):
+        label = " ".join(self.cultivation_new_strain_name.strip().split())
+        if not label:
+            self.cultivation_new_strain_error = "Enter a strain name first."
+            return
+        existing = {
+            normalized_strain(value)
+            for value in self._cultivation_planning_strain_names()
+        }
+        if normalized_strain(label) in existing:
+            self.cultivation_new_strain_error = f"{label} is already available."
+            return
+        self.cultivation_provisional_strains = [
+            *self.cultivation_provisional_strains,
+            label,
+        ]
+        self.cultivation_new_strain_name = ""
+        self.cultivation_new_strain_error = ""
+        self.cultivation_new_strain_message = (
+            f"{label} is now available in Clone Planning and exact bench assignment. "
+            "Until it has harvest history, projected yield uses the selected room average."
+        )
+
+    @rx.event
+    def change_cultivation_clone_plan_demand_model(self, value: str):
+        self.cultivation_clone_plan_demand_model = (
+            value
+            if value in {
+                "Experimental Availability-Adjusted",
+                "Current SKU Velocity",
+            }
+            else "Experimental Availability-Adjusted"
+        )
+
+    @rx.event
+    def change_cultivation_clone_plan_allocation(self, strain: str, value: str):
+        self.cultivation_clone_plan_error = ""
+        try:
+            parsed = valid_bench_equivalent(value)
+        except ValueError as error:
+            self.cultivation_clone_plan_error = str(error)
+            return
+        updated = dict(self.cultivation_clone_plan_allocations)
+        if parsed <= 0:
+            updated.pop(strain, None)
+        else:
+            updated[strain] = parsed
+        self.cultivation_clone_plan_allocations = updated
+        self.cultivation_clone_plan_status = "Draft"
+        self.cultivation_clone_plan_dirty = True
+
+    @rx.event
+    def change_cultivation_clone_plan_override_reason(self, value: str):
+        self.cultivation_clone_plan_override_reason = value
+
+    @rx.event
+    def toggle_cultivation_clone_plan_override(self):
+        self.cultivation_clone_plan_override = not self.cultivation_clone_plan_override
+
+    def _clone_plan_capacity_error(self) -> str:
+        period = clone_planning_periods(1)[0]
+        available = sum(
+            float(row.get("square_feet", 0) or 0)
+            for row in room_bench_plans(period["room"])
+        ) / 185.0
+        planned = sum(
+            float(value or 0)
+            for value in self.cultivation_clone_plan_allocations.values()
+        )
+        if planned > available + 0.05:
+            return (
+                f"{period['crop']} has {available:.1f} full-bench equivalents in "
+                f"{period['room']}; the plan currently assigns {planned:.1f}."
+            )
+        return ""
+
+    @rx.event
+    def load_cultivation_clone_plan_history(self):
+        try:
+            self.cultivation_clone_plan_history = load_clone_plans()
+            self.cultivation_clone_plan_history_loaded = True
+        except Exception as error:
+            self.cultivation_clone_plan_error = (
+                "Saved clone-plan history could not be loaded: " + str(error)
+            )
+
+    @rx.event
+    def edit_cultivation_clone_plan_history(self, plan_id: str):
+        plan = next(
+            (
+                row for row in self.cultivation_clone_plan_history
+                if str(row.get("plan_id", "")) == str(plan_id)
+            ),
+            None,
+        )
+        if plan is None:
+            self.cultivation_clone_plan_error = "That saved clone plan could not be found."
+            return
+        self.cultivation_historical_plan_edit_id = str(plan.get("plan_id", ""))
+        self.cultivation_historical_plan_edit_status = str(
+            plan.get("status", "Approved") or "Approved"
+        )
+        self.cultivation_historical_plan_crop = str(plan.get("crop", ""))
+        self.cultivation_historical_plan_allocations = {
+            str(strain): float(value or 0)
+            for strain, value in dict(plan.get("allocations") or {}).items()
+            if float(value or 0) > 0
+        }
+        self.cultivation_historical_plan_entry_version += 1
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = (
+            f"Editing {self.cultivation_historical_plan_crop}. Save changes below to replace its saved allocations."
+        )
+
+    @rx.event
+    def cancel_cultivation_clone_plan_history_edit(self):
+        self.cultivation_historical_plan_edit_id = ""
+        self.cultivation_historical_plan_edit_status = "Approved"
+        self.cultivation_historical_plan_allocations = {}
+        self.cultivation_historical_plan_entry_version += 1
+        self.cultivation_clone_plan_message = ""
+
+    @rx.event
+    def save_cultivation_historical_plan(self):
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = ""
+        allocations = dict(self.cultivation_historical_plan_allocations)
+        if not allocations:
+            self.cultivation_clone_plan_error = (
+                "Enter at least one historical bench allocation before saving."
+            )
+            return
+        existing_plan = next(
+            (
+                row for row in self.cultivation_clone_plan_history
+                if str(row.get("plan_id", "")) == self.cultivation_historical_plan_edit_id
+            ),
+            None,
+        )
+        period = (
+            {
+                "crop": str(existing_plan.get("crop", "")),
+                "room": str(existing_plan.get("flower_room", "")),
+                "clone_cut_date": str(existing_plan.get("clone_cut_date", "")),
+            }
+            if existing_plan is not None
+            else next(
+                (
+                    row for row in prior_clone_planning_periods(8)
+                    if row["crop"] == self.cultivation_historical_plan_crop
+                ),
+                None,
+            )
+        )
+        if period is None:
+            self.cultivation_clone_plan_error = "Select a valid historical crop."
+            return
+        room_capacity = round(
+            sum(
+                float(row.get("square_feet", 0) or 0)
+                for row in room_bench_plans(period["room"])
+            ) / 185.0,
+            1,
+        )
+        planned = round(sum(float(value or 0) for value in allocations.values()), 1)
+        if planned > room_capacity + 0.05:
+            self.cultivation_clone_plan_error = (
+                f"{period['crop']} has {room_capacity:.1f} bench equivalents; "
+                f"the historical entry currently assigns {planned:.1f}."
+            )
+            return
+        self.cultivation_historical_plan_saving = True
+        yield
+        try:
+            plan_id = save_clone_plan(
+                crop=period["crop"],
+                flower_room=period["room"],
+                clone_cut_date=period["clone_cut_date"],
+                demand_model=self.cultivation_clone_plan_demand_model,
+                status=(
+                    self.cultivation_historical_plan_edit_status
+                    if existing_plan is not None else "Approved"
+                ),
+                allocations=allocations,
+                bench_assignments=[],
+                override_reason=(
+                    "Planning history edit"
+                    if existing_plan is not None else "Historical clone-plan backfill"
+                ),
+                updated_by=self.auth_name or self.auth_email or "QCC Reflex User",
+            )
+            self.cultivation_clone_plan_history = load_clone_plans()
+            self.cultivation_clone_plan_history_loaded = True
+            self.cultivation_historical_plan_allocations = {}
+            self.cultivation_historical_plan_edit_id = ""
+            self.cultivation_historical_plan_edit_status = "Approved"
+            self.cultivation_historical_plan_entry_version += 1
+            self.cultivation_clone_plan_message = (
+                f"Plan {plan_id} was saved and now feeds Scheduled supply."
+            )
+        except Exception as error:
+            self.cultivation_clone_plan_error = (
+                "Historical clone plan could not be saved: " + str(error)
+            )
+        finally:
+            self.cultivation_historical_plan_saving = False
+
+    def _clone_plan_save(self, status: str) -> str:
+        period = clone_planning_periods(1)[0]
+        return save_clone_plan(
+            crop=period["crop"],
+            flower_room=period["room"],
+            clone_cut_date=period["clone_cut_date"],
+            demand_model=self.cultivation_clone_plan_demand_model,
+            status=status,
+            allocations=dict(self.cultivation_clone_plan_allocations),
+            bench_assignments=[],
+            override_reason=self.cultivation_clone_plan_override_reason,
+            updated_by=self.auth_name or self.auth_email or "QCC Reflex User",
+        )
+
+    @rx.event
+    def save_cultivation_clone_plan_draft(self):
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = ""
+        if not self.cultivation_clone_plan_allocations:
+            self.cultivation_clone_plan_error = "Enter at least one clone allocation before saving."
+            return
+        capacity_error = self._clone_plan_capacity_error()
+        if capacity_error:
+            self.cultivation_clone_plan_error = capacity_error
+            return
+        if not self.cultivation_clone_plan_editable:
+            self.cultivation_clone_plan_error = (
+                "This clone-cut week is locked. An admin override and reason are required."
+            )
+            return
+        self.cultivation_clone_plan_saving = True
+        yield
+        try:
+            plan_id = self._clone_plan_save("Draft")
+            self.cultivation_clone_plan_status = "Draft"
+            self.cultivation_clone_plan_dirty = False
+            self.cultivation_clone_plan_message = f"Draft {plan_id} was saved."
+            self.cultivation_clone_plan_history = load_clone_plans()
+            self.cultivation_clone_plan_history_loaded = True
+        except Exception as error:
+            self.cultivation_clone_plan_error = "Clone plan could not be saved: " + str(error)
+        finally:
+            self.cultivation_clone_plan_saving = False
+
+    @rx.event
+    def send_clone_plan_to_bench_allocation(self):
+        if not self.cultivation_clone_plan_allocations:
+            self.cultivation_clone_plan_error = "Enter at least one clone allocation first."
+            return
+        capacity_error = self._clone_plan_capacity_error()
+        if capacity_error:
+            self.cultivation_clone_plan_error = capacity_error
+            return
+        period = clone_planning_periods(1)[0]
+        self.cultivation_flower_room = period["room"]
+        self.cultivation_cycle_name = period["crop"]
+        self.cultivation_flower_entry_date = period["flower_entry_date"]
+        self.cultivation_bench_plans = room_bench_plans(
+            period["room"], self.cultivation_plant_density
+        )
+        self.cultivation_view = "clone_allocation"
+        self.cultivation_error = ""
+        self.cultivation_message = (
+            f"{period['crop']} is ready. Assign its planned strains to exact benches, "
+            "then return to Clone Planning to approve it."
+        )
+
+    @rx.event
+    def approve_cultivation_clone_plan(self):
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = ""
+        if not self.cultivation_clone_plan_allocations:
+            self.cultivation_clone_plan_error = "Enter at least one clone allocation first."
+            return
+        capacity_error = self._clone_plan_capacity_error()
+        if capacity_error:
+            self.cultivation_clone_plan_error = capacity_error
+            return
+        if not self.cultivation_clone_plan_editable:
+            self.cultivation_clone_plan_error = (
+                "This clone-cut week is locked. An admin override and reason are required."
+            )
+            return
+        self.cultivation_clone_plan_saving = True
+        yield
+        try:
+            plan_id = self._clone_plan_save("Approved")
+            self.cultivation_clone_plan_status = "Approved"
+            self.cultivation_clone_plan_dirty = False
+            self.cultivation_clone_plan_message = (
+                f"{plan_id} was approved and replaced the prior saved version for this crop. "
+                "It is now available in Saved Facility Clone Allocations."
+            )
+            self.cultivation_clone_plan_history = load_clone_plans()
+            self.cultivation_clone_plan_history_loaded = True
+        except Exception as error:
+            self.cultivation_clone_plan_error = "Clone plan could not be approved: " + str(error)
+        finally:
+            self.cultivation_clone_plan_saving = False
+
+    @rx.event
+    def load_current_clone_plan(self, plan_id: str):
+        period = clone_planning_periods(1)[0]
+        plan = next(
+            (
+                row for row in self.cultivation_clone_plan_history
+                if str(row.get("plan_id", "")) == str(plan_id)
+                and str(row.get("crop", "")) == period["crop"]
+            ),
+            None,
+        )
+        if plan is None:
+            self.cultivation_clone_plan_error = "That current plan could not be loaded."
+            return
+        self.cultivation_clone_plan_allocations = {
+            str(strain): float(value or 0)
+            for strain, value in dict(plan.get("allocations") or {}).items()
+            if float(value or 0) > 0
+        }
+        self.cultivation_clone_plan_demand_model = str(
+            plan.get("demand_model", "Experimental Availability-Adjusted")
+            or "Experimental Availability-Adjusted"
+        )
+        self.cultivation_clone_plan_status = str(plan.get("status", "Approved"))
+        self.cultivation_clone_plan_dirty = False
+        self.cultivation_clone_plan_entry_version += 1
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = (
+            f"{period['crop']} was loaded into the Rolling Clone Planner. "
+            "Make changes and click Approve Plan to replace the saved version."
+        )
+
+    @rx.event
+    def load_approved_clone_plan_to_allocation(self, plan_id: str):
+        plan = next(
+            (
+                row for row in self.cultivation_clone_plan_history
+                if str(row.get("plan_id", "")) == str(plan_id)
+                and str(row.get("status", "")).casefold() == "approved"
+            ),
+            None,
+        )
+        if plan is None:
+            self.cultivation_error = "That approved plan could not be loaded."
+            return
+        clone_cut = date.fromisoformat(str(plan.get("clone_cut_date", "")))
+        self.cultivation_clone_plan_allocations = {
+            str(strain): float(value or 0)
+            for strain, value in dict(plan.get("allocations") or {}).items()
+            if float(value or 0) > 0
+        }
+        self.cultivation_clone_plan_status = "Approved"
+        self.cultivation_clone_plan_dirty = False
+        self.cultivation_flower_room = str(plan.get("flower_room", ""))
+        self.cultivation_cycle_name = str(plan.get("crop", ""))
+        self.cultivation_flower_entry_date = (clone_cut + timedelta(days=40)).isoformat()
+        self.cultivation_bench_plans = room_bench_plans(
+            self.cultivation_flower_room, self.cultivation_plant_density
+        )
+        self.cultivation_error = ""
+        self.cultivation_message = (
+            f"Approved plan {self.cultivation_cycle_name} is loaded. "
+            "Assign its strains to the exact physical benches below."
+        )
+
+    @rx.event
+    def change_cultivation_flower_room(self, value: str):
+        self.cultivation_flower_room = value
+        self.cultivation_bench_plans = room_bench_plans(
+            value, self.cultivation_plant_density
+        )
+        self.cultivation_allocations = []
+        self.cultivation_layout_editing = False
+        self.cultivation_error = ""
+        self.cultivation_message = f"{value}'s default bench layout is ready."
+
+    @rx.event
+    def change_cultivation_cycle_name(self, value: str):
+        self.cultivation_cycle_name = value
+
+    @rx.event
+    def change_cultivation_flower_entry_date(self, value: str):
+        self.cultivation_flower_entry_date = value
+
+    @rx.event
+    def change_cultivation_post_harvest_days(self, value: str):
+        digits = re.sub(r"[^0-9]", "", str(value))
+        self.cultivation_post_harvest_days = max(0, int(digits or 30))
+
+    @rx.event
+    def toggle_cultivation_layout_editing(self):
+        self.cultivation_layout_editing = not self.cultivation_layout_editing
+        self.cultivation_message = (
+            "Room dimensions can now be edited."
+            if self.cultivation_layout_editing
+            else "Room layout locked."
+        )
+
+    @rx.event
+    def reset_cultivation_room_layout(self):
+        self.cultivation_bench_plans = room_bench_plans(
+            self.cultivation_flower_room, self.cultivation_plant_density
+        )
+        self.cultivation_allocations = []
+        self.cultivation_error = ""
+        self.cultivation_message = "The confirmed default room layout was restored."
+
+    def _update_cultivation_bench(
+        self, bench_label: str, updates: dict[str, Any]
+    ) -> None:
+        refreshed: list[BenchPlan] = []
+        for current in self.cultivation_bench_plans:
+            row = dict(current)
+            if str(row.get("bench", "")) == str(bench_label):
+                row.update(updates)
+                length = max(0.0, float(row.get("length", 0) or 0))
+                width = max(0.0, float(row.get("width", 0) or 0))
+                square_feet = round(length * width, 1)
+                row["square_feet"] = square_feet
+                row["target_plants"] = bench_plant_capacity(
+                    square_feet, self.cultivation_plant_density
+                )
+            refreshed.append(row)  # type: ignore[arg-type]
+        self.cultivation_bench_plans = refreshed
+
+    @rx.event
+    def change_cultivation_bench_dimension(
+        self, bench_label: str, dimension: str, value: str
+    ):
+        try:
+            parsed = max(0.0, float(value or 0))
+        except (TypeError, ValueError):
+            parsed = 0.0
+        if dimension not in {"length", "width"}:
+            return
+        self._update_cultivation_bench(bench_label, {dimension: parsed})
+
+    @rx.event
+    def change_cultivation_bench_strain_count(
+        self, bench_label: str, value: str
+    ):
+        digits = re.sub(r"[^0-9]", "", str(value))
+        count = min(3, max(1, int(digits or 1)))
+        p1, p2, p3 = default_split_percentages(count)
+        updates: dict[str, Any] = {
+            "strain_count": count,
+            "percent_1": p1,
+            "percent_2": p2,
+            "percent_3": p3,
+        }
+        if count < 3:
+            updates["strain_3"] = ""
+        if count < 2:
+            updates["strain_2"] = ""
+        self._update_cultivation_bench(bench_label, updates)
+
+    @rx.event
+    def change_cultivation_bench_strain(
+        self, bench_label: str, slot: str, value: str
+    ):
+        if slot not in {"strain_1", "strain_2", "strain_3"}:
+            return
+        self._update_cultivation_bench(bench_label, {slot: value})
+
+    @rx.event
+    def change_cultivation_bench_percent(
+        self, bench_label: str, slot: str, value: str
+    ):
+        if slot not in {"percent_1", "percent_2", "percent_3"}:
+            return
+        try:
+            parsed = min(100.0, max(0.0, float(value or 0)))
+        except (TypeError, ValueError):
+            parsed = 0.0
+        self._update_cultivation_bench(bench_label, {slot: parsed})
+
+    @rx.event
+    def change_cultivation_overage(self, value: str):
+        digits = re.sub(r"[^0-9]", "", str(value))
+        self.cultivation_overage_percent = min(30, max(25, int(digits or 30)))
+
+    @rx.event
+    def change_cultivation_plant_density(self, value: str):
+        try:
+            density = float(value or 0.75)
+        except (TypeError, ValueError):
+            density = 0.75
+        self.cultivation_plant_density = round(min(2.0, max(0.1, density)), 2)
+        refreshed: list[BenchPlan] = []
+        for current in self.cultivation_bench_plans:
+            row = dict(current)
+            row["target_plants"] = bench_plant_capacity(
+                float(row.get("square_feet", 0) or 0),
+                self.cultivation_plant_density,
+            )
+            refreshed.append(row)  # type: ignore[arg-type]
+        self.cultivation_bench_plans = refreshed
+        self.cultivation_message = (
+            f"Plant counts, clone cuts, and dome counts now use "
+            f"{self.cultivation_plant_density:.2f} plants per sq ft."
+        )
+
+    @rx.event
+    def clear_cultivation_allocations(self):
+        refreshed: list[BenchPlan] = []
+        for current in self.cultivation_bench_plans:
+            row = dict(current)
+            row.update({
+                "strain_count": 1,
+                "strain_1": "",
+                "percent_1": 100.0,
+                "strain_2": "",
+                "percent_2": 0.0,
+                "strain_3": "",
+                "percent_3": 0.0,
+            })
+            refreshed.append(row)  # type: ignore[arg-type]
+        self.cultivation_bench_plans = refreshed
+        self.cultivation_allocations = []
+        self.cultivation_error = ""
+        self.cultivation_message = "Clone allocation cleared."
+
+    @rx.event
+    def load_saved_clone_allocations(self):
+        try:
+            self.cultivation_saved_allocations = load_clone_allocations()
+            self.cultivation_saved_loaded = True
+        except Exception as error:
+            self.cultivation_error = (
+                "Saved clone allocations could not be loaded: " + str(error)
+            )
+
+    @rx.event
+    def save_cultivation_allocation(self):
+        self.cultivation_error = ""
+        self.cultivation_message = ""
+        if not self.cultivation_cycle_name.strip():
+            self.cultivation_error = "Enter a cycle or crop name before saving."
+            return
+        if not self.cultivation_strain_summary_rows:
+            self.cultivation_error = "Allocate at least one strain before saving."
+            return
+        if self.cultivation_unbalanced_benches:
+            self.cultivation_error = (
+                "Correct bench percentages before saving: "
+                + self.cultivation_unbalanced_benches
+            )
+            return
+        self.cultivation_saving = True
+        yield
+        try:
+            allocation_id = create_clone_allocation(
+                cycle_name=self.cultivation_cycle_name,
+                flower_room=self.cultivation_flower_room,
+                flower_entry_date=self.cultivation_flower_entry_date,
+                clone_cut_date=self.cultivation_cut_date,
+                veg_transfer_date=self.cultivation_veg_transfer_date,
+                harvest_date=self.cultivation_harvest_date,
+                available_date=self.cultivation_available_date,
+                overage_percent=self.cultivation_overage_percent,
+                post_harvest_days=self.cultivation_post_harvest_days,
+                bench_plans=[dict(row) for row in self.cultivation_bench_plans],
+                strain_summary=[
+                    dict(row) for row in self.cultivation_strain_summary_rows
+                ],
+                created_by=self.auth_name or self.auth_email or "QCC Reflex User",
+            )
+            self.cultivation_saved_allocations = load_clone_allocations()
+            self.cultivation_saved_loaded = True
+            self.cultivation_message = (
+                f"{self.cultivation_cycle_name} was saved as facility clone "
+                f"allocation {allocation_id}."
+            )
+        except Exception as error:
+            self.cultivation_error = "Clone allocation could not be saved: " + str(error)
+        finally:
+            self.cultivation_saving = False
+
+    @rx.event
+    def load_cultivation_allocation(self, allocation_id: str):
+        plan = next(
+            (
+                row for row in self.cultivation_saved_allocations
+                if str(row.get("allocation_id", "")) == str(allocation_id)
+            ),
+            None,
+        )
+        if not plan:
+            self.cultivation_error = "That saved clone allocation was not found."
+            return
+        self.cultivation_cycle_name = str(plan.get("cycle_name", ""))
+        self.cultivation_flower_room = str(
+            plan.get("flower_room", "Flower Room 1")
+        )
+        self.cultivation_flower_entry_date = str(
+            plan.get("flower_entry_date", self.cultivation_flower_entry_date)
+        )
+        self.cultivation_overage_percent = int(
+            plan.get("overage_percent", 30) or 30
+        )
+        self.cultivation_post_harvest_days = int(
+            plan.get("post_harvest_days", DEFAULT_POST_HARVEST_DAYS)
+            or DEFAULT_POST_HARVEST_DAYS
+        )
+        stored_benches = plan.get("bench_plans") or []
+        defaults = {
+            str(row.get("bench", "")): row
+            for row in room_bench_plans(
+                self.cultivation_flower_room, self.cultivation_plant_density
+            )
+        }
+        if stored_benches:
+            restored: list[BenchPlan] = []
+            for stored in stored_benches:
+                bench_name = str(stored.get("bench", ""))
+                merged = dict(defaults.get(bench_name, {}))
+                merged.update(dict(stored))
+                restored.append(merged)  # type: ignore[arg-type]
+            self.cultivation_bench_plans = restored
+        else:
+            self.cultivation_bench_plans = list(defaults.values())
+        self.cultivation_layout_editing = False
+        self.cultivation_error = ""
+        self.cultivation_message = (
+            f"Loaded {self.cultivation_cycle_name} for review or reuse."
+        )
+
+    @rx.var(cache=True)
+    def cultivation_cut_date(self) -> str:
+        try:
+            return cultivation_timeline(self.cultivation_flower_entry_date)[
+                "clone_cut_date"
+            ]
+        except (TypeError, ValueError):
+            return "—"
+
+    @rx.var(cache=True)
+    def cultivation_veg_transfer_date(self) -> str:
+        try:
+            return cultivation_timeline(self.cultivation_flower_entry_date)[
+                "veg_transfer_date"
+            ]
+        except (TypeError, ValueError):
+            return "—"
+
+    @rx.var(cache=True)
+    def cultivation_harvest_date(self) -> str:
+        try:
+            return projected_harvest_dates(
+                self.cultivation_flower_entry_date,
+                self.cultivation_post_harvest_days,
+            )["harvest_date"]
+        except (TypeError, ValueError):
+            return "—"
+
+    @rx.var(cache=True)
+    def cultivation_available_date(self) -> str:
+        try:
+            return projected_harvest_dates(
+                self.cultivation_flower_entry_date,
+                self.cultivation_post_harvest_days,
+            )["available_date"]
+        except (TypeError, ValueError):
+            return "—"
+
+    def _cultivation_planning_strain_names(self) -> list[str]:
+        values: dict[str, str] = {}
+
+        def add(value: Any):
+            label = " ".join(str(value or "").strip().split())
+            key = normalized_strain(label)
+            if key and key not in values:
+                values[key] = label
+
+        for strain in CLADE9_CLONE_STRAINS:
+            add(strain)
+        if self.cultivation_clone_strain_scope == "Clade9 + Craft Kings Strains":
+            for strain in CRAFT_KINGS_CLONE_STRAINS:
+                add(strain)
+        for strain in self.cultivation_provisional_strains:
+            add(strain)
+        for strain in self.cultivation_clone_plan_allocations:
+            add(strain)
+        for strain in self.cultivation_historical_plan_allocations:
+            add(strain)
+        for plan in self.cultivation_clone_plan_history:
+            for strain in dict(plan.get("allocations") or {}):
+                add(strain)
+        for bench in self.cultivation_bench_plans:
+            for slot in range(1, 4):
+                add(bench.get(f"strain_{slot}", ""))
+        return sorted(values.values(), key=str.casefold)
+
+    @rx.var(cache=True)
+    def cultivation_strain_options(self) -> list[str]:
+        return self._cultivation_planning_strain_names()
+
+    @rx.var(cache=True)
+    def cultivation_clone_plan_periods(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for index, period in enumerate(clone_planning_periods(13)):
+            cut = date.fromisoformat(period["clone_cut_date"])
+            rows.append({
+                **period,
+                "date_label": f"{cut.strftime('%b')} {cut.day}",
+                "header": f"{period['crop']} · {cut.strftime('%b')} {cut.day}",
+                "is_current": index == 0,
+            })
+        return rows
+
+    @rx.var(cache=True)
+    def cultivation_clone_plan_editable(self) -> bool:
+        period = clone_planning_periods(1)[0]
+        override_allowed = (
+            self.cultivation_clone_plan_override
+            and bool(self.cultivation_clone_plan_override_reason.strip())
+            and self.auth_role.casefold() in {"admin", "administrator"}
+        )
+        return clone_plan_is_editable(
+            period["clone_cut_date"], override=override_allowed
+        )
+
+    @rx.var(cache=True)
+    def cultivation_clone_plan_edit_window_label(self) -> str:
+        period = clone_planning_periods(1)[0]
+        start, end = clone_plan_edit_window(period["clone_cut_date"])
+        return (
+            f"Editable through {end.strftime('%b')} {end.day}, {end.year} "
+            f"(clone-cut week starts {start.strftime('%b')} {start.day})."
+        )
+
+    def _clone_plan_weekly_demand_by_strain(self) -> dict[str, float]:
+        totals: dict[str, float] = {}
+        experimental = self.cultivation_clone_plan_demand_model.startswith("Experimental")
+        if experimental:
+            for row in self.availability_demand_summary:
+                sku = str(row.get("SKU Type", "") or "")
+                grams_per_unit = sku_fill_grams(sku)
+                key = normalized_strain(row.get("Strain", ""))
+                if key and grams_per_unit > 0:
+                    units = self._number(row, "Experimental Adjusted Velocity")
+                    totals[key] = totals.get(key, 0.0) + units * grams_per_unit / 453.59237
+        for row in self.velocity:
+            sku = str(row.get("SKU Type", "") or "")
+            sku_lower = sku.casefold()
+            is_flower = any(size in sku_lower for size in ("1g flower", "3.5g flower", "7g flower"))
+            is_preroll = "pre-roll" in sku_lower or "preroll" in sku_lower
+            if not (is_flower or is_preroll):
+                continue
+            if experimental and is_flower:
+                continue
+            key = normalized_strain(row.get("Strain", ""))
+            grams_per_unit = sku_fill_grams(sku)
+            if not key or grams_per_unit <= 0:
+                continue
+            units = self._number(row, "Avg Weekly Units")
+            totals[key] = totals.get(key, 0.0) + units * grams_per_unit / 453.59237
+        return totals
+
+    def _clone_plan_actual_crop_lbs(self) -> dict[tuple[str, str], float]:
+        totals: dict[tuple[str, str], float] = {}
+        crop_names = {str(row["crop"]).casefold() for row in UPCOMING_CROP_ALLOCATIONS}
+        for row in self.all_inventory:
+            if not inventory_counts_as_current_cultivation_supply(row):
+                continue
+            evidence = " ".join(
+                str(row.get(field, "") or "")
+                for field in (
+                    "Source Harvest Name(s)", "Source Harvest", "Source Production Batch",
+                    "Production Batch Number", "Lot", "Production Batch",
+                )
+            ).casefold()
+            crop = next((name for name in crop_names if name in evidence), "")
+            strain = normalized_strain(row.get("Strain", ""))
+            if not crop or not strain:
+                continue
+            key = (crop, strain)
+            totals[key] = totals.get(key, 0.0) + max(
+                0.0, self._number(row, "Calculated Weight (g)")
+            ) / 453.59237
+        return totals
+
+    def _clone_plan_scheduled_by_period(
+        self, periods: list[dict[str, Any]]
+    ) -> dict[str, list[float]]:
+        result: dict[str, list[float]] = {}
+        actual = self._clone_plan_actual_crop_lbs()
+        grouped: dict[tuple[str, str, str, str], float] = {}
+        for crop in UPCOMING_CROP_ALLOCATIONS:
+            group_key = (
+                str(crop["crop"]),
+                str(crop["room"]),
+                str(crop["harvest_date"]),
+                normalized_strain(crop["strain"]),
+            )
+            grouped[group_key] = grouped.get(group_key, 0.0) + float(crop["square_feet"])
+
+        for (crop_name, room, harvest_date, strain_key), square_feet in grouped.items():
+            available = date.fromisoformat(harvest_date) + timedelta(
+                days=self.cultivation_post_harvest_days
+            )
+            position = next((
+                index for index, period in enumerate(periods)
+                if date.fromisoformat(period["clone_cut_date"])
+                <= available
+                <= date.fromisoformat(period["clone_cut_date"]) + timedelta(days=13)
+            ), None)
+            if position is None:
+                continue
+            estimated = estimated_yield_pounds(
+                square_feet, strain_key, room
+            )
+            actual_key = (crop_name.casefold(), strain_key)
+            residual = max(0.0, estimated - actual.get(actual_key, 0.0))
+            buckets = result.setdefault(strain_key, [0.0] * len(periods))
+            buckets[position] += residual
+
+        known_crops = {str(row["crop"]).casefold() for row in UPCOMING_CROP_ALLOCATIONS}
+        for plan in self.cultivation_clone_plan_history:
+            crop_name = str(plan.get("crop", "") or "").strip()
+            if (
+                not crop_name
+                or crop_name.casefold() in known_crops
+                or str(plan.get("status", "") or "").casefold() != "approved"
+            ):
+                continue
+            try:
+                available = date.fromisoformat(str(plan.get("clone_cut_date", ""))) + timedelta(
+                    days=40 + 68 + self.cultivation_post_harvest_days
+                )
+            except ValueError:
+                continue
+            position = next((
+                index for index, period in enumerate(periods)
+                if date.fromisoformat(period["clone_cut_date"])
+                <= available
+                <= date.fromisoformat(period["clone_cut_date"]) + timedelta(days=13)
+            ), None)
+            if position is None:
+                continue
+            room = str(plan.get("flower_room", "") or "")
+            for strain, bench_value in dict(plan.get("allocations") or {}).items():
+                benches = float(bench_value or 0)
+                strain_key = normalized_strain(strain)
+                if benches <= 0 or not strain_key:
+                    continue
+                estimated = estimated_yield_pounds(benches * 185.0, strain, room)
+                buckets = result.setdefault(strain_key, [0.0] * len(periods))
+                buckets[position] += estimated
+        return result
+
+    @rx.var(cache=True)
+    def cultivation_clone_plan_lookback_rows(self) -> list[dict[str, Any]]:
+        limit = 8 if self.cultivation_clone_plan_lookback == "Last 8 Plans" else 4
+        current_crop = clone_planning_periods(1)[0]["crop"]
+        historical = [
+            row for row in self.cultivation_clone_plan_history
+            if str(row.get("crop", "")) != current_crop
+        ]
+        return historical[:limit]
+
+    @rx.var(cache=True)
+    def cultivation_current_plan_history_rows(self) -> list[dict[str, Any]]:
+        current_crop = clone_planning_periods(1)[0]["crop"]
+        return [
+            row for row in self.cultivation_clone_plan_history
+            if str(row.get("crop", "")) == current_crop
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_approved_current_plan_rows(self) -> list[dict[str, Any]]:
+        current_crop = clone_planning_periods(1)[0]["crop"]
+        rows: list[dict[str, Any]] = []
+        for plan in self.cultivation_clone_plan_history:
+            if (
+                str(plan.get("crop", "")) != current_crop
+                or str(plan.get("status", "")).casefold() != "approved"
+            ):
+                continue
+            try:
+                flower_entry = date.fromisoformat(
+                    str(plan.get("clone_cut_date", ""))
+                ) + timedelta(days=40)
+                flower_entry_text = flower_entry.isoformat()
+            except ValueError:
+                flower_entry_text = ""
+            rows.append({
+                **plan,
+                "flower_entry_date": flower_entry_text,
+            })
+        return rows
+
+    @rx.var(cache=True)
+    def cultivation_historical_plan_crop_options(self) -> list[str]:
+        options = [period["crop"] for period in prior_clone_planning_periods(8)]
+        if (
+            self.cultivation_historical_plan_edit_id
+            and self.cultivation_historical_plan_crop not in options
+        ):
+            options.insert(0, self.cultivation_historical_plan_crop)
+        return options
+
+    @rx.var(cache=True)
+    def cultivation_historical_plan_total(self) -> str:
+        total = sum(
+            float(value or 0)
+            for value in self.cultivation_historical_plan_allocations.values()
+        )
+        return f"{total:.1f} benches"
+
+    @rx.var(cache=True)
+    def cultivation_historical_plan_entry_rows(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "strain": strain,
+                "allocation": float(
+                    self.cultivation_historical_plan_allocations.get(strain, 0.0) or 0.0
+                ),
+            }
+            for strain in self.cultivation_strain_options
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_clone_plan_matrix_rows(self) -> list[ClonePlanMatrixRow]:
+        periods = self.cultivation_clone_plan_periods
+        current_breakdown = self._cultivation_current_inventory_breakdown_by_strain()
+        current = {
+            key: float(values.get("total_lbs", 0) or 0)
+            for key, values in current_breakdown.items()
+        }
+        demand = self._clone_plan_weekly_demand_by_strain()
+        scheduled = self._clone_plan_scheduled_by_period(periods)
+        plan_period = clone_planning_periods(1)[0]
+        plan_available = date.fromisoformat(plan_period["available_date"])
+        plan_bucket = next((
+            index for index, period in enumerate(periods)
+            if date.fromisoformat(period["clone_cut_date"])
+            <= plan_available
+            <= date.fromisoformat(period["clone_cut_date"]) + timedelta(days=13)
+        ), len(periods) - 1)
+        strains = self._cultivation_planning_strain_names()
+        rows: list[ClonePlanMatrixRow] = []
+
+        def matrix_value(
+            value: float,
+            *,
+            highlight: bool = False,
+            show_breakdown: bool = False,
+            breakdown: dict[str, float] | None = None,
+        ) -> dict[str, Any]:
+            detail = breakdown or {}
+            return {
+                "value": value,
+                "highlight": highlight,
+                "show_breakdown": show_breakdown,
+                "tested_lbs": round(float(detail.get("tested_lbs", 0) or 0), 1),
+                "untested_lbs": round(float(detail.get("untested_lbs", 0) or 0), 1),
+                "passed_quarantine_lbs": round(
+                    float(detail.get("passed_quarantine_lbs", 0) or 0), 1
+                ),
+                "current_total_lbs": round(float(detail.get("total_lbs", 0) or 0), 1),
+            }
+
+        for strain in strains:
+            key = normalized_strain(strain)
+            breakdown = current_breakdown.get(key, {})
+            weekly = demand.get(key, 0.0)
+            scheduled_values = list(scheduled.get(key, [0.0] * len(periods)))
+            allocation = float(self.cultivation_clone_plan_allocations.get(strain, 0.0) or 0.0)
+            if allocation > 0:
+                scheduled_values[plan_bucket] += estimated_yield_pounds(
+                    allocation * 185.0, strain, plan_period["room"]
+                )
+            balance = current.get(key, 0.0)
+            balance_values: list[float] = []
+            for supply in scheduled_values:
+                balance_values.append(round(balance, 1))
+                balance = balance + supply - (2 * weekly)
+            rows.extend([
+                {
+                    "strain": strain, "metric": "Clone Allocation",
+                    "allocation": allocation,
+                    "weekly_demand": weekly,
+                    "values": [
+                        matrix_value(value)
+                        for value in [allocation, *([0.0] * (len(periods) - 1))]
+                    ],
+                },
+                {
+                    "strain": strain, "metric": "Current Pounds",
+                    "allocation": 0.0, "weekly_demand": weekly,
+                    "values": [
+                        matrix_value(
+                            value,
+                            show_breakdown=index == 0,
+                            breakdown=breakdown,
+                        )
+                        for index, value in enumerate(balance_values)
+                    ],
+                },
+                {
+                    "strain": strain, "metric": "Scheduled",
+                    "allocation": 0.0,
+                    "weekly_demand": weekly,
+                    "values": [
+                        matrix_value(
+                            round(value, 1),
+                            highlight=bool(
+                                self.cultivation_clone_plan_dirty
+                                and allocation > 0
+                                and index == plan_bucket
+                            ),
+                        )
+                        for index, value in enumerate(scheduled_values)
+                    ],
+                },
+                {
+                    "strain": strain, "metric": "Two-Week Demand",
+                    "allocation": 0.0,
+                    "weekly_demand": weekly,
+                    "values": [
+                        matrix_value(round(2 * weekly, 1))
+                        for _ in periods
+                    ],
+                },
+            ])
+        return rows
+
+    @rx.var(cache=True)
+    def cultivation_clone_plan_total_benches(self) -> str:
+        total = sum(float(value or 0) for value in self.cultivation_clone_plan_allocations.values())
+        return f"{total:.1f} benches"
+
+    @rx.var(cache=True)
+    def cultivation_clone_plan_room_capacity(self) -> str:
+        period = clone_planning_periods(1)[0]
+        equivalents = sum(
+            float(row.get("square_feet", 0) or 0)
+            for row in room_bench_plans(period["room"])
+        ) / 185.0
+        return f"{equivalents:.1f} benches"
+
+    @rx.var(cache=True)
+    def cultivation_clone_plan_total_clones(self) -> str:
+        plants = bench_plant_capacity(
+            sum(float(value or 0) for value in self.cultivation_clone_plan_allocations.values()) * 185.0
+        )
+        recommendation = recommend_clone_trays(plants, self.cultivation_overage_percent)
+        return f"{recommendation['recommended_clones']:,} clones · {recommendation['trays']} trays"
+
+    def _cultivation_allocation_records(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for bench in self.cultivation_bench_plans:
+            count = min(3, max(1, int(bench.get("strain_count", 1) or 1)))
+            target = int(bench.get("target_plants", 0) or 0)
+            square_feet = float(bench.get("square_feet", 0) or 0)
+            for index in range(1, count + 1):
+                strain = str(bench.get(f"strain_{index}", "") or "").strip()
+                percent = float(bench.get(f"percent_{index}", 0) or 0)
+                if not strain or percent <= 0:
+                    continue
+                records.append({
+                    "bench": str(bench.get("bench", "")),
+                    "strain": strain,
+                    "percent": round(percent, 1),
+                    "square_feet": round(square_feet * percent / 100, 1),
+                    "target_plants": max(0, math.floor((target * percent / 100) + 0.5)),
+                })
+        return records
+
+    @rx.var(cache=True)
+    def cultivation_unbalanced_benches(self) -> str:
+        problems: list[str] = []
+        for bench in self.cultivation_bench_plans:
+            count = min(3, max(1, int(bench.get("strain_count", 1) or 1)))
+            total = sum(
+                float(bench.get(f"percent_{index}", 0) or 0)
+                for index in range(1, count + 1)
+            )
+            selected = all(
+                str(bench.get(f"strain_{index}", "") or "").strip()
+                for index in range(1, count + 1)
+            )
+            if selected and abs(total - 100) > 0.1:
+                problems.append(f"{bench.get('bench', '')} ({total:.0f}%)")
+        return ", ".join(problems)
+
+    @rx.var(cache=True)
+    def cultivation_allocated_bench_count(self) -> str:
+        benches = {row["bench"] for row in self._cultivation_allocation_records()}
+        return f"{len(benches)} of {len(self.cultivation_bench_plans)} benches"
+
+    @rx.var(cache=True)
+    def cultivation_room_square_feet(self) -> str:
+        total = sum(float(row.get("square_feet", 0) or 0) for row in self.cultivation_bench_plans)
+        return f"{total:,.1f} sq ft"
+
+    @rx.var(cache=True)
+    def cultivation_strain_summary_rows(self) -> list[dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        bench_order = {
+            str(row.get("bench", "")): position
+            for position, row in enumerate(self.cultivation_bench_plans)
+        }
+        for row in self._cultivation_allocation_records():
+            key = normalized_strain(row["strain"])
+            bucket = grouped.setdefault(key, {
+                "strain": row["strain"], "benches": set(), "square_feet": 0.0,
+                "target_plants": 0,
+            })
+            bucket["benches"].add(row["bench"])
+            bucket["square_feet"] += float(row["square_feet"])
+            bucket["target_plants"] += int(row["target_plants"])
+        summary: list[dict[str, Any]] = []
+        for bucket in grouped.values():
+            recommendation = recommend_clone_trays(
+                int(bucket["target_plants"]), self.cultivation_overage_percent
+            )
+            square_feet = round(float(bucket["square_feet"]), 1)
+            strain = str(bucket["strain"])
+            ordered_benches = sorted(
+                bucket["benches"],
+                key=lambda value: bench_order.get(str(value), 999),
+            )
+            summary.append({
+                "strain": strain,
+                "benches": ", ".join(ordered_benches),
+                "bench_sort": min(
+                    (bench_order.get(str(value), 999) for value in ordered_benches),
+                    default=999,
+                ),
+                "square_feet": square_feet,
+                "plant_density": f"{self.cultivation_plant_density:.2f}",
+                "target_plants": int(bucket["target_plants"]),
+                "trays": recommendation["trays"],
+                "domes": recommendation["trays"],
+                "recommended_clones": recommendation["recommended_clones"],
+                "actual_overage_percent": recommendation["actual_overage_percent"],
+                "projected_yield_lbs": estimated_yield_pounds(
+                    square_feet, strain, self.cultivation_flower_room
+                ),
+            })
+        return sorted(
+            summary,
+            key=lambda row: (
+                int(row.get("bench_sort", 999)),
+                str(row["strain"]).lower(),
+            ),
+        )
+
+    @rx.var(cache=True)
+    def cultivation_total_target_plants(self) -> str:
+        return f"{sum(int(row.get('target_plants', 0) or 0) for row in self.cultivation_strain_summary_rows):,}"
+
+    @rx.var(cache=True)
+    def cultivation_total_clone_cuts(self) -> str:
+        return f"{sum(int(row.get('recommended_clones', 0) or 0) for row in self.cultivation_strain_summary_rows):,}"
+
+    @rx.var(cache=True)
+    def cultivation_total_trays(self) -> str:
+        return f"{sum(int(row.get('trays', 0) or 0) for row in self.cultivation_strain_summary_rows):,}"
+
+    @rx.var(cache=True)
+    def cultivation_projected_yield(self) -> str:
+        total = sum(
+            float(row.get("projected_yield_lbs", 0) or 0)
+            for row in self.cultivation_strain_summary_rows
+        )
+        return f"{total:,.1f} lb"
+
+    def _cultivation_current_inventory_breakdown_by_strain(
+        self,
+    ) -> dict[str, dict[str, float]]:
+        totals: dict[str, dict[str, float]] = {}
+        for row in self.all_inventory:
+            bucket = cultivation_flower_supply_bucket(row)
+            if not bucket:
+                continue
+            key = normalized_strain(row.get("Strain", ""))
+            if not key:
+                continue
+            pounds = max(
+                0.0, self._number(row, "Calculated Weight (g)")
+            ) / 453.59237
+            detail = totals.setdefault(key, {
+                "tested_lbs": 0.0,
+                "untested_lbs": 0.0,
+                "passed_quarantine_lbs": 0.0,
+                "total_lbs": 0.0,
+            })
+            field = {
+                "Tested Flower": "tested_lbs",
+                "Untested Flower": "untested_lbs",
+                "Passed Quarantine Flower": "passed_quarantine_lbs",
+            }[bucket]
+            detail[field] += pounds
+            detail["total_lbs"] += pounds
+        return totals
+
+    def _cultivation_current_inventory_by_strain(self) -> dict[str, float]:
+        return {
+            key: float(values.get("total_lbs", 0) or 0)
+            for key, values in self._cultivation_current_inventory_breakdown_by_strain().items()
+        }
+
+    @rx.var(cache=True)
+    def cultivation_demand_brand_options(self) -> list[str]:
+        values = sorted({
+            str(row.get("Brand", "") or "").strip()
+            for row in self.availability_demand_summary
+            if str(row.get("Brand", "") or "").strip()
+        })
+        return ["All Brands", *values]
+
+    @rx.var(cache=True)
+    def cultivation_demand_strain_options(self) -> list[str]:
+        values = sorted({
+            str(row.get("Strain", "") or "").strip()
+            for row in self.availability_demand_summary
+            if (
+                self.cultivation_demand_brand_filter == "All Brands"
+                or row.get("Brand") == self.cultivation_demand_brand_filter
+            )
+            if str(row.get("Strain", "") or "").strip()
+        })
+        return ["All Strains", *values]
+
+    @rx.var(cache=True)
+    def cultivation_demand_summary_rows(self) -> list[list[Any]]:
+        rows = self.availability_demand_summary
+        if self.cultivation_demand_brand_filter != "All Brands":
+            rows = [
+                row for row in rows
+                if row.get("Brand") == self.cultivation_demand_brand_filter
+            ]
+        if self.cultivation_demand_strain_filter != "All Strains":
+            rows = [
+                row for row in rows
+                if row.get("Strain") == self.cultivation_demand_strain_filter
+            ]
+        if self.cultivation_demand_sku_filter != "All Compared SKUs":
+            rows = [
+                row for row in rows
+                if row.get("SKU Type") == self.cultivation_demand_sku_filter
+            ]
+        return [[
+            row.get("Brand", ""),
+            row.get("Strain", ""),
+            row.get("SKU Type", ""),
+            row.get("First Ship Week", ""),
+            row.get("Last Ship Week", ""),
+            row.get("Calendar Weeks", 0),
+            row.get("Shipping Weeks", 0),
+            row.get("Likely Constrained Weeks", 0),
+            row.get("Recent Gap Weeks", 0),
+            row.get("Current Velocity", 0),
+            row.get("Experimental Adjusted Velocity", 0),
+            row.get("Adjustment", ""),
+            row.get("Signal", ""),
+        ] for row in rows]
+
+    @rx.var(cache=True)
+    def cultivation_demand_weekly_rows(self) -> list[list[Any]]:
+        if self.cultivation_demand_strain_filter == "All Strains":
+            return []
+        rows = [
+            row for row in self.availability_demand_weekly
+            if row.get("Strain") == self.cultivation_demand_strain_filter
+        ]
+        if self.cultivation_demand_brand_filter != "All Brands":
+            rows = [
+                row for row in rows
+                if row.get("Brand") == self.cultivation_demand_brand_filter
+            ]
+        if self.cultivation_demand_sku_filter != "All Compared SKUs":
+            rows = [
+                row for row in rows
+                if row.get("SKU Type") == self.cultivation_demand_sku_filter
+            ]
+        return [[
+            row.get("Week Starting", ""),
+            row.get("SKU Type", ""),
+            row.get("Units Shipped", 0),
+            row.get("Availability Signal", ""),
+        ] for row in rows]
+
+    @rx.var(cache=True)
+    def cultivation_demand_page_size(self) -> int:
+        return int(self.cultivation_demand_rows_per_page)
+
+    @rx.var(cache=True)
+    def cultivation_demand_sku_count(self) -> str:
+        return f"{len(self.availability_demand_summary):,}"
+
+    @rx.var(cache=True)
+    def cultivation_demand_strain_count(self) -> str:
+        return f"{len({str(row.get('Strain', '') or '') for row in self.availability_demand_summary if row.get('Strain')}):,}"
+
+    @rx.var(cache=True)
+    def cultivation_demand_constraint_count(self) -> str:
+        return f"{sum(int(row.get('Likely Constrained Weeks', 0) or 0) for row in self.availability_demand_summary):,}"
+
+    def _cultivation_expiring_by_strain(self, horizon_days: int) -> dict[str, float]:
+        totals: dict[str, float] = {}
+        for row in self.all_inventory:
+            if not inventory_counts_as_current_cultivation_supply(row):
+                continue
+            days = self._optional_number(row, "Days to Spoil")
+            if days is None or days <= 0 or days > horizon_days:
+                continue
+            key = normalized_strain(row.get("Strain", ""))
+            grams = self._number(row, "Calculated Weight (g)")
+            totals[key] = totals.get(key, 0.0) + max(0.0, grams) / 453.59237
+        return totals
+
+    def _cultivation_weekly_demand_by_strain(self) -> dict[str, float]:
+        totals: dict[str, float] = {}
+        for row in self.velocity:
+            key = normalized_strain(row.get("Strain", ""))
+            grams_per_unit = sku_fill_grams(row.get("SKU Type", ""))
+            if not key or grams_per_unit <= 0:
+                continue
+            weekly_units = self._number(row, "Avg Weekly Units")
+            totals[key] = totals.get(key, 0.0) + (
+                max(0.0, weekly_units) * grams_per_unit / 453.59237
+            )
+        return totals
+
+    @rx.var(cache=True)
+    def cultivation_future_yield_rows(self) -> list[dict[str, Any]]:
+        planned = self.cultivation_strain_summary_rows
+        if not planned:
+            return []
+        try:
+            available = date.fromisoformat(self.cultivation_available_date)
+        except (TypeError, ValueError):
+            return []
+        today = date.today()
+        horizon_days = max(1, (available - today).days)
+        horizon_weeks = horizon_days / 7
+        current = self._cultivation_current_inventory_by_strain()
+        expiring = self._cultivation_expiring_by_strain(horizon_days)
+        demand = self._cultivation_weekly_demand_by_strain()
+        scheduled: dict[str, float] = {}
+        scheduled_arrivals: dict[str, list[date]] = {}
+        for crop in UPCOMING_CROP_ALLOCATIONS:
+            harvest = date.fromisoformat(crop["harvest_date"])
+            crop_available = harvest + timedelta(days=self.cultivation_post_harvest_days)
+            if not crop_is_scheduled_supply(
+                harvest, today, available, self.cultivation_post_harvest_days
+            ):
+                continue
+            key = normalized_strain(crop["strain"])
+            scheduled[key] = scheduled.get(key, 0.0) + estimated_yield_pounds(
+                crop["square_feet"], crop["strain"], crop["room"]
+            )
+            scheduled_arrivals.setdefault(key, []).append(crop_available)
+        rows: list[dict[str, Any]] = []
+        for plan in planned:
+            key = normalized_strain(plan["strain"])
+            current_lbs = current.get(key, 0.0)
+            scheduled_lbs = scheduled.get(key, 0.0)
+            proposed_lbs = float(plan.get("projected_yield_lbs", 0) or 0)
+            weekly_lbs = demand.get(key, 0.0)
+            expiring_lbs = expiring.get(key, 0.0)
+            arrival_dates = scheduled_arrivals.get(key, [])
+            if not arrival_dates:
+                scheduled_window = "—"
+            else:
+                first_arrival = min(arrival_dates)
+                last_arrival = max(arrival_dates)
+                first_label = f"{first_arrival.strftime('%b')} {first_arrival.day}"
+                last_label = f"{last_arrival.strftime('%b')} {last_arrival.day}"
+                scheduled_window = (
+                    first_label
+                    if first_arrival == last_arrival
+                    else f"{first_label} – {last_label}"
+                )
+            balance = max(
+                0.0,
+                current_lbs + scheduled_lbs + proposed_lbs
+                - (weekly_lbs * horizon_weeks) - expiring_lbs,
+            )
+            weeks_supply = None if weekly_lbs <= 0 else balance / weekly_lbs
+            rows.append({
+                "strain": plan["strain"],
+                "current_lbs": round(current_lbs, 1),
+                "scheduled_lbs": round(scheduled_lbs, 1),
+                "scheduled_window": scheduled_window,
+                "proposed_lbs": round(proposed_lbs, 1),
+                "weekly_demand_lbs": round(weekly_lbs, 1),
+                "expiring_lbs": round(expiring_lbs, 1),
+                "projected_balance_lbs": round(balance, 1),
+                "weeks_supply": "—" if weeks_supply is None else f"{weeks_supply:.1f}",
+                "risk": projected_risk(weeks_supply),
+            })
+        return sorted(rows, key=lambda row: (str(row["risk"]), str(row["strain"])))
+
+    @rx.var(cache=True)
+    def cultivation_upcoming_crop_rows(self) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, str, str], float] = {}
+        today = date.today()
+        for crop in UPCOMING_CROP_ALLOCATIONS:
+            harvest = date.fromisoformat(crop["harvest_date"])
+            crop_available = harvest + timedelta(days=self.cultivation_post_harvest_days)
+            if crop_available < today:
+                continue
+            key = (crop["crop"], crop["room"], crop["harvest_date"])
+            grouped[key] = grouped.get(key, 0.0) + estimated_yield_pounds(
+                crop["square_feet"], crop["strain"], crop["room"]
+            )
+
+        # Saved clone plans extend the source-of-truth crop schedule beyond the
+        # originally bundled active-room snapshot. Drafts remain visible here
+        # because the table is a planning aid; approval still requires exact
+        # physical bench assignments.
+        bundled_crops = {
+            str(crop["crop"]).casefold() for crop in UPCOMING_CROP_ALLOCATIONS
+        }
+        saved_by_crop: dict[str, dict[str, Any]] = {}
+        for plan in reversed(self.cultivation_clone_plan_history):
+            crop_name = str(plan.get("crop", "") or "").strip()
+            if not crop_name or crop_name.casefold() in bundled_crops:
+                continue
+            saved_by_crop[crop_name.casefold()] = plan
+        for plan in saved_by_crop.values():
+            try:
+                harvest = date.fromisoformat(str(plan.get("clone_cut_date", ""))) + timedelta(
+                    days=40 + 68
+                )
+            except (TypeError, ValueError):
+                continue
+            if harvest + timedelta(days=self.cultivation_post_harvest_days) < today:
+                continue
+            room = str(plan.get("flower_room", "") or "")
+            crop_name = str(plan.get("crop", "") or "")
+            estimated = sum(
+                estimated_yield_pounds(
+                    float(benches or 0) * 185.0, strain, room
+                )
+                for strain, benches in dict(plan.get("allocations") or {}).items()
+                if float(benches or 0) > 0
+            )
+            if estimated > 0:
+                grouped[(crop_name, room, harvest.isoformat())] = estimated
+
+        # The on-screen plan should be represented immediately, including
+        # unsaved edits, and should replace any older saved F5.10 draft.
+        current_period = clone_planning_periods(1)[0]
+        current_crop = str(current_period["crop"])
+        current_key = current_crop.casefold()
+        for key in [key for key in grouped if key[0].casefold() == current_key]:
+            grouped.pop(key, None)
+        current_estimated = sum(
+            estimated_yield_pounds(
+                float(benches or 0) * 185.0,
+                strain,
+                str(current_period["room"]),
+            )
+            for strain, benches in self.cultivation_clone_plan_allocations.items()
+            if float(benches or 0) > 0
+        )
+        if current_estimated > 0:
+            grouped[
+                (
+                    current_crop,
+                    str(current_period["room"]),
+                    str(current_period["harvest_date"]),
+                )
+            ] = current_estimated
+        return [
+            {
+                "crop": key[0], "room": key[1], "harvest_date": key[2],
+                "estimated_yield_lbs": round(value, 1),
+            }
+            for key, value in sorted(grouped.items(), key=lambda item: item[0][2])
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_history_harvest_rows(self) -> list[dict[str, Any]]:
+        return historical_harvest_rows(self.cultivation_history_room_filter)
+
+    @rx.var(cache=True)
+    def cultivation_history_room_rows(self) -> list[dict[str, Any]]:
+        return historical_room_rows()
+
+    @rx.var(cache=True)
+    def cultivation_history_room_chart_rows(self) -> list[dict[str, Any]]:
+        return historical_room_chart_rows()
+
+    @rx.var(cache=True)
+    def cultivation_history_cycle_rows(self) -> list[dict[str, Any]]:
+        return historical_cycle_rows()
+
+    @rx.var(cache=True)
+    def cultivation_history_harvest_table_data(self) -> list[list[Any]]:
+        return historical_harvest_table_data(
+            self.cultivation_history_room_filter
+        )
+
+    @rx.var(cache=True)
+    def cultivation_history_room_table_data(self) -> list[list[Any]]:
+        return historical_room_table_data(
+            self.cultivation_history_room_filter
+        )
+
+    @rx.var(cache=True)
+    def cultivation_history_cycle_table_data(self) -> list[list[Any]]:
+        return historical_cycle_table_data()
+
+    @rx.var(cache=True)
+    def cultivation_history_strain_rows(self) -> list[dict[str, Any]]:
+        return historical_strain_rows()
+
+    @rx.var(cache=True)
+    def cultivation_history_strain_options(self) -> list[str]:
+        return historical_strain_options()
+
+    @rx.var(cache=True)
+    def cultivation_history_strain_table_data(self) -> list[list[Any]]:
+        return historical_strain_table_data(
+            self.cultivation_history_strain_filter
+        )
+
+    @rx.var(cache=True)
+    def cultivation_history_page_size(self) -> int:
+        return int(self.cultivation_history_rows_per_page)
+
+    @rx.var(cache=True)
+    def cultivation_history_strain_chart_rows(self) -> list[dict[str, Any]]:
+        return historical_strain_chart_rows(
+            strain_filter=self.cultivation_history_strain_filter
+        )
+
+    def _cultivation_history_kpis(self) -> dict[str, str]:
+        return historical_kpis(self.cultivation_history_room_filter)
+
+    @rx.var(cache=True)
+    def cultivation_history_harvest_count(self) -> str:
+        return self._cultivation_history_kpis()["harvests"]
+
+    @rx.var(cache=True)
+    def cultivation_history_total_finished(self) -> str:
+        return self._cultivation_history_kpis()["total_finished"]
+
+    @rx.var(cache=True)
+    def cultivation_history_average_finished(self) -> str:
+        return self._cultivation_history_kpis()["average_finished"]
+
+    @rx.var(cache=True)
+    def cultivation_history_weighted_yield(self) -> str:
+        return self._cultivation_history_kpis()["weighted_yield"]
+
+    @rx.var(cache=True)
+    def cultivation_history_average_conversion(self) -> str:
+        return self._cultivation_history_kpis()["average_conversion"]
 
     @rx.event
     def start_production_from_sku(
@@ -5024,11 +6858,14 @@ class DashboardState(rx.State):
             identity_columns = ["Compatible Brand"]
         elif view_name == "all":
             identity_columns = ["Brand", "Compatible Brand"]
-        return [
+        columns = [
             *identity_columns, "Strain", "SKU Type", "Unit Count",
             f"Total Weight ({unit})", "Age (Days)", "Location",
             "QA Status", "Metrc Tag",
         ]
+        if view_name == "all":
+            columns.insert(columns.index("QA Status"), "Source Harvest")
+        return columns
 
     @rx.var(cache=True)
     def inventory_columns(self) -> list[str]:
@@ -5542,6 +7379,7 @@ class DashboardState(rx.State):
                     "weight": 0.0,
                     "oldest_age": 0.0,
                     "locations": set(),
+                    "source_harvests": set(),
                     "qa_statuses": set(),
                     "tags": set(),
                 })
@@ -5553,35 +7391,56 @@ class DashboardState(rx.State):
                     group["oldest_age"], self._number(row, "Age")
                 )
                 group["locations"].add(str(row.get("Location", "") or ""))
+                group["source_harvests"].add(
+                    str(row.get("Source Harvest", "") or "")
+                )
                 group["qa_statuses"].add(str(row.get("QA Status", "") or ""))
                 tag = str(row.get("Metrc Tag", "") or "")
                 if tag:
                     group["tags"].add(tag)
             return [
-                [
+                (
+                    [
                     *key, round(group["units"], 2),
                     self._inventory_weight_value(group["weight"]),
                     round(group["oldest_age"], 1),
                     self._mixed_label(group["locations"]),
-                    self._mixed_label(group["qa_statuses"]),
-                    f"{len(group['tags']):,} package tag(s)",
-                ]
+                    ]
+                    + (
+                        [self._mixed_label(group["source_harvests"])]
+                        if selected_view == "all"
+                        else []
+                    )
+                    + [
+                        self._mixed_label(group["qa_statuses"]),
+                        f"{len(group['tags']):,} package tag(s)",
+                    ]
+                )
                 for key, group in sorted(groups.items())
             ]
         return [
-            [
-                *self._inventory_identity_values(row, selected_view),
-                str(row.get("Strain", "") or ""),
-                str(row.get("SKU Type", "") or ""),
-                round(self._unit_count(row), 2),
-                self._inventory_weight_value(
-                    self._number(row, "Calculated Weight (g)")
-                ),
-                round(self._number(row, "Age"), 1),
-                str(row.get("Location", "") or ""),
-                str(row.get("QA Status", "") or ""),
-                str(row.get("Metrc Tag", "") or ""),
-            ]
+            (
+                [
+                    *self._inventory_identity_values(row, selected_view),
+                    str(row.get("Strain", "") or ""),
+                    str(row.get("SKU Type", "") or ""),
+                    round(self._unit_count(row), 2),
+                    self._inventory_weight_value(
+                        self._number(row, "Calculated Weight (g)")
+                    ),
+                    round(self._number(row, "Age"), 1),
+                    str(row.get("Location", "") or ""),
+                ]
+                + (
+                    [str(row.get("Source Harvest", "") or "")]
+                    if selected_view == "all"
+                    else []
+                )
+                + [
+                    str(row.get("QA Status", "") or ""),
+                    str(row.get("Metrc Tag", "") or ""),
+                ]
+            )
             for row in rows
         ]
 
@@ -6284,25 +8143,131 @@ def data_grid(
     height: str = "480px",
     show_search: bool = True,
     class_name: str = "",
+    column_width: int = 165,
+    minimum_width: int = 900,
+    page_size: Any = 25,
 ) -> rx.Component:
-    table_width = max(900, len(columns) * 165)
+    table_width = max(minimum_width, len(columns) * column_width)
     return rx.box(
         rx.data_table(
             data=data,
             columns=columns,
-            pagination={"page_size": 25},
+            pagination={"limit": page_size},
             search=show_search,
             sort=True,
             resizable=True,
             height=height,
             width=f"{table_width}px",
             min_width=f"{table_width}px",
+            key=class_name or "qcc-data-grid",
         ),
         class_name=class_name,
         width="100%",
         overflow_x="auto",
         border="1px solid #d8e0e8",
         border_radius="8px",
+    )
+
+
+def cultivation_history_data_grid(
+    data: rx.Var,
+    columns: list[str],
+    height: str,
+    class_name: str,
+    column_width: int,
+    minimum_width: int,
+) -> rx.Component:
+    """Historical grid with its row-limit control beside the Grid.js summary."""
+    return rx.vstack(
+        data_grid(
+            data,
+            columns,
+            height=height,
+            show_search=False,
+            class_name=class_name,
+            column_width=column_width,
+            minimum_width=minimum_width,
+            page_size=DashboardState.cultivation_history_page_size,
+        ),
+        rx.flex(
+            rx.text("Rows", size="1", weight="bold", color=MUTED),
+            rx.select(
+                ["10", "25", "50"],
+                value=DashboardState.cultivation_history_rows_per_page,
+                on_change=DashboardState.change_cultivation_history_rows_per_page,
+                width="74px",
+                size="1",
+            ),
+            class_name="qcc-historical-footer-row-control",
+            align="center",
+            gap="2",
+        ),
+        class_name="qcc-historical-grid-with-footer-control",
+        align="start",
+        spacing="2",
+        width="100%",
+    )
+
+
+def historical_yield_table(
+    data: rx.Var,
+    columns: list[str],
+    height: str,
+) -> rx.Component:
+    """Render bundled cultivation history without the Grid.js data adapter.
+
+    The historical rows contain a deliberate mix of text and numeric cells.
+    Grid.js can infer an empty client-side data set from that mixed schema even
+    though the same state values render correctly in KPI cards and charts. A
+    regular Radix table keeps those values intact and is fast for this data set.
+    """
+    table_width = max(900, len(columns) * 155)
+    return rx.box(
+        rx.table.root(
+            rx.table.header(
+                rx.table.row(
+                    *[
+                        rx.table.column_header_cell(
+                            column,
+                            position="sticky",
+                            top="0",
+                            z_index="2",
+                            background="#111827",
+                            color="white",
+                            white_space="normal",
+                            line_height="1.15",
+                            min_width="130px",
+                        )
+                        for column in columns
+                    ]
+                )
+            ),
+            rx.table.body(
+                rx.foreach(
+                    data,
+                    lambda row: rx.table.row(
+                        *[
+                            rx.table.cell(
+                                row[column],
+                                white_space="normal" if column == "Notes" else "nowrap",
+                                min_width="260px" if column == "Notes" else "130px",
+                            )
+                            for column in columns
+                        ]
+                    ),
+                )
+            ),
+            width=f"{table_width}px",
+            min_width=f"{table_width}px",
+            variant="surface",
+            size="2",
+        ),
+        width="100%",
+        height=height,
+        overflow="auto",
+        border="1px solid #d8e0e8",
+        border_radius="8px",
+        background="white",
     )
 
 
@@ -6322,10 +8287,22 @@ def inventory_data_grid(data: rx.Var) -> rx.Component:
             sort=True,
             resizable=False,
             height="650px",
-            width="1900px",
-            min_width="1900px",
+            width=rx.cond(
+                DashboardState.inventory_view_name == "all",
+                "2160px",
+                "1900px",
+            ),
+            min_width=rx.cond(
+                DashboardState.inventory_view_name == "all",
+                "2160px",
+                "1900px",
+            ),
         ),
-        class_name="qcc-inventory-grid",
+        class_name=rx.cond(
+            DashboardState.inventory_view_name == "all",
+            "qcc-inventory-grid qcc-all-inventory-grid",
+            "qcc-inventory-grid",
+        ),
         width="100%",
         overflow_x="auto",
         border="1px solid #d8e0e8",
@@ -10238,6 +12215,2363 @@ def administration_panel() -> rx.Component:
     )
 
 
+def cultivation_strain_slot(
+    bench: rx.Var, slot_number: int
+) -> rx.Component:
+    strain_key = f"strain_{slot_number}"
+    percent_key = f"percent_{slot_number}"
+    return rx.grid(
+        rx.box(
+            rx.text(f"Strain {slot_number}", size="1", weight="bold", color=MUTED),
+            rx.select(
+                DashboardState.cultivation_strain_options,
+                value=bench[strain_key],
+                on_change=lambda value: DashboardState.change_cultivation_bench_strain(
+                    bench["bench"], strain_key, value
+                ),
+                placeholder="Choose strain",
+                width="100%",
+            ),
+        ),
+        rx.box(
+            rx.text("Bench %", size="1", weight="bold", color=MUTED),
+            rx.input(
+                type="number",
+                min="0",
+                max="100",
+                step="1",
+                value=bench[percent_key],
+                on_change=lambda value: DashboardState.change_cultivation_bench_percent(
+                    bench["bench"], percent_key, value
+                ),
+                width="100%",
+            ),
+        ),
+        columns="2",
+        gap="2",
+        width="100%",
+    )
+
+
+def cultivation_bench_card(bench: rx.Var) -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.flex(
+                rx.box(
+                    rx.heading(bench["bench"], size="3", color=DARK),
+                    rx.text(
+                        bench["square_feet"].to_string()
+                        + " sq ft · "
+                        + bench["target_plants"].to_string()
+                        + " plants",
+                        size="1",
+                        color=MUTED,
+                    ),
+                ),
+                rx.spacer(),
+                rx.badge(
+                    bench["length"].to_string()
+                    + " × "
+                    + bench["width"].to_string()
+                    + " ft",
+                    color_scheme="teal",
+                ),
+                width="100%",
+                align="center",
+            ),
+            rx.cond(
+                DashboardState.cultivation_layout_editing,
+                rx.grid(
+                    rx.box(
+                        rx.text("Length (ft)", size="1", weight="bold", color=MUTED),
+                        rx.input(
+                            type="number",
+                            min="0",
+                            step="0.5",
+                            value=bench["length"],
+                            on_change=lambda value: DashboardState.change_cultivation_bench_dimension(
+                                bench["bench"], "length", value
+                            ),
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Width (ft)", size="1", weight="bold", color=MUTED),
+                        rx.input(
+                            type="number",
+                            min="0",
+                            step="0.5",
+                            value=bench["width"],
+                            on_change=lambda value: DashboardState.change_cultivation_bench_dimension(
+                                bench["bench"], "width", value
+                            ),
+                            width="100%",
+                        ),
+                    ),
+                    columns="2",
+                    gap="2",
+                    width="100%",
+                ),
+            ),
+            rx.box(
+                rx.text("How many strains on this bench?", size="1", weight="bold", color=MUTED),
+                rx.select(
+                    ["1", "2", "3"],
+                    value=bench["strain_count"].to_string(),
+                    on_change=lambda value: DashboardState.change_cultivation_bench_strain_count(
+                        bench["bench"], value
+                    ),
+                    width="100%",
+                ),
+                width="100%",
+            ),
+            cultivation_strain_slot(bench, 1),
+            rx.cond(bench["strain_count"] >= 2, cultivation_strain_slot(bench, 2)),
+            rx.cond(bench["strain_count"] >= 3, cultivation_strain_slot(bench, 3)),
+            width="100%",
+            spacing="3",
+        ),
+        width="100%",
+        background=bench["tint"],
+        border_left_width="6px",
+        border_left_style="solid",
+        border_left_color=bench["accent"],
+        box_shadow="0 8px 22px rgba(15, 23, 42, 0.08)",
+        transition="transform 140ms ease, box-shadow 140ms ease",
+        _hover={
+            "transform": "translateY(-2px)",
+            "box_shadow": "0 12px 28px rgba(15, 23, 42, 0.13)",
+        },
+    )
+
+
+def cultivation_print_bench_strain(bench: rx.Var, slot_number: int) -> rx.Component:
+    strain_key = f"strain_{slot_number}"
+    percent_key = f"percent_{slot_number}"
+    return rx.cond(
+        bench[strain_key] != "",
+        rx.hstack(
+            rx.text(bench[strain_key], font_weight="800", color=DARK),
+            rx.spacer(),
+            rx.text(bench[percent_key].to_string() + "%", font_weight="700"),
+            width="100%",
+            align="center",
+        ),
+    )
+
+
+def cultivation_print_bench_card(bench: rx.Var) -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.flex(
+                rx.heading(bench["bench"], size="4", color=DARK),
+                rx.spacer(),
+                rx.text(
+                    bench["length"].to_string()
+                    + " × "
+                    + bench["width"].to_string()
+                    + " ft",
+                    font_weight="700",
+                ),
+                width="100%",
+                align="center",
+            ),
+            rx.text(
+                bench["square_feet"].to_string()
+                + " sq ft · "
+                + bench["target_plants"].to_string()
+                + " target plants",
+                size="2",
+                color=MUTED,
+            ),
+            rx.separator(size="4"),
+            cultivation_print_bench_strain(bench, 1),
+            cultivation_print_bench_strain(bench, 2),
+            cultivation_print_bench_strain(bench, 3),
+            width="100%",
+            spacing="2",
+        ),
+        min_height="150px",
+        padding="14px",
+        border="2px solid #334155",
+        border_left=f"8px solid {ACCENT}",
+        border_radius="8px",
+        break_inside="avoid",
+        background="white",
+    )
+
+
+def cultivation_summary_table_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["strain"], font_weight="600", min_width="160px"),
+        rx.table.cell(row["benches"], min_width="140px"),
+        rx.table.cell(row["square_feet"].to_string(), text_align="right"),
+        rx.table.cell(row["plant_density"], text_align="right"),
+        rx.table.cell(row["target_plants"].to_string(), text_align="right"),
+        rx.table.cell(row["recommended_clones"].to_string(), text_align="right"),
+        rx.table.cell(row["domes"].to_string(), text_align="right"),
+        rx.table.cell(
+            row["actual_overage_percent"].to_string() + "%",
+            text_align="right",
+        ),
+    )
+
+
+def cultivation_room_layout_print_document() -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.flex(
+                rx.box(
+                    rx.heading(
+                        DashboardState.cultivation_cycle_name + " Room Layout",
+                        size="7",
+                        color=DARK,
+                    ),
+                    rx.text(
+                        DashboardState.cultivation_flower_room,
+                        size="4",
+                        weight="bold",
+                    ),
+                ),
+                rx.spacer(),
+                rx.box(
+                    rx.text(
+                        "Flower Entry: " + DashboardState.cultivation_flower_entry_date,
+                        weight="bold",
+                    ),
+                    rx.text(
+                        "Projected Harvest: " + DashboardState.cultivation_harvest_date,
+                        weight="bold",
+                    ),
+                    text_align="right",
+                ),
+                width="100%",
+                align="center",
+            ),
+            rx.hstack(
+                rx.badge(
+                    "Density: "
+                    + DashboardState.cultivation_plant_density.to_string()
+                    + " plants / sq ft",
+                    color_scheme="teal",
+                    size="2",
+                ),
+                rx.badge(
+                    "Target Plants: " + DashboardState.cultivation_total_target_plants,
+                    color_scheme="green",
+                    size="2",
+                ),
+                rx.badge(
+                    "Clone Cuts: " + DashboardState.cultivation_total_clone_cuts,
+                    color_scheme="purple",
+                    size="2",
+                ),
+                gap="3",
+                wrap="wrap",
+            ),
+            rx.grid(
+                rx.foreach(
+                    DashboardState.cultivation_bench_plans,
+                    cultivation_print_bench_card,
+                ),
+                columns="2",
+                gap="3",
+                width="100%",
+            ),
+            rx.text(
+                "Generated by QCC Control Tower · Room assignments reflect the current on-screen layout.",
+                size="1",
+                color=MUTED,
+                margin_top="8px",
+            ),
+            width="100%",
+            spacing="4",
+        ),
+        class_name="qcc-field-print-document qcc-room-layout-print-document",
+        width="100%",
+    )
+
+
+def cultivation_clone_dome_print_document() -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.flex(
+                rx.box(
+                    rx.heading(
+                        DashboardState.cultivation_cycle_name
+                        + " Clone & Dome Cutting Plan",
+                        size="7",
+                        color=DARK,
+                    ),
+                    rx.text(
+                        DashboardState.cultivation_flower_room,
+                        size="4",
+                        weight="bold",
+                    ),
+                ),
+                rx.spacer(),
+                rx.box(
+                    rx.text(
+                        "Clone Cut: " + DashboardState.cultivation_cut_date,
+                        weight="bold",
+                    ),
+                    rx.text(
+                        "Move to Veg: " + DashboardState.cultivation_veg_transfer_date,
+                        weight="bold",
+                    ),
+                    rx.text(
+                        "Move to Flower: " + DashboardState.cultivation_flower_entry_date,
+                        weight="bold",
+                    ),
+                    text_align="right",
+                ),
+                width="100%",
+                align="center",
+            ),
+            rx.hstack(
+                rx.badge(
+                    "Density: "
+                    + DashboardState.cultivation_plant_density.to_string()
+                    + " plants / sq ft",
+                    color_scheme="teal",
+                    size="2",
+                ),
+                rx.badge(
+                    "Safety Overage: "
+                    + DashboardState.cultivation_overage_percent.to_string()
+                    + "%",
+                    color_scheme="purple",
+                    size="2",
+                ),
+                rx.badge(
+                    "Total Domes: " + DashboardState.cultivation_total_trays,
+                    color_scheme="orange",
+                    size="2",
+                ),
+                gap="3",
+                wrap="wrap",
+            ),
+            rx.table.root(
+                rx.table.header(
+                    rx.table.row(
+                        rx.table.column_header_cell("Strain"),
+                        rx.table.column_header_cell("Bench(es)"),
+                        rx.table.column_header_cell("Canopy sq ft", text_align="right"),
+                        rx.table.column_header_cell("Plants / sq ft", text_align="right"),
+                        rx.table.column_header_cell("Target Plants", text_align="right"),
+                        rx.table.column_header_cell("Clone Cuts", text_align="right"),
+                        rx.table.column_header_cell("32-Clone Trays / Domes", text_align="right"),
+                        rx.table.column_header_cell("Actual Overage", text_align="right"),
+                    )
+                ),
+                rx.table.body(
+                    rx.foreach(
+                        DashboardState.cultivation_strain_summary_rows,
+                        cultivation_summary_table_row,
+                    )
+                ),
+                class_name="qcc-clone-dome-print-table",
+                width="100%",
+                variant="surface",
+            ),
+            rx.grid(
+                rx.box(
+                    rx.text("Target Flower Plants", size="1", color=MUTED),
+                    rx.heading(DashboardState.cultivation_total_target_plants, size="5"),
+                ),
+                rx.box(
+                    rx.text("Recommended Clone Cuts", size="1", color=MUTED),
+                    rx.heading(DashboardState.cultivation_total_clone_cuts, size="5"),
+                ),
+                rx.box(
+                    rx.text("32-Clone Trays / Domes", size="1", color=MUTED),
+                    rx.heading(DashboardState.cultivation_total_trays, size="5"),
+                ),
+                columns="3",
+                gap="4",
+                width="100%",
+            ),
+            rx.text(
+                "Generated by QCC Control Tower · Verify mother and Veg availability before cutting.",
+                size="1",
+                color=MUTED,
+            ),
+            width="100%",
+            spacing="4",
+        ),
+        class_name="qcc-field-print-document qcc-clone-dome-print-document",
+        width="100%",
+    )
+
+
+def cultivation_risk_badge(risk: rx.Var) -> rx.Component:
+    return rx.match(
+        risk,
+        (
+            "Balanced",
+            rx.badge(
+                "BALANCED", background="#16a34a", color="#ffffff", size="2",
+                font_weight="900", min_width="94px", justify_content="center",
+            ),
+        ),
+        (
+            "Warning",
+            rx.badge(
+                "WARNING", background="#facc15", color="#422006", size="2",
+                font_weight="900", min_width="94px", justify_content="center",
+            ),
+        ),
+        (
+            "Excess",
+            rx.badge(
+                "EXCESS", background="#dc2626", color="#ffffff", size="2",
+                font_weight="900", min_width="94px", justify_content="center",
+            ),
+        ),
+        rx.badge(
+            "REVIEW", color_scheme="gray", variant="solid", size="2",
+            font_weight="900", min_width="94px", justify_content="center",
+        ),
+    )
+
+
+def cultivation_future_yield_table_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["strain"], font_weight="600", min_width="150px"),
+        rx.table.cell(row["current_lbs"].to_string(), text_align="right"),
+        rx.table.cell(row["scheduled_lbs"].to_string(), text_align="right"),
+        rx.table.cell(row["scheduled_window"], min_width="125px"),
+        rx.table.cell(row["proposed_lbs"].to_string(), text_align="right"),
+        rx.table.cell(row["weekly_demand_lbs"].to_string(), text_align="right"),
+        rx.table.cell(row["expiring_lbs"].to_string(), text_align="right"),
+        rx.table.cell(row["projected_balance_lbs"].to_string(), text_align="right"),
+        rx.table.cell(row["weeks_supply"], text_align="right"),
+        rx.table.cell(cultivation_risk_badge(row["risk"])),
+    )
+
+
+def cultivation_info_header(title: str, definition: str) -> rx.Component:
+    return rx.table.column_header_cell(
+        rx.tooltip(
+            rx.hstack(
+                rx.text(title, white_space="pre-line", line_height="1.1"),
+                rx.icon("info", size=14),
+                gap="1",
+                align="center",
+            ),
+            content=definition,
+        ),
+        min_width="105px",
+        vertical_align="middle",
+    )
+
+
+def cultivation_upcoming_crop_table_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["crop"], font_weight="600"),
+        rx.table.cell(row["room"]),
+        rx.table.cell(row["harvest_date"]),
+        rx.table.cell(row["estimated_yield_lbs"].to_string() + " lb", text_align="right"),
+    )
+
+
+def cultivation_saved_allocation_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["cycle_name"], font_weight="700", min_width="120px"),
+        rx.table.cell(row["flower_room"], min_width="130px"),
+        rx.table.cell(row["flower_entry_date"], min_width="120px"),
+        rx.table.cell(row["strains"], min_width="300px", white_space="normal"),
+        rx.table.cell(row["target_plants"].to_string(), text_align="right"),
+        rx.table.cell(row["clone_cuts"].to_string(), text_align="right"),
+        rx.table.cell(row["created_by"], min_width="150px"),
+        rx.table.cell(
+            rx.button(
+                "Load",
+                on_click=DashboardState.load_cultivation_allocation(
+                    row["allocation_id"]
+                ),
+                variant="outline",
+                size="1",
+            )
+        ),
+    )
+
+
+def cultivation_clone_plan_value_cell(
+    cell: rx.Var, metric: rx.Var, weekly_demand: rx.Var
+) -> rx.Component:
+    value = cell["value"]
+    is_current_pounds = metric == "Current Pounds"
+    weeks_supply = value / rx.cond(weekly_demand > 0, weekly_demand, 1)
+    current_background = rx.cond(
+        value < 0,
+        "#b91c1c",
+        rx.cond(
+            weekly_demand <= 0,
+            "#f3f4f6",
+            rx.cond(
+                weeks_supply <= 4,
+                "#dcfce7",
+                rx.cond(weeks_supply <= 8, "#fef3c7", "#fee2e2"),
+            ),
+        ),
+    )
+    current_color = rx.cond(
+        value < 0,
+        "#ffffff",
+        rx.cond(
+            weekly_demand <= 0,
+            "#4b5563",
+            rx.cond(
+                weeks_supply <= 4,
+                "#166534",
+                rx.cond(weeks_supply <= 8, "#92400e", "#b91c1c"),
+            ),
+        ),
+    )
+    value_content = rx.cond(
+        cell["show_breakdown"],
+        rx.popover.root(
+            rx.popover.trigger(
+                rx.button(
+                    rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
+                    rx.icon("info", size=12),
+                    variant="ghost",
+                    size="1",
+                    color=current_color,
+                    font_weight="900",
+                    padding="2px 4px",
+                    min_height="24px",
+                    cursor="pointer",
+                    text_decoration="underline dotted",
+                    text_underline_offset="3px",
+                )
+            ),
+            rx.popover.content(
+                rx.vstack(
+                    rx.box(
+                        rx.text("Current Pounds Breakdown", weight="bold", color=DARK),
+                        rx.text(
+                            "Net flower and flower-equivalent pre-rolls",
+                            size="1",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.hstack(
+                        rx.text("Tested flower", size="2"),
+                        rx.spacer(),
+                        rx.text(
+                            cell["tested_lbs"].to_string() + " lb",
+                            weight="bold",
+                            size="2",
+                        ),
+                        width="100%",
+                    ),
+                    rx.hstack(
+                        rx.text("Untested flower", size="2"),
+                        rx.spacer(),
+                        rx.text(
+                            cell["untested_lbs"].to_string() + " lb",
+                            weight="bold",
+                            size="2",
+                        ),
+                        width="100%",
+                    ),
+                    rx.hstack(
+                        rx.text("Passed quarantine flower", size="2"),
+                        rx.spacer(),
+                        rx.text(
+                            cell["passed_quarantine_lbs"].to_string() + " lb",
+                            weight="bold",
+                            size="2",
+                        ),
+                        width="100%",
+                    ),
+                    rx.separator(size="4"),
+                    rx.hstack(
+                        rx.text("Current pounds", weight="bold"),
+                        rx.spacer(),
+                        rx.text(
+                            cell["current_total_lbs"].to_string() + " lb",
+                            weight="bold",
+                            color="#0f766e",
+                        ),
+                        width="100%",
+                    ),
+                    spacing="2",
+                    width="270px",
+                ),
+                side="top",
+                align="center",
+            ),
+        ),
+        rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
+    )
+    return rx.table.cell(
+        value_content,
+        text_align="right",
+        color=rx.cond(is_current_pounds, current_color, DARK),
+        font_weight=rx.cond(is_current_pounds, "800", "500"),
+        box_shadow=rx.cond(
+            cell["highlight"],
+            "none",
+            rx.cond(
+                is_current_pounds & (value < 0),
+                "inset 0 0 0 2px #7f1d1d",
+                "none",
+            ),
+        ),
+        background_color=rx.cond(
+            cell["highlight"],
+            "#f5f3ff",
+            rx.cond(is_current_pounds, current_background, "transparent"),
+        ),
+        outline=rx.cond(cell["highlight"], "3px solid #8b5cf6", "none"),
+        outline_offset=rx.cond(cell["highlight"], "-3px", "0"),
+        min_width="102px",
+        white_space="nowrap",
+    )
+
+
+def cultivation_clone_plan_matrix_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(
+            row["strain"],
+            font_weight="800",
+            min_width="160px",
+            background="#ffffff",
+            position="sticky",
+            left="0",
+            z_index="2",
+        ),
+        rx.table.cell(
+            row["metric"],
+            font_weight="700",
+            min_width="145px",
+            background=rx.match(
+                row["metric"],
+                ("Clone Allocation", "#ede9fe"),
+                ("Current Pounds", "#ecfdf5"),
+                ("Scheduled", "#eff6ff"),
+                ("Two-Week Demand", "#fff7ed"),
+                "#ffffff",
+            ),
+            position="sticky",
+            left="160px",
+            z_index="2",
+        ),
+        rx.cond(
+            row["metric"] == "Clone Allocation",
+            rx.fragment(
+                rx.table.cell(
+                    rx.input(
+                        type="number",
+                        min="0",
+                        max="7",
+                        step="0.1",
+                        default_value=row["allocation"].to_string(),
+                        key=(
+                            DashboardState.cultivation_clone_plan_entry_version.to_string()
+                            + "-"
+                            + row["strain"].to_string()
+                        ),
+                        on_blur=lambda value: DashboardState.change_cultivation_clone_plan_allocation(
+                            row["strain"], value
+                        ),
+                        disabled=~DashboardState.cultivation_clone_plan_editable,
+                        width="100%",
+                        size="1",
+                        text_align="center",
+                    ),
+                    min_width="102px",
+                    background="#f5f3ff",
+                    outline="3px solid #8b5cf6",
+                    outline_offset="-3px",
+                    class_name="qcc-current-clone-allocation",
+                ),
+                rx.foreach(
+                    row["values"][1:],
+                    lambda cell: cultivation_clone_plan_value_cell(
+                        cell, row["metric"], row["weekly_demand"]
+                    ),
+                ),
+            ),
+            rx.foreach(
+                row["values"],
+                lambda cell: cultivation_clone_plan_value_cell(
+                    cell, row["metric"], row["weekly_demand"]
+                ),
+            ),
+        ),
+        class_name="qcc-clone-plan-row",
+    )
+
+
+def cultivation_clone_plan_period_header(period: rx.Var) -> rx.Component:
+    return rx.table.column_header_cell(
+        rx.vstack(
+            rx.text(period["crop"], weight="bold", color="#ffffff"),
+            rx.text(period["date_label"], size="1", color="#cbd5e1"),
+            spacing="0",
+            align="center",
+        ),
+        text_align="center",
+        min_width="102px",
+        vertical_align="middle",
+        class_name=rx.cond(period["is_current"], "qcc-current-clone-period", ""),
+    )
+
+
+def cultivation_clone_plan_page_period_header(period: rx.Var) -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.text(period["crop"], weight="bold", color="#ffffff"),
+            rx.text(period["date_label"], size="1", color="#cbd5e1"),
+            spacing="0",
+            align="center",
+        ),
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        min_width="102px",
+        height="58px",
+        border_right="1px solid #64748b",
+        class_name=rx.cond(
+            period["is_current"],
+            "qcc-clone-plan-page-period qcc-current-clone-period",
+            "qcc-clone-plan-page-period",
+        ),
+    )
+
+
+def cultivation_clone_plan_history_row(plan: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(plan["crop"], weight="bold"),
+        rx.table.cell(plan["clone_cut_date"]),
+        rx.table.cell(plan["allocation_benches"]),
+        rx.table.cell(
+            rx.badge(
+                plan["status"],
+                color_scheme=rx.cond(plan["status"] == "Approved", "green", "purple"),
+                variant="solid",
+            )
+        ),
+        rx.table.cell(
+            rx.button(
+                rx.icon("pencil", size=14),
+                "Edit",
+                on_click=DashboardState.edit_cultivation_clone_plan_history(
+                    plan["plan_id"]
+                ),
+                variant="outline",
+                color_scheme="purple",
+                size="1",
+            )
+        ),
+    )
+
+
+def cultivation_current_plan_history_row(plan: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(plan["crop"], weight="bold"),
+        rx.table.cell(plan["flower_room"]),
+        rx.table.cell(plan["clone_cut_date"]),
+        rx.table.cell(plan["allocation_benches"]),
+        rx.table.cell(
+            rx.badge(
+                plan["status"],
+                color_scheme=rx.cond(plan["status"] == "Approved", "green", "purple"),
+                variant="solid",
+            )
+        ),
+        rx.table.cell(
+            rx.button(
+                rx.icon("upload", size=14),
+                "Load",
+                on_click=DashboardState.load_current_clone_plan(plan["plan_id"]),
+                variant="outline",
+                color_scheme="purple",
+                size="1",
+            )
+        ),
+    )
+
+
+def cultivation_historical_plan_entry_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["strain"], font_weight="700"),
+        rx.table.cell(
+            rx.input(
+                type="number",
+                min="0",
+                max="7",
+                step="0.1",
+                default_value=row["allocation"].to_string(),
+                key=(
+                    DashboardState.cultivation_historical_plan_entry_version.to_string()
+                    + "-"
+                    + row["strain"].to_string()
+                ),
+                on_blur=lambda value: DashboardState.change_cultivation_historical_plan_allocation(
+                    row["strain"], value
+                ),
+                width="110px",
+                size="1",
+                text_align="center",
+            ),
+            text_align="right",
+        ),
+    )
+
+
+def cultivation_approved_plan_allocation_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["crop"], font_weight="800"),
+        rx.table.cell(row["flower_room"]),
+        rx.table.cell(row["flower_entry_date"]),
+        rx.table.cell(row["allocation_benches"], min_width="420px", white_space="normal"),
+        rx.table.cell(
+            rx.badge("Approved", color_scheme="green", variant="solid")
+        ),
+        rx.table.cell(
+            rx.button(
+                rx.icon("download", size=14),
+                "Load Plan",
+                on_click=DashboardState.load_approved_clone_plan_to_allocation(
+                    row["plan_id"]
+                ),
+                color_scheme="purple",
+                size="1",
+            )
+        ),
+    )
+
+
+def cultivation_new_strain_control() -> rx.Component:
+    return rx.box(
+        rx.flex(
+            rx.box(
+                rx.hstack(
+                    rx.text(
+                        "New / Provisional Strain",
+                        size="2",
+                        weight="bold",
+                        color=DARK,
+                    ),
+                    rx.badge("NO HISTORY REQUIRED", color_scheme="purple"),
+                    gap="2",
+                    align="center",
+                ),
+                rx.text(
+                    "Add a cultivar that has not harvested or shipped yet. It becomes available in both planning and exact bench assignment.",
+                    size="1",
+                    color=MUTED,
+                ),
+                min_width="330px",
+            ),
+            rx.input(
+                value=DashboardState.cultivation_new_strain_name,
+                on_change=DashboardState.change_cultivation_new_strain_name,
+                placeholder="Example: Hood Candy",
+                width=rx.breakpoints(initial="100%", md="290px"),
+            ),
+            rx.button(
+                "Add Provisional Strain",
+                on_click=DashboardState.add_cultivation_provisional_strain,
+                color_scheme="purple",
+                white_space="nowrap",
+            ),
+            align="center",
+            wrap="wrap",
+            gap="3",
+            width="100%",
+        ),
+        rx.cond(
+            DashboardState.cultivation_new_strain_error != "",
+            rx.text(
+                DashboardState.cultivation_new_strain_error,
+                size="1",
+                color="#b91c1c",
+                margin_top="6px",
+            ),
+        ),
+        rx.cond(
+            DashboardState.cultivation_new_strain_message != "",
+            rx.text(
+                DashboardState.cultivation_new_strain_message,
+                size="1",
+                color="#166534",
+                margin_top="6px",
+            ),
+        ),
+        padding="12px",
+        border="1px solid #ddd6fe",
+        border_radius="10px",
+        background="#faf8ff",
+        width="100%",
+    )
+
+
+def cultivation_clone_planning_panel() -> rx.Component:
+    return rx.vstack(
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.hstack(
+                            rx.heading("Clone Planning", size="5", color=DARK),
+                            rx.badge(
+                                DashboardState.cultivation_clone_plan_status,
+                                color_scheme=rx.cond(
+                                    DashboardState.cultivation_clone_plan_status == "Approved",
+                                    "green",
+                                    "purple",
+                                ),
+                                variant="solid",
+                            ),
+                            gap="2",
+                            align="center",
+                        ),
+                        rx.text(
+                            "Plan bench equivalents against usable inventory, crops already in flight, and two-week demand.",
+                            size="2",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.vstack(
+                        rx.badge(
+                            "CURRENT CYCLE · F5.10",
+                            color_scheme="teal",
+                            size="2",
+                        ),
+                        rx.text(
+                            DashboardState.cultivation_clone_plan_edit_window_label,
+                            size="1",
+                            color=MUTED,
+                        ),
+                        spacing="1",
+                        align="end",
+                    ),
+                    width="100%",
+                    align="center",
+                    wrap="wrap",
+                    gap="3",
+                ),
+                rx.grid(
+                    rx.box(
+                        rx.text("Demand model", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            ["Experimental Availability-Adjusted", "Current SKU Velocity"],
+                            value=DashboardState.cultivation_clone_plan_demand_model,
+                            on_change=DashboardState.change_cultivation_clone_plan_demand_model,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Strain list", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            ["Clade9 Strains", "Clade9 + Craft Kings Strains"],
+                            value=DashboardState.cultivation_clone_strain_scope,
+                            on_change=DashboardState.change_cultivation_clone_strain_scope,
+                            width="100%",
+                        ),
+                    ),
+                    snapshot_stat_card(
+                        "Planned Bench Equivalents",
+                        DashboardState.cultivation_clone_plan_total_benches,
+                        "#7c3aed",
+                    ),
+                    snapshot_stat_card(
+                        "Recommended Cuts",
+                        DashboardState.cultivation_clone_plan_total_clones,
+                        "#0f766e",
+                    ),
+                    snapshot_stat_card(
+                        "F5 Room Capacity",
+                        DashboardState.cultivation_clone_plan_room_capacity,
+                        "#2563eb",
+                    ),
+                    columns=rx.breakpoints(initial="1", md="2", xl="5"),
+                    gap="3",
+                    width="100%",
+                ),
+                cultivation_new_strain_control(),
+                rx.callout(
+                    "Current Pounds excludes trim, retention, samples, quarantine, and unusable material. Scheduled pounds enter 30 days after harvest and are reduced as crop-matched actual inventory appears.",
+                    icon="info",
+                    color_scheme="blue",
+                    width="100%",
+                ),
+                width="100%",
+                spacing="4",
+            ),
+            width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.heading("Rolling Clone Planner", size="4", color=DARK),
+                        rx.text(
+                            "Enter 0.1–7.0 bench equivalents in the first allocation column. Negative projected balances remain visible in red.",
+                            size="2",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.badge("14-DAY PERIODS", color_scheme="purple", size="2"),
+                    width="100%",
+                    align="center",
+                    wrap="wrap",
+                    gap="2",
+                ),
+                rx.box(
+                    rx.box(
+                        rx.grid(
+                            rx.box(
+                                rx.text("Strain", weight="bold", color="#ffffff"),
+                                display="flex",
+                                align_items="center",
+                                padding="0 12px",
+                                border_right="1px solid #64748b",
+                                background="#111827",
+                            ),
+                            rx.box(
+                                rx.text("Planning Row", weight="bold", color="#ffffff"),
+                                display="flex",
+                                align_items="center",
+                                padding="0 12px",
+                                border_right="1px solid #64748b",
+                                background="#111827",
+                            ),
+                            rx.foreach(
+                                DashboardState.cultivation_clone_plan_periods,
+                                cultivation_clone_plan_page_period_header,
+                            ),
+                            columns="160px 145px repeat(13, 102px)",
+                            min_width="1631px",
+                            gap="0",
+                        ),
+                        min_width="1631px",
+                        class_name="qcc-clone-plan-page-header",
+                    ),
+                    rx.table.root(
+                        rx.table.body(
+                            rx.foreach(
+                                DashboardState.cultivation_clone_plan_matrix_rows,
+                                cultivation_clone_plan_matrix_row,
+                            )
+                        ),
+                        variant="surface",
+                        size="2",
+                        width="100%",
+                        class_name="qcc-clone-plan-table",
+                    ),
+                    width="100%",
+                    max_height="70vh",
+                    overflow="auto",
+                    border="1px solid #64748b",
+                    border_radius="10px",
+                    class_name="qcc-clone-plan-viewport",
+                ),
+                rx.cond(
+                    DashboardState.cultivation_clone_plan_error != "",
+                    rx.callout(
+                        DashboardState.cultivation_clone_plan_error,
+                        icon="triangle_alert",
+                        color_scheme="red",
+                        width="100%",
+                    ),
+                ),
+                rx.cond(
+                    DashboardState.cultivation_clone_plan_message != "",
+                    rx.callout(
+                        DashboardState.cultivation_clone_plan_message,
+                        icon="circle_check",
+                        color_scheme="green",
+                        width="100%",
+                    ),
+                ),
+                rx.flex(
+                    rx.button(
+                        "Approve Plan",
+                        on_click=DashboardState.approve_cultivation_clone_plan,
+                        loading=DashboardState.cultivation_clone_plan_saving,
+                        color_scheme="green",
+                    ),
+                    rx.spacer(),
+                    rx.cond(
+                        DashboardState.is_administrator,
+                        rx.hstack(
+                            rx.switch(
+                                checked=DashboardState.cultivation_clone_plan_override,
+                                on_change=DashboardState.toggle_cultivation_clone_plan_override,
+                            ),
+                            rx.text("Admin override", size="2", weight="bold"),
+                            rx.input(
+                                value=DashboardState.cultivation_clone_plan_override_reason,
+                                on_change=DashboardState.change_cultivation_clone_plan_override_reason,
+                                placeholder="Required reason",
+                                width="240px",
+                                size="2",
+                            ),
+                            gap="2",
+                            align="center",
+                        ),
+                    ),
+                    width="100%",
+                    gap="2",
+                    align="center",
+                    wrap="wrap",
+                ),
+                width="100%",
+                spacing="4",
+            ),
+            width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.heading("Planning History", size="4", color=DARK),
+                        rx.text(
+                            "Current plans reload into the Rolling Clone Planner. Historical crops remain separately editable for lookback and corrections.",
+                            size="2",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.hstack(
+                        rx.select(
+                            ["Last 4 Plans", "Last 8 Plans"],
+                            value=DashboardState.cultivation_clone_plan_lookback,
+                            on_change=DashboardState.change_cultivation_clone_plan_lookback,
+                            width="145px",
+                            size="2",
+                        ),
+                        rx.button(
+                            rx.icon("refresh_cw", size=16),
+                            "Refresh",
+                            on_click=DashboardState.load_cultivation_clone_plan_history,
+                            variant="outline",
+                            color_scheme="teal",
+                            size="2",
+                        ),
+                        gap="2",
+                    ),
+                    width="100%",
+                    align="center",
+                    wrap="wrap",
+                    gap="2",
+                ),
+                cultivation_new_strain_control(),
+                rx.heading("Current Plans", size="3", color=DARK),
+                rx.cond(
+                    DashboardState.cultivation_current_plan_history_rows.length() > 0,
+                    rx.box(
+                        rx.table.root(
+                            rx.table.header(
+                                rx.table.row(
+                                    rx.table.column_header_cell("Crop"),
+                                    rx.table.column_header_cell("Flower Room"),
+                                    rx.table.column_header_cell("Clone Cut"),
+                                    rx.table.column_header_cell("Bench Allocations"),
+                                    rx.table.column_header_cell("Status"),
+                                    rx.table.column_header_cell("Load"),
+                                )
+                            ),
+                            rx.table.body(
+                                rx.foreach(
+                                    DashboardState.cultivation_current_plan_history_rows,
+                                    cultivation_current_plan_history_row,
+                                )
+                            ),
+                            variant="surface",
+                            size="2",
+                            width="100%",
+                        ),
+                        width="100%",
+                        overflow_x="auto",
+                    ),
+                    rx.callout(
+                        "No current plan has been approved yet. Approve the Rolling Clone Planner to create it.",
+                        icon="info",
+                        color_scheme="gray",
+                        width="100%",
+                    ),
+                ),
+                rx.heading("Historical Crops", size="3", color=DARK),
+                rx.cond(
+                    DashboardState.cultivation_clone_plan_lookback_rows.length() > 0,
+                    rx.box(
+                        rx.table.root(
+                            rx.table.header(
+                                rx.table.row(
+                                    rx.table.column_header_cell("Crop"),
+                                    rx.table.column_header_cell("Clone Cut"),
+                                    rx.table.column_header_cell("Bench Allocations"),
+                                    rx.table.column_header_cell("Status"),
+                                    rx.table.column_header_cell("Edit"),
+                                )
+                            ),
+                            rx.table.body(
+                                rx.foreach(
+                                    DashboardState.cultivation_clone_plan_lookback_rows,
+                                    cultivation_clone_plan_history_row,
+                                )
+                            ),
+                            variant="surface",
+                            size="2",
+                            width="100%",
+                        ),
+                        width="100%",
+                        overflow_x="auto",
+                    ),
+                    rx.callout(
+                        "No historical clone plans are available for this lookback.",
+                        icon="info",
+                        color_scheme="gray",
+                        width="100%",
+                    ),
+                ),
+                rx.accordion.root(
+                    rx.accordion.item(
+                        header=rx.hstack(
+                            rx.icon("history", size=17),
+                            rx.text(
+                                rx.cond(
+                                    DashboardState.cultivation_historical_plan_edit_id != "",
+                                    "Edit Saved Clone Plan",
+                                    "Enter an Older Clone Plan",
+                                ),
+                                weight="bold",
+                            ),
+                            rx.badge("F2.10–F4.10 INCLUDED", color_scheme="blue"),
+                            gap="2",
+                            align="center",
+                        ),
+                        content=rx.vstack(
+                            rx.callout(
+                                rx.cond(
+                                    DashboardState.cultivation_historical_plan_edit_id != "",
+                                    "Update the saved bench equivalents below. Saving replaces the existing planning-history record while preserving its crop, date, room, and status.",
+                                    "Use this form for an older plan completed before the Control Tower began saving clone plans. Enter bench equivalents by strain, then save it as an approved historical record.",
+                                ),
+                                icon="info",
+                                color_scheme="blue",
+                                width="100%",
+                            ),
+                            rx.flex(
+                                rx.box(
+                                    rx.text(
+                                        "Historical crop",
+                                        size="1",
+                                        weight="bold",
+                                        color=MUTED,
+                                    ),
+                                    rx.select(
+                                        DashboardState.cultivation_historical_plan_crop_options,
+                                        value=DashboardState.cultivation_historical_plan_crop,
+                                        on_change=DashboardState.change_cultivation_historical_plan_crop,
+                                        disabled=DashboardState.cultivation_historical_plan_edit_id != "",
+                                        width="180px",
+                                    ),
+                                ),
+                                rx.box(
+                                    rx.text(
+                                        "Entered total",
+                                        size="1",
+                                        weight="bold",
+                                        color=MUTED,
+                                    ),
+                                    rx.badge(
+                                        DashboardState.cultivation_historical_plan_total,
+                                        color_scheme="purple",
+                                        size="2",
+                                    ),
+                                ),
+                                rx.spacer(),
+                                rx.hstack(
+                                    rx.cond(
+                                        DashboardState.cultivation_historical_plan_edit_id != "",
+                                        rx.button(
+                                            "Cancel",
+                                            on_click=DashboardState.cancel_cultivation_clone_plan_history_edit,
+                                            variant="outline",
+                                            color_scheme="gray",
+                                        ),
+                                    ),
+                                    rx.button(
+                                        rx.cond(
+                                            DashboardState.cultivation_historical_plan_edit_id != "",
+                                            "Save Changes",
+                                            "Save Historical Plan",
+                                        ),
+                                        on_click=DashboardState.save_cultivation_historical_plan,
+                                        loading=DashboardState.cultivation_historical_plan_saving,
+                                        color_scheme="blue",
+                                    ),
+                                    gap="2",
+                                ),
+                                width="100%",
+                                align="end",
+                                gap="3",
+                                wrap="wrap",
+                            ),
+                            rx.box(
+                                rx.table.root(
+                                    rx.table.header(
+                                        rx.table.row(
+                                            rx.table.column_header_cell("Strain"),
+                                            rx.table.column_header_cell(
+                                                "Bench Equivalents", text_align="right"
+                                            ),
+                                        )
+                                    ),
+                                    rx.table.body(
+                                        rx.foreach(
+                                            DashboardState.cultivation_historical_plan_entry_rows,
+                                            cultivation_historical_plan_entry_row,
+                                        )
+                                    ),
+                                    variant="surface",
+                                    size="2",
+                                    width="100%",
+                                ),
+                                max_height="390px",
+                                overflow_y="auto",
+                                width="100%",
+                            ),
+                            width="100%",
+                            spacing="3",
+                        ),
+                        value="historical-entry",
+                    ),
+                    type="single",
+                    collapsible=True,
+                    default_value="historical-entry",
+                    width="100%",
+                    variant="surface",
+                ),
+                width="100%",
+                spacing="3",
+            ),
+            width="100%",
+        ),
+        width="100%",
+        spacing="4",
+    )
+
+
+def cultivation_clone_allocation_panel() -> rx.Component:
+    return rx.vstack(
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.hstack(
+                            rx.heading("Room Layout & Clone Plan", size="4", color=DARK),
+                            rx.badge(
+                                DashboardState.cultivation_cycle_name,
+                                color_scheme="purple",
+                                variant="solid",
+                                size="2",
+                            ),
+                            rx.badge(
+                                rx.hstack(
+                                    rx.icon("lock", size=13),
+                                    rx.text("FIXED TO CURRENT PLAN"),
+                                    gap="1",
+                                ),
+                                color_scheme="gray",
+                            ),
+                            gap="2",
+                            align="center",
+                            wrap="wrap",
+                        ),
+                        rx.text(
+                            "Room, crop, and flower date come directly from the current rolling clone plan.",
+                            size="2",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.badge("40-day clone-to-flower cycle", color_scheme="teal", size="2"),
+                    width="100%",
+                    align="center",
+                    wrap="wrap",
+                    gap="3",
+                ),
+                rx.grid(
+                    rx.box(
+                        rx.text("Flower Room", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            [f"Flower Room {number}" for number in range(1, 6)],
+                            value=DashboardState.cultivation_flower_room,
+                            on_change=DashboardState.change_cultivation_flower_room,
+                            disabled=True,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Cycle / Crop", size="1", weight="bold", color=MUTED),
+                        rx.input(
+                            value=DashboardState.cultivation_cycle_name,
+                            on_change=DashboardState.change_cultivation_cycle_name,
+                            disabled=True,
+                            placeholder="Example: F4.10",
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Flower Entry Date", size="1", weight="bold", color=MUTED),
+                        rx.input(
+                            type="date",
+                            value=DashboardState.cultivation_flower_entry_date,
+                            on_change=DashboardState.change_cultivation_flower_entry_date,
+                            disabled=True,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Clone Safety Overage", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            ["25%", "26%", "27%", "28%", "29%", "30%"],
+                            value=DashboardState.cultivation_overage_percent.to_string() + "%",
+                            on_change=DashboardState.change_cultivation_overage,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Post-Harvest to Usable", size="1", weight="bold", color=MUTED),
+                        rx.input(
+                            type="number",
+                            min="0",
+                            max="90",
+                            value=DashboardState.cultivation_post_harvest_days,
+                            on_change=DashboardState.change_cultivation_post_harvest_days,
+                            width="100%",
+                        ),
+                    ),
+                    columns=rx.breakpoints(initial="1", sm="2", lg="5"),
+                    gap="3",
+                    width="100%",
+                ),
+                rx.grid(
+                    snapshot_stat_card("Clone Cut Date", DashboardState.cultivation_cut_date, "#7c3aed"),
+                    snapshot_stat_card("Move to Veg", DashboardState.cultivation_veg_transfer_date, "#2563eb"),
+                    snapshot_stat_card("Move to Flower", DashboardState.cultivation_flower_entry_date, "#16a34a"),
+                    snapshot_stat_card("Projected Harvest", DashboardState.cultivation_harvest_date, "#ea580c"),
+                    snapshot_stat_card("Projected Usable", DashboardState.cultivation_available_date, "#0f766e"),
+                    columns=rx.breakpoints(initial="1", sm="2", lg="5"),
+                    gap="3",
+                    width="100%",
+                ),
+                width="100%",
+                spacing="4",
+            ),
+            width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.hstack(
+                            rx.heading("Saved Facility Clone Allocations", size="4", color=DARK),
+                            rx.badge("APPROVED PLANS", color_scheme="green"),
+                            gap="2",
+                            align="center",
+                        ),
+                        rx.text(
+                            "Load the latest approved current plan, set its planting density, and prepare the room layout and clone-cut instructions.",
+                            size="2",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.button(
+                        rx.icon("arrow_left", size=15),
+                        "Back to Rolling Plan",
+                        on_click=DashboardState.change_cultivation_view("clone_planning"),
+                        variant="outline",
+                        color_scheme="purple",
+                        size="2",
+                    ),
+                    width="100%",
+                    align="center",
+                    wrap="wrap",
+                    gap="2",
+                ),
+                rx.cond(
+                    DashboardState.cultivation_approved_current_plan_rows.length() > 0,
+                    rx.box(
+                        rx.table.root(
+                            rx.table.header(
+                                rx.table.row(
+                                    rx.table.column_header_cell("Cycle / Crop"),
+                                    rx.table.column_header_cell("Flower Room"),
+                                    rx.table.column_header_cell("Flower Entry"),
+                                    rx.table.column_header_cell("Approved Bench Allocations"),
+                                    rx.table.column_header_cell("Status"),
+                                    rx.table.column_header_cell("Load"),
+                                )
+                            ),
+                            rx.table.body(
+                                rx.foreach(
+                                    DashboardState.cultivation_approved_current_plan_rows,
+                                    cultivation_approved_plan_allocation_row,
+                                )
+                            ),
+                            width="100%",
+                            variant="surface",
+                        ),
+                        width="100%",
+                        overflow_x="auto",
+                    ),
+                    rx.callout(
+                        "No approved current plan is available. Approve F5.10 in the Rolling Clone Planner first.",
+                        icon="info",
+                        color_scheme="gray",
+                        width="100%",
+                    ),
+                ),
+                width="100%",
+                spacing="3",
+            ),
+            width="100%",
+            border_left="5px solid #8b5cf6",
+            background="#faf8ff",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.box(
+                        rx.heading("Room Bench Map", size="4", color=DARK),
+                        rx.text(
+                            "Execution view: set plant density, assign the approved strains to exact benches, then use the layout and clone/dome plan with the cultivation team.",
+                            size="2",
+                            color=MUTED,
+                        ),
+                    ),
+                rx.flex(
+                    rx.badge(DashboardState.cultivation_room_square_feet, color_scheme="teal", size="2"),
+                    rx.badge(DashboardState.cultivation_allocated_bench_count, color_scheme="blue", size="2"),
+                    rx.box(
+                        rx.text("Plant density", size="1", weight="bold", color=MUTED),
+                        rx.hstack(
+                            rx.input(
+                                type="number",
+                                min="0.10",
+                                max="2.00",
+                                step="0.05",
+                                value=DashboardState.cultivation_plant_density,
+                                on_change=DashboardState.change_cultivation_plant_density,
+                                width="90px",
+                                size="1",
+                            ),
+                            rx.text("plants / sq ft", size="1", color=MUTED),
+                            gap="2",
+                            align="center",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Strain list", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            ["Clade9 Strains", "Clade9 + Craft Kings Strains"],
+                            value=DashboardState.cultivation_clone_strain_scope,
+                            on_change=DashboardState.change_cultivation_clone_strain_scope,
+                            width="230px",
+                            size="1",
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.button(
+                        rx.cond(DashboardState.cultivation_layout_editing, "Lock Layout", "Edit Layout"),
+                        on_click=DashboardState.toggle_cultivation_layout_editing,
+                        variant="outline",
+                        size="2",
+                    ),
+                    rx.button(
+                        "Restore Defaults",
+                        on_click=DashboardState.reset_cultivation_room_layout,
+                        variant="outline",
+                        color_scheme="gray",
+                        size="2",
+                    ),
+                    rx.button(
+                        "Clear Map",
+                        on_click=DashboardState.clear_cultivation_allocations,
+                        variant="outline",
+                        color_scheme="gray",
+                        size="2",
+                    ),
+                    rx.button(
+                        rx.icon("printer", size=15),
+                        "Print Clone & Dome Plan",
+                        on_click=rx.call_script(
+                            "(() => {"
+                            "const c='qcc-print-clone-dome';"
+                            "const done=()=>document.body.classList.remove(c);"
+                            "document.body.classList.add(c);"
+                            "window.addEventListener('afterprint',done,{once:true});"
+                            "window.print();window.setTimeout(done,3000);"
+                            "})()"
+                        ),
+                        disabled=DashboardState.cultivation_strain_summary_rows.length() == 0,
+                        background="#7c3aed",
+                        color="white",
+                        size="2",
+                    ),
+                    width="100%",
+                    align="end",
+                    wrap="wrap",
+                    gap="2",
+                ),
+                rx.cond(
+                    DashboardState.cultivation_error != "",
+                    rx.callout(
+                        DashboardState.cultivation_error,
+                        icon="triangle_alert",
+                        color_scheme="red",
+                        width="100%",
+                    ),
+                ),
+                rx.cond(
+                    DashboardState.cultivation_message != "",
+                    rx.callout(
+                        DashboardState.cultivation_message,
+                        icon="circle_check",
+                        color_scheme="green",
+                        width="100%",
+                    ),
+                ),
+                rx.cond(
+                    DashboardState.cultivation_unbalanced_benches != "",
+                    rx.callout(
+                        "Bench percentages must total 100%: "
+                        + DashboardState.cultivation_unbalanced_benches,
+                        icon="triangle_alert",
+                        color_scheme="orange",
+                        width="100%",
+                    ),
+                ),
+                rx.grid(
+                    rx.foreach(DashboardState.cultivation_bench_plans, cultivation_bench_card),
+                    columns=rx.breakpoints(initial="1", md="2", xl="3"),
+                    gap="3",
+                    width="100%",
+                ),
+                width="100%",
+                spacing="3",
+            ),
+            width="100%",
+        ),
+        rx.grid(
+            snapshot_stat_card("Target Flower Plants", DashboardState.cultivation_total_target_plants, "#0f766e"),
+            snapshot_stat_card("Recommended Clone Cuts", DashboardState.cultivation_total_clone_cuts, "#7c3aed"),
+            snapshot_stat_card("32-Clone Trays / Domes", DashboardState.cultivation_total_trays, "#ea580c"),
+            snapshot_stat_card("Projected Dry Yield", DashboardState.cultivation_projected_yield, "#2563eb"),
+            columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+            gap="3",
+            width="100%",
+        ),
+        rx.cond(
+            DashboardState.cultivation_strain_summary_rows.length() > 0,
+            rx.card(
+                rx.vstack(
+                    rx.box(
+                        rx.heading("Clone & Dome Cutting Plan", size="4", color=DARK),
+                        rx.text(
+                            "Live execution totals from the exact bench map. Counts update immediately when density, overage, bench splits, or strains change.",
+                            size="2",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.box(
+                        rx.table.root(
+                            rx.table.header(
+                                rx.table.row(
+                                    rx.table.column_header_cell("Strain"),
+                                    rx.table.column_header_cell("Bench(es)"),
+                                    rx.table.column_header_cell("Canopy sq ft", text_align="right"),
+                                    rx.table.column_header_cell("Plants / sq ft", text_align="right"),
+                                    rx.table.column_header_cell("Target Plants", text_align="right"),
+                                    rx.table.column_header_cell("Clone Cuts", text_align="right"),
+                                    rx.table.column_header_cell("32-Clone Trays / Domes", text_align="right"),
+                                    rx.table.column_header_cell("Actual Overage", text_align="right"),
+                                )
+                            ),
+                            rx.table.body(
+                                rx.foreach(
+                                    DashboardState.cultivation_strain_summary_rows,
+                                    cultivation_summary_table_row,
+                                )
+                            ),
+                            width="100%",
+                            min_width="1120px",
+                            variant="surface",
+                        ),
+                        width="100%",
+                        overflow_x="auto",
+                    ),
+                    width="100%",
+                    spacing="3",
+                ),
+                width="100%",
+                border_left="5px solid #7c3aed",
+            ),
+        ),
+        rx.cond(
+            DashboardState.cultivation_future_yield_rows.length() > 0,
+            rx.card(
+                rx.vstack(
+                    rx.box(
+                        rx.heading("Future Yield & Inventory Outlook", size="4", color=DARK),
+                        rx.text(
+                            "Shows the estimated position when this crop becomes usable: current inventory + active crops + this plan − demand − inventory expected to expire.",
+                            size="2",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.box(
+                        rx.table.root(
+                            rx.table.header(
+                                rx.table.row(
+                                    cultivation_info_header(
+                                        "Strain",
+                                        "The cultivar selected in this proposed room allocation.",
+                                    ),
+                                    cultivation_info_header(
+                                        "Current\nlb",
+                                        "Current on-hand inventory weight for this strain across the latest published inventory snapshot.",
+                                    ),
+                                    cultivation_info_header(
+                                        "Scheduled\nlb",
+                                        "Estimated dry yield from rooms already flowering that should become usable before this proposed crop.",
+                                    ),
+                                    cultivation_info_header(
+                                        "Scheduled\nArrival",
+                                        "The expected date, or date range, when those scheduled pounds should finish post-harvest processing and become usable inventory.",
+                                    ),
+                                    cultivation_info_header(
+                                        "This Plan\nlb",
+                                        "Estimated dry yield created by the bench allocation currently being planned.",
+                                    ),
+                                    cultivation_info_header(
+                                        "Weekly Demand\nlb",
+                                        "Recent average weekly unit velocity converted to flower-equivalent pounds using each SKU fill weight.",
+                                    ),
+                                    cultivation_info_header(
+                                        "Expiring\nlb",
+                                        "Current inventory expected to reach its spoilage date before this proposed crop becomes usable.",
+                                    ),
+                                    cultivation_info_header(
+                                        "Projected Balance\nlb",
+                                        "Current inventory plus scheduled and proposed yield, minus forecast demand and expiring inventory.",
+                                    ),
+                                    cultivation_info_header(
+                                        "Weeks\nSupply",
+                                        "Projected balance divided by estimated weekly demand when this crop becomes usable.",
+                                    ),
+                                    cultivation_info_header(
+                                        "Signal",
+                                        "Balanced is 0–4 weeks, Warning is more than 4 through 8 weeks, Excess is more than 8 weeks, and Review means demand could not be calculated.",
+                                    ),
+                                )
+                            ),
+                            rx.table.body(
+                                rx.foreach(
+                                    DashboardState.cultivation_future_yield_rows,
+                                    cultivation_future_yield_table_row,
+                                )
+                            ),
+                            class_name="qcc-cultivation-outlook-table",
+                            width="100%",
+                            min_width="1420px",
+                            variant="surface",
+                        ),
+                        width="100%",
+                        overflow_x="auto",
+                    ),
+                    rx.callout(
+                        "Planning signal: 0–4 weeks = balanced, more than 4 through 8 weeks = warning, and more than 8 weeks = excess. Results are estimates for clone-allocation decisions, not inventory accounting.",
+                        icon="info",
+                        color_scheme="blue",
+                        width="100%",
+                    ),
+                    width="100%",
+                    spacing="3",
+                ),
+                width="100%",
+            ),
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("Active & Planned Flower Rooms Feeding the Outlook", size="4", color=DARK),
+                rx.text(
+                    "Includes active rooms plus saved and on-screen clone plans through F5.10. Completed crops are represented by actual inventory instead.",
+                    size="2",
+                    color=MUTED,
+                ),
+                rx.box(
+                    rx.table.root(
+                        rx.table.header(
+                            rx.table.row(
+                                rx.table.column_header_cell("Crop"),
+                                rx.table.column_header_cell("Room"),
+                                rx.table.column_header_cell("Harvest Date"),
+                                rx.table.column_header_cell("Estimated Dry Yield"),
+                            )
+                        ),
+                        rx.table.body(
+                            rx.foreach(
+                                DashboardState.cultivation_upcoming_crop_rows,
+                                cultivation_upcoming_crop_table_row,
+                            )
+                        ),
+                        width="100%",
+                        variant="surface",
+                    ),
+                    width="100%",
+                    overflow_x="auto",
+                ),
+                width="100%",
+                spacing="3",
+            ),
+            width="100%",
+        ),
+        cultivation_room_layout_print_document(),
+        cultivation_clone_dome_print_document(),
+        width="100%",
+        spacing="4",
+    )
+
+
+def cultivation_foundation_panel() -> rx.Component:
+    return rx.grid(
+        rx.card(
+            rx.vstack(
+                rx.heading("Flower Room Schedule", size="4", color=DARK),
+                rx.text(
+                    "The cultivation calendar and five-room cycle will populate upcoming flower entry and harvest dates here.",
+                    color=MUTED,
+                ),
+                rx.badge("Calendar source reviewed", color_scheme="green"),
+                align="start",
+                spacing="3",
+            )
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("Veg & Mother Inventory", size="4", color=DARK),
+                rx.text(
+                    "Mapped Veg benches, Mother racks, strain counts, transplant dates, and clone availability will connect to each allocation.",
+                    color=MUTED,
+                ),
+                rx.badge("Veg and Mother sources reviewed", color_scheme="green"),
+                align="start",
+                spacing="3",
+            )
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("Projected Yield", size="4", color=DARK),
+                rx.text(
+                    "Historical room, strain, plant-count, wet-weight, and finished dry-trim results will drive the projected harvest output.",
+                    color=MUTED,
+                ),
+                rx.badge("Historical yield sources reviewed", color_scheme="green"),
+                align="start",
+                spacing="3",
+            )
+        ),
+        columns=rx.breakpoints(initial="1", lg="3"),
+        gap="4",
+        width="100%",
+    )
+
+
+def cultivation_demand_availability_panel() -> rx.Component:
+    """Shadow availability model for validating seasonality and stock gaps."""
+    return rx.vstack(
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.heading("Experimental Availability-Adjusted Demand", size="5", color=DARK),
+                        rx.text(
+                            "Compare current SKU Planning velocity with a shipment-based estimate that removes likely constrained weeks after each SKU launches.",
+                            color=MUTED,
+                            size="2",
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.badge("SHADOW MODEL — SKU PLANNING UNCHANGED", color_scheme="purple", size="2"),
+                    width="100%",
+                    align="center",
+                    gap="3",
+                    direction=rx.breakpoints(initial="column", md="row"),
+                ),
+                rx.callout(
+                    "A week with shipments is treated as available. A post-launch zero-shipment week before later shipments is a Likely OOS proxy; a trailing zero week is marked Recent gap — review. These are hypotheses for comparison with crop history, not confirmed inventory facts.",
+                    icon="flask-conical",
+                    color_scheme="purple",
+                    width="100%",
+                ),
+                width="100%",
+                spacing="3",
+            ),
+            width="100%",
+            border_left="5px solid #7c3aed",
+        ),
+        rx.grid(
+            snapshot_stat_card("Flower Strains", DashboardState.cultivation_demand_strain_count, "#0f766e"),
+            snapshot_stat_card("Strain / Size Series", DashboardState.cultivation_demand_sku_count, "#2563eb"),
+            snapshot_stat_card("Likely Constrained Weeks", DashboardState.cultivation_demand_constraint_count, "#7c3aed"),
+            columns=rx.breakpoints(initial="1", sm="3"),
+            gap="3",
+            width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.text("Brand", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            DashboardState.cultivation_demand_brand_options,
+                            value=DashboardState.cultivation_demand_brand_filter,
+                            on_change=DashboardState.change_cultivation_demand_brand_filter,
+                            width="200px",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Strain", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            DashboardState.cultivation_demand_strain_options,
+                            value=DashboardState.cultivation_demand_strain_filter,
+                            on_change=DashboardState.change_cultivation_demand_strain_filter,
+                            width="230px",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("SKU type", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            [
+                                "All Compared SKUs",
+                                "1g Flower",
+                                "3.5g Flower",
+                                "7g Flower",
+                                "1g Pre-Roll",
+                                "3.5g Pre-Rolls",
+                            ],
+                            value=DashboardState.cultivation_demand_sku_filter,
+                            on_change=DashboardState.change_cultivation_demand_sku_filter,
+                            width="210px",
+                        ),
+                    ),
+                    gap="4",
+                    align="end",
+                    wrap="wrap",
+                    width="100%",
+                ),
+                rx.heading("All-Strain Comparison", size="4", color=DARK),
+                rx.vstack(
+                    data_grid(
+                        DashboardState.cultivation_demand_summary_rows,
+                        [
+                            "Brand", "Strain", "SKU\nType", "First Ship\nWeek",
+                            "Last Ship\nWeek", "Calendar\nWeeks", "Shipping\nWeeks",
+                            "Likely\nConstrained\nWeeks", "Recent Gap\nWeeks",
+                            "Current\nVelocity", "Experimental\nAdjusted\nVelocity",
+                            "Adjustment", "Signal",
+                        ],
+                        height="520px",
+                        show_search=True,
+                        class_name="qcc-cultivation-demand-grid",
+                        column_width=165,
+                        minimum_width=2200,
+                        page_size=DashboardState.cultivation_demand_page_size,
+                    ),
+                    rx.flex(
+                        rx.text("Rows", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            ["25", "50", "100"],
+                            value=DashboardState.cultivation_demand_rows_per_page,
+                            on_change=DashboardState.change_cultivation_demand_rows_per_page,
+                            width="82px",
+                            size="1",
+                        ),
+                        align="center",
+                        gap="2",
+                    ),
+                    align="start",
+                    spacing="2",
+                    width="100%",
+                ),
+                width="100%",
+                spacing="3",
+            ),
+            width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("Weekly Evidence", size="4", color=DARK),
+                rx.cond(
+                    DashboardState.cultivation_demand_strain_filter == "All Strains",
+                    rx.callout(
+                        "Choose one strain above to inspect every weekly shipment and availability signal for its compared flower and pre-roll SKUs.",
+                        icon="mouse-pointer-click",
+                        color_scheme="blue",
+                        width="100%",
+                    ),
+                    data_grid(
+                        DashboardState.cultivation_demand_weekly_rows,
+                        [
+                            "Week\nStarting",
+                            "SKU\nType",
+                            "Units\nShipped",
+                            "Availability\nSignal",
+                        ],
+                        height="440px",
+                        show_search=False,
+                        class_name="qcc-cultivation-demand-weekly-grid",
+                        column_width=210,
+                        minimum_width=900,
+                        page_size=25,
+                    ),
+                ),
+                width="100%",
+                spacing="3",
+            ),
+            width="100%",
+        ),
+        width="100%",
+        spacing="4",
+    )
+
+
+def cultivation_historical_yield_panel() -> rx.Component:
+    """Historical room, cycle, and strain performance from the yield workbook."""
+    return rx.vstack(
+        rx.card(
+            rx.flex(
+                rx.box(
+                    rx.heading("Historical Yield Performance", size="5", color=DARK),
+                    rx.text(
+                        "Actual crop-report results are preserved as the cultivation source of truth. Use these benchmarks to compare rooms, strains, and operating cycles before committing a clone allocation.",
+                        color=MUTED,
+                        size="2",
+                    ),
+                ),
+                rx.spacer(),
+                rx.box(
+                    rx.text("Room filter", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        [
+                            "All Flower Rooms",
+                            "Flower Room 1",
+                            "Flower Room 2",
+                            "Flower Room 3",
+                            "Flower Room 4",
+                            "Flower Room 5",
+                        ],
+                        value=DashboardState.cultivation_history_room_filter,
+                        on_change=DashboardState.change_cultivation_history_room_filter,
+                        width="210px",
+                    ),
+                ),
+                width="100%",
+                align="end",
+                gap="4",
+                direction=rx.breakpoints(initial="column", md="row"),
+            ),
+            width="100%",
+            border_left=f"5px solid {ACCENT}",
+        ),
+        rx.grid(
+            snapshot_stat_card(
+                "Completed Harvests",
+                DashboardState.cultivation_history_harvest_count,
+                "#0f766e",
+            ),
+            snapshot_stat_card(
+                "Finished Flower",
+                DashboardState.cultivation_history_total_finished,
+                "#2563eb",
+            ),
+            snapshot_stat_card(
+                "Average / Harvest",
+                DashboardState.cultivation_history_average_finished,
+                "#7c3aed",
+            ),
+            snapshot_stat_card(
+                "Weighted Yield",
+                DashboardState.cultivation_history_weighted_yield,
+                "#ea580c",
+            ),
+            snapshot_stat_card(
+                "Wet Conversion",
+                DashboardState.cultivation_history_average_conversion,
+                "#0891b2",
+            ),
+            columns=rx.breakpoints(initial="1", sm="2", lg="5"),
+            gap="3",
+            width="100%",
+        ),
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger("Rooms & Harvests", value="rooms"),
+                rx.tabs.trigger("Strain Benchmarks", value="strains"),
+                class_name="qcc-tabs",
+            ),
+            rx.tabs.content(
+                rx.vstack(
+                    rx.card(
+                        rx.vstack(
+                            rx.heading("Historical Data Coverage", size="4", color=DARK),
+                            rx.text(
+                                "The workbook contributes room harvests, operating-cycle history, and strain-level crop observations. Values are bundled with this cultivation build for consistent local and Render results.",
+                                color=MUTED,
+                                size="2",
+                            ),
+                            rx.callout(
+                                f"{HISTORICAL_STRAIN_OBSERVATIONS:,} crop/strain observations support the strain benchmarks.",
+                                icon="database",
+                                color_scheme="teal",
+                                width="100%",
+                            ),
+                            rx.callout(
+                                "The room filter changes the KPIs and applies to Individual Harvests and Combine Rooms. Combine Cycles always shows complete cycles across all rooms.",
+                                icon="info",
+                                color_scheme="blue",
+                                width="100%",
+                            ),
+                            width="100%",
+                            spacing="4",
+                        ),
+                        width="100%",
+                    ),
+                    rx.card(
+                        rx.vstack(
+                            rx.flex(
+                                rx.box(
+                                    rx.heading(
+                                        "Historical Room & Harvest Data",
+                                        size="4",
+                                        color=DARK,
+                                    ),
+                                    rx.text(
+                                        "Select individual harvests, room totals, or operating-cycle totals. Every table is sortable by column.",
+                                        size="2",
+                                        color=MUTED,
+                                    ),
+                                ),
+                                rx.spacer(),
+                                rx.box(
+                                    rx.text(
+                                        "Table view",
+                                        size="1",
+                                        weight="bold",
+                                        color=MUTED,
+                                    ),
+                                    rx.select(
+                                        [
+                                            "Individual Harvests",
+                                            "Combine Rooms",
+                                            "Combine Cycles",
+                                        ],
+                                        value=DashboardState.cultivation_history_table_view,
+                                        on_change=DashboardState.change_cultivation_history_table_view,
+                                        width="210px",
+                                    ),
+                                ),
+                                width="100%",
+                                align="end",
+                                gap="4",
+                                direction=rx.breakpoints(
+                                    initial="column", md="row"
+                                ),
+                            ),
+                            rx.cond(
+                                DashboardState.cultivation_history_table_view
+                                == "Individual Harvests",
+                                rx.callout(
+                                    "Fresh Frozen = Yes when the crop report's flower-time field contains (FF). Fresh frozen removal can reduce the canopy represented in the dry-flower result.",
+                                    icon="snowflake",
+                                    color_scheme="blue",
+                                    width="100%",
+                                ),
+                            ),
+                            rx.cond(
+                                DashboardState.cultivation_history_table_view
+                                == "Combine Rooms",
+                                cultivation_history_data_grid(
+                                    DashboardState.cultivation_history_room_table_data,
+                                    HISTORICAL_ROOM_COLUMNS,
+                                    height="470px",
+                                    class_name="qcc-historical-room-grid",
+                                    column_width=132,
+                                    minimum_width=1320,
+                                ),
+                                rx.cond(
+                                    DashboardState.cultivation_history_table_view
+                                    == "Combine Cycles",
+                                    cultivation_history_data_grid(
+                                        DashboardState.cultivation_history_cycle_table_data,
+                                        HISTORICAL_CYCLE_COLUMNS,
+                                        height="470px",
+                                        class_name="qcc-historical-cycle-grid",
+                                        column_width=132,
+                                        minimum_width=1056,
+                                    ),
+                                    cultivation_history_data_grid(
+                                        DashboardState.cultivation_history_harvest_table_data,
+                                        HISTORICAL_HARVEST_COLUMNS,
+                                        height="540px",
+                                        class_name="qcc-historical-harvest-grid",
+                                        column_width=140,
+                                        minimum_width=980,
+                                    ),
+                                ),
+                            ),
+                            width="100%",
+                            spacing="4",
+                        ),
+                        width="100%",
+                    ),
+                    width="100%",
+                    spacing="4",
+                ),
+                value="rooms",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                rx.vstack(
+                    rx.flex(
+                        rx.box(
+                            rx.text(
+                                "Strain filter",
+                                size="1",
+                                weight="bold",
+                                color=MUTED,
+                            ),
+                            rx.select(
+                                DashboardState.cultivation_history_strain_options,
+                                value=DashboardState.cultivation_history_strain_filter,
+                                on_change=DashboardState.change_cultivation_history_strain_filter,
+                                width="240px",
+                            ),
+                        ),
+                        gap="3",
+                        align="end",
+                        width="100%",
+                    ),
+                    rx.card(
+                        rx.vstack(
+                            rx.heading("Top Historical Strain Yields", size="4", color=DARK),
+                            rx.text(
+                                "Finished AB + C flower yield per square foot. Observation counts are shown in the table below and should guide confidence in each benchmark.",
+                                size="2",
+                                color=MUTED,
+                            ),
+                            rx.recharts.bar_chart(
+                                rx.recharts.cartesian_grid(stroke_dasharray="3 3"),
+                                rx.recharts.x_axis(
+                                    data_key="Strain",
+                                    angle=-22,
+                                    text_anchor="end",
+                                    height=92,
+                                ),
+                                rx.recharts.y_axis(),
+                                rx.recharts.graphing_tooltip(),
+                                rx.recharts.bar(
+                                    data_key="Flower Yield",
+                                    fill="#7c3aed",
+                                    radius=[5, 5, 0, 0],
+                                ),
+                                data=DashboardState.cultivation_history_strain_chart_rows,
+                                width="100%",
+                                height=390,
+                            ),
+                            width="100%",
+                            spacing="3",
+                        ),
+                        width="100%",
+                    ),
+                    cultivation_history_data_grid(
+                        DashboardState.cultivation_history_strain_table_data,
+                        HISTORICAL_STRAIN_COLUMNS,
+                        height="590px",
+                        class_name="qcc-historical-strain-grid",
+                        column_width=135,
+                        minimum_width=1485,
+                    ),
+                    width="100%",
+                    spacing="4",
+                ),
+                value="strains",
+                padding_top="1rem",
+            ),
+            default_value="rooms",
+            width="100%",
+        ),
+        width="100%",
+        spacing="4",
+    )
+
+
+def cultivation_panel() -> rx.Component:
+    return rx.vstack(
+        rx.box(
+            rx.heading("Cultivation Planning", size="6", color=DARK),
+            rx.text(
+                "Translate the flower schedule into bench populations, clone cuts, Veg movements, and projected yield.",
+                color=MUTED,
+            ),
+        ),
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger("Clone Allocation", value="clone_planning"),
+                rx.tabs.trigger("Room Layout & Clone Plan", value="clone_allocation"),
+                rx.tabs.trigger("Historical Yield", value="historical_yield"),
+                rx.tabs.trigger("Demand & Availability", value="demand_availability"),
+                rx.tabs.trigger("Planning Foundation", value="foundation"),
+                class_name="qcc-tabs",
+            ),
+            rx.tabs.content(
+                cultivation_clone_planning_panel(),
+                value="clone_planning",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                cultivation_clone_allocation_panel(),
+                value="clone_allocation",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                cultivation_historical_yield_panel(),
+                value="historical_yield",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                cultivation_demand_availability_panel(),
+                value="demand_availability",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                cultivation_foundation_panel(),
+                value="foundation",
+                padding_top="1rem",
+            ),
+            value=DashboardState.cultivation_view,
+            on_change=DashboardState.change_cultivation_view,
+            width="100%",
+        ),
+        width="100%",
+        spacing="4",
+    )
+
+
 def protected_dashboard() -> rx.Component:
     return rx.box(
         rx.vstack(
@@ -10304,6 +14638,7 @@ def protected_dashboard() -> rx.Component:
                     rx.tabs.trigger("Executive Dashboard", value="executive"),
                     rx.tabs.trigger("Sales & Demand Planning", value="sales_demand"),
                     rx.tabs.trigger("Inventory", value="inventory"),
+                    rx.tabs.trigger("Cultivation", value="cultivation"),
                     rx.tabs.trigger("Quality Assurance", value="qa"),
                     rx.cond(
                         DashboardState.is_administrator,
@@ -10325,6 +14660,11 @@ def protected_dashboard() -> rx.Component:
                 rx.tabs.content(
                     inventory_panel(),
                     value="inventory",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    cultivation_panel(),
+                    value="cultivation",
                     padding_top="1.25rem",
                 ),
                 rx.tabs.content(

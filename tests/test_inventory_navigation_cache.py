@@ -7,6 +7,28 @@ from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
 
 
 class InventoryNavigationCacheTest(unittest.TestCase):
+    def test_source_harvest_is_added_only_to_all_inventory(self):
+        state = SimpleNamespace(inventory_weight_unit="Pounds")
+        columns_for_view = DashboardState._inventory_columns_for_view
+
+        all_columns = columns_for_view(state, "all")
+        self.assertEqual(
+            all_columns[all_columns.index("QA Status") - 1],
+            "Source Harvest",
+        )
+        self.assertEqual(
+            all_columns[all_columns.index("QA Status") + 1],
+            "Metrc Tag",
+        )
+
+        for view_name in (
+            "cpg", "bulk", "wip", "aging_cpg", "aging_bulk", "review"
+        ):
+            with self.subTest(view_name=view_name):
+                self.assertNotIn(
+                    "Source Harvest", columns_for_view(state, view_name)
+                )
+
     def test_active_view_reuses_its_cached_row_matrix(self):
         state = SimpleNamespace(
             inventory_view_name="cpg",

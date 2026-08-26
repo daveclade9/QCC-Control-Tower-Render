@@ -45,11 +45,19 @@ body {
 }
 
 .qcc-inventory-grid .gridjs-td {
-  padding: 9px 12px;
-  white-space: normal;
+  padding: 7px 12px;
+  white-space: nowrap;
   vertical-align: middle;
   overflow: hidden;
+  text-overflow: ellipsis;
   box-sizing: border-box;
+  height: 48px !important;
+  max-height: 48px !important;
+}
+
+.qcc-inventory-grid .gridjs-tbody .gridjs-tr {
+  height: 48px !important;
+  max-height: 48px !important;
 }
 
 .qcc-inventory-grid .gridjs-th:nth-child(1),
@@ -392,4 +400,581 @@ body {
   background: transparent !important;
   border: 0 !important;
   box-shadow: none !important;
+}
+
+/* Historical cultivation tables reserve a dedicated sort-control gutter so
+   multi-line headings stay readable while keeping the rollups compact. */
+.qcc-historical-room-grid .gridjs-th,
+.qcc-historical-cycle-grid .gridjs-th,
+.qcc-historical-harvest-grid .gridjs-th,
+.qcc-historical-strain-grid .gridjs-th {
+  position: relative;
+  padding: 9px 28px 9px 8px !important;
+  vertical-align: middle !important;
+  overflow: visible;
+  box-sizing: border-box;
+  color: #ffffff !important;
+  background: #111827 !important;
+  background-clip: border-box !important;
+  border-right: 0 !important;
+  border-bottom: 0 !important;
+  box-shadow: none;
+}
+
+.qcc-historical-room-grid .gridjs-th:not(:last-child)::after,
+.qcc-historical-cycle-grid .gridjs-th:not(:last-child)::after,
+.qcc-historical-harvest-grid .gridjs-th:not(:last-child)::after,
+.qcc-historical-strain-grid .gridjs-th:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  z-index: 8;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.28);
+  pointer-events: none;
+}
+
+.qcc-historical-room-grid .gridjs-th:hover,
+.qcc-historical-cycle-grid .gridjs-th:hover,
+.qcc-historical-harvest-grid .gridjs-th:hover,
+.qcc-historical-strain-grid .gridjs-th:hover {
+  color: #ffffff !important;
+  background: #111827 !important;
+  box-shadow: inset 0 0 0 9999px rgba(20, 150, 155, 0.22);
+}
+
+.qcc-historical-room-grid .gridjs-th:hover .gridjs-th-content,
+.qcc-historical-cycle-grid .gridjs-th:hover .gridjs-th-content,
+.qcc-historical-harvest-grid .gridjs-th:hover .gridjs-th-content,
+.qcc-historical-strain-grid .gridjs-th:hover .gridjs-th-content {
+  color: #ffffff !important;
+}
+
+.qcc-historical-room-grid .gridjs-th-content,
+.qcc-historical-cycle-grid .gridjs-th-content,
+.qcc-historical-harvest-grid .gridjs-th-content,
+.qcc-historical-strain-grid .gridjs-th-content {
+  display: block;
+  position: relative;
+  z-index: 5;
+  width: 100%;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: normal;
+  overflow-wrap: normal;
+  hyphens: none;
+  line-height: 1.12;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.qcc-historical-room-grid .gridjs-th-content,
+.qcc-historical-cycle-grid .gridjs-th-content,
+.qcc-historical-harvest-grid .gridjs-th-content,
+.qcc-historical-strain-grid .gridjs-th-content {
+  font-size: 14px;
+}
+
+.qcc-historical-room-grid .gridjs-sort,
+.qcc-historical-cycle-grid .gridjs-sort,
+.qcc-historical-harvest-grid .gridjs-sort,
+.qcc-historical-strain-grid .gridjs-sort {
+  position: absolute !important;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px !important;
+  min-width: 16px !important;
+  height: 20px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  z-index: 2 !important;
+}
+
+.qcc-historical-room-grid .gridjs-td,
+.qcc-historical-cycle-grid .gridjs-td,
+.qcc-historical-harvest-grid .gridjs-td,
+.qcc-historical-strain-grid .gridjs-td {
+  font-size: 15px;
+  line-height: 1.2;
+  padding: 8px !important;
+}
+
+.qcc-historical-cycle-grid .gridjs-th:first-child,
+.qcc-historical-cycle-grid .gridjs-td:first-child {
+  width: 88px !important;
+  min-width: 88px !important;
+  max-width: 88px !important;
+}
+
+.qcc-historical-room-grid .gridjs-th:last-child,
+.qcc-historical-room-grid .gridjs-td:last-child,
+.qcc-historical-cycle-grid .gridjs-th:last-child,
+.qcc-historical-cycle-grid .gridjs-td:last-child {
+  width: 230px !important;
+  min-width: 230px !important;
+}
+
+/* Cultivation Demand & Availability tables. Long analytical labels wrap onto
+   deliberate lines while the sort control keeps its own protected space. */
+.qcc-cultivation-demand-grid .gridjs-th,
+.qcc-cultivation-demand-weekly-grid .gridjs-th {
+  position: relative;
+  height: 72px !important;
+  min-height: 72px !important;
+  padding: 8px 38px 8px 10px !important;
+  vertical-align: middle;
+  overflow: visible;
+  box-sizing: border-box;
+  background: #111111 !important;
+  border-right: 0 !important;
+}
+
+.qcc-cultivation-demand-grid .gridjs-th:not(:last-child)::after,
+.qcc-cultivation-demand-weekly-grid .gridjs-th:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  z-index: 20;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.78);
+  pointer-events: none;
+}
+
+.qcc-cultivation-demand-grid .gridjs-th-content,
+.qcc-cultivation-demand-weekly-grid .gridjs-th-content {
+  display: block;
+  position: relative;
+  z-index: 4;
+  width: 100%;
+  max-width: none;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.12;
+  white-space: pre-line;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+  hyphens: none;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.qcc-cultivation-demand-grid .gridjs-th-content *,
+.qcc-cultivation-demand-weekly-grid .gridjs-th-content * {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.qcc-cultivation-demand-grid .gridjs-table,
+.qcc-cultivation-demand-weekly-grid .gridjs-table {
+  table-layout: fixed;
+}
+
+.qcc-cultivation-demand-grid .gridjs-th:hover,
+.qcc-cultivation-demand-weekly-grid .gridjs-th:hover {
+  color: #ffffff !important;
+  background: #111827 !important;
+  box-shadow: inset 0 0 0 9999px rgba(20, 150, 155, 0.18);
+}
+
+.qcc-cultivation-demand-grid .gridjs-th:hover .gridjs-th-content,
+.qcc-cultivation-demand-weekly-grid .gridjs-th:hover .gridjs-th-content {
+  color: #ffffff !important;
+  background: transparent !important;
+}
+
+.qcc-cultivation-demand-grid .gridjs-sort,
+.qcc-cultivation-demand-weekly-grid .gridjs-sort {
+  position: absolute !important;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px !important;
+  min-width: 18px !important;
+  height: 22px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  z-index: 2 !important;
+}
+
+.qcc-cultivation-demand-grid .gridjs-td,
+.qcc-cultivation-demand-weekly-grid .gridjs-td {
+  font-size: 14px;
+  line-height: 1.25;
+  padding: 8px 10px !important;
+  vertical-align: middle;
+}
+
+/* Keep the comparison labels readable without making every short column wide. */
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(1),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(1) { width: 130px !important; min-width: 130px !important; max-width: 130px !important; }
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(2),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(2) { width: 165px !important; min-width: 165px !important; max-width: 165px !important; }
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(3),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(3) { width: 130px !important; min-width: 130px !important; max-width: 130px !important; }
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(4),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(4),
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(5),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(5) { width: 150px !important; min-width: 150px !important; max-width: 150px !important; }
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(6),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(6),
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(7),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(7) { width: 145px !important; min-width: 145px !important; max-width: 145px !important; }
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(8),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(8) { width: 175px !important; min-width: 175px !important; max-width: 175px !important; }
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(9),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(9),
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(10),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(10) { width: 155px !important; min-width: 155px !important; max-width: 155px !important; }
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(11),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(11) { width: 195px !important; min-width: 195px !important; max-width: 195px !important; }
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(12),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(12) { width: 140px !important; min-width: 140px !important; max-width: 140px !important; }
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(13),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(13) { width: 190px !important; min-width: 190px !important; max-width: 190px !important; }
+
+/* Keep identity columns visible while the analytical columns scroll. */
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(1),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(1) {
+  position: sticky;
+  left: 0;
+}
+
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(2),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(2) {
+  position: sticky;
+  left: 130px;
+  box-shadow: 2px 0 0 #d8e0e8;
+}
+
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(1),
+.qcc-cultivation-demand-grid .gridjs-th:nth-child(2) {
+  z-index: 8;
+  background: #111111 !important;
+}
+
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(1),
+.qcc-cultivation-demand-grid .gridjs-td:nth-child(2) {
+  z-index: 3;
+  background: #ffffff;
+}
+
+/* The outlook uses one fixed column geometry for both headers and values. */
+.qcc-cultivation-outlook-table {
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.qcc-cultivation-outlook-table th,
+.qcc-cultivation-outlook-table td {
+  box-sizing: border-box;
+  padding: 10px 12px !important;
+  text-align: left !important;
+  vertical-align: middle !important;
+  line-height: 1.2;
+}
+
+/* All Inventory has two additional audit columns. Give that tab its own
+   geometry so its longer headings never collide with sort controls. */
+.qcc-all-inventory-grid .gridjs-table {
+  width: 2160px !important;
+  min-width: 2160px !important;
+}
+
+.qcc-all-inventory-grid .gridjs-th-content {
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+}
+
+.qcc-all-inventory-grid .gridjs-th:nth-child(1),
+.qcc-all-inventory-grid .gridjs-td:nth-child(1) { width: 160px !important; }
+.qcc-all-inventory-grid .gridjs-th:nth-child(2),
+.qcc-all-inventory-grid .gridjs-td:nth-child(2) { width: 190px !important; }
+.qcc-all-inventory-grid .gridjs-th:nth-child(3),
+.qcc-all-inventory-grid .gridjs-td:nth-child(3) { width: 180px !important; }
+.qcc-all-inventory-grid .gridjs-th:nth-child(4),
+.qcc-all-inventory-grid .gridjs-td:nth-child(4) { width: 200px !important; }
+.qcc-all-inventory-grid .gridjs-th:nth-child(5),
+.qcc-all-inventory-grid .gridjs-td:nth-child(5) { width: 130px !important; }
+.qcc-all-inventory-grid .gridjs-th:nth-child(6),
+.qcc-all-inventory-grid .gridjs-td:nth-child(6) { width: 190px !important; }
+.qcc-all-inventory-grid .gridjs-th:nth-child(7),
+.qcc-all-inventory-grid .gridjs-td:nth-child(7) { width: 130px !important; }
+.qcc-all-inventory-grid .gridjs-th:nth-child(8),
+.qcc-all-inventory-grid .gridjs-td:nth-child(8) { width: 270px !important; }
+.qcc-all-inventory-grid .gridjs-th:nth-child(9),
+.qcc-all-inventory-grid .gridjs-td:nth-child(9) { width: 280px !important; }
+.qcc-all-inventory-grid .gridjs-th:nth-child(10),
+.qcc-all-inventory-grid .gridjs-td:nth-child(10) { width: 160px !important; }
+.qcc-all-inventory-grid .gridjs-th:nth-child(11),
+.qcc-all-inventory-grid .gridjs-td:nth-child(11) { width: 270px !important; }
+
+.qcc-cultivation-outlook-table th > div,
+.qcc-cultivation-outlook-table th > span {
+  width: 100%;
+}
+
+.qcc-cultivation-outlook-table th:nth-child(1),
+.qcc-cultivation-outlook-table td:nth-child(1) { width: 155px; min-width: 155px; max-width: 155px; }
+.qcc-cultivation-outlook-table th:nth-child(2),
+.qcc-cultivation-outlook-table td:nth-child(2) { width: 110px; min-width: 110px; max-width: 110px; }
+.qcc-cultivation-outlook-table th:nth-child(3),
+.qcc-cultivation-outlook-table td:nth-child(3) { width: 120px; min-width: 120px; max-width: 120px; }
+.qcc-cultivation-outlook-table th:nth-child(4),
+.qcc-cultivation-outlook-table td:nth-child(4) { width: 150px; min-width: 150px; max-width: 150px; }
+.qcc-cultivation-outlook-table th:nth-child(5),
+.qcc-cultivation-outlook-table td:nth-child(5) { width: 110px; min-width: 110px; max-width: 110px; }
+.qcc-cultivation-outlook-table th:nth-child(6),
+.qcc-cultivation-outlook-table td:nth-child(6) { width: 140px; min-width: 140px; max-width: 140px; }
+.qcc-cultivation-outlook-table th:nth-child(7),
+.qcc-cultivation-outlook-table td:nth-child(7) { width: 105px; min-width: 105px; max-width: 105px; }
+.qcc-cultivation-outlook-table th:nth-child(8),
+.qcc-cultivation-outlook-table td:nth-child(8) { width: 145px; min-width: 145px; max-width: 145px; }
+.qcc-cultivation-outlook-table th:nth-child(9),
+.qcc-cultivation-outlook-table td:nth-child(9) { width: 105px; min-width: 105px; max-width: 105px; }
+.qcc-cultivation-outlook-table th:nth-child(10),
+.qcc-cultivation-outlook-table td:nth-child(10) { width: 130px; min-width: 130px; max-width: 130px; text-align: center !important; }
+
+/* Keep the row limit in a clean control row directly beneath the Grid.js
+   table and its native paging summary. */
+.qcc-historical-grid-with-footer-control {
+  overflow: visible;
+}
+
+.qcc-historical-footer-row-control {
+  position: static;
+  margin-left: 8px;
+  padding: 0;
+  background: transparent;
+}
+
+/* Clone Planning uses the spreadsheet's four-row rhythm while preserving the
+   strain and metric labels during horizontal timeline scrolling. */
+.qcc-clone-plan-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 1631px;
+  table-layout: fixed;
+}
+
+.qcc-clone-plan-scroll,
+.qcc-clone-plan-viewport {
+  position: relative;
+  overscroll-behavior-x: contain;
+}
+
+.qcc-clone-plan-viewport {
+  max-height: 70vh;
+  overflow: auto !important;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+/* The header and rows share the same explicit scroll viewport. This gives
+   sticky positioning a real vertical scroll range and keeps horizontal
+   columns synchronized. */
+.qcc-clone-plan-page-header {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 100 !important;
+  min-width: 1631px;
+  background: #111827;
+  box-shadow: 0 4px 10px rgb(15 23 42 / 24%);
+}
+
+.qcc-clone-plan-page-period {
+  background: #111827;
+}
+
+.qcc-clone-plan-page-period.qcc-current-clone-period {
+  background: #5b21b6 !important;
+  box-shadow: inset 0 0 0 3px #c4b5fd;
+}
+
+.qcc-clone-plan-table thead,
+.qcc-clone-plan-table thead tr {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 40 !important;
+}
+
+.qcc-clone-plan-table thead th {
+  background: #111827 !important;
+  color: #ffffff !important;
+  border-right: 1px solid #64748b !important;
+  height: 58px;
+  padding: 7px 9px !important;
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 45 !important;
+  box-shadow: inset 0 -2px 0 #94a3b8;
+}
+
+.qcc-clone-plan-table thead th:nth-child(1),
+.qcc-clone-plan-table thead th:nth-child(2) {
+  z-index: 50 !important;
+}
+
+.qcc-clone-plan-table tbody td {
+  border-right: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+  height: 43px;
+  padding: 6px 9px !important;
+}
+
+.qcc-clone-plan-table tbody td:nth-child(1) {
+  width: 160px;
+  min-width: 160px;
+  max-width: 160px;
+}
+
+.qcc-clone-plan-table tbody td:nth-child(2) {
+  width: 145px;
+  min-width: 145px;
+  max-width: 145px;
+}
+
+.qcc-clone-plan-table tbody td:nth-child(n + 3) {
+  width: 102px;
+  min-width: 102px;
+  max-width: 102px;
+}
+
+.qcc-clone-plan-table tbody tr:nth-child(4n + 1) td {
+  border-top: 3px solid #94a3b8;
+}
+
+.qcc-clone-plan-table input[type="number"] {
+  font-weight: 800;
+  color: #5b21b6;
+  text-align: center;
+  box-sizing: border-box;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.qcc-clone-plan-table thead th.qcc-current-clone-period {
+  background: #5b21b6 !important;
+  box-shadow: inset 0 0 0 3px #c4b5fd;
+}
+
+.qcc-clone-plan-table td.qcc-current-clone-allocation {
+  background: #ede9fe !important;
+  font-weight: 900;
+}
+
+/* Dedicated field documents remain out of the dashboard flow until one of
+   the print actions temporarily selects it. */
+.qcc-field-print-document {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: landscape;
+    margin: 0.2in;
+  }
+
+  body.qcc-print-room-layout,
+  body.qcc-print-clone-dome {
+    background: #ffffff !important;
+  }
+
+  body.qcc-print-room-layout *,
+  body.qcc-print-clone-dome * {
+    visibility: hidden !important;
+  }
+
+  body.qcc-print-room-layout .qcc-room-layout-print-document,
+  body.qcc-print-room-layout .qcc-room-layout-print-document *,
+  body.qcc-print-clone-dome .qcc-clone-dome-print-document,
+  body.qcc-print-clone-dome .qcc-clone-dome-print-document * {
+    visibility: visible !important;
+  }
+
+  body.qcc-print-room-layout .qcc-room-layout-print-document,
+  body.qcc-print-clone-dome .qcc-clone-dome-print-document {
+    display: block !important;
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    color: #111827 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  body.qcc-print-room-layout .qcc-clone-dome-print-document,
+  body.qcc-print-clone-dome .qcc-room-layout-print-document {
+    display: none !important;
+  }
+
+  /* Invisible dashboard content still consumes printed page height. Keep only
+     the clone/dome document and its ancestors in the print layout so a long
+     dashboard cannot create trailing blank pages. */
+  body.qcc-print-clone-dome *:not(:has(.qcc-clone-dome-print-document)):not(.qcc-clone-dome-print-document):not(.qcc-clone-dome-print-document *) {
+    display: none !important;
+  }
+
+  body.qcc-print-clone-dome *:has(.qcc-clone-dome-print-document) {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  body.qcc-print-clone-dome .qcc-clone-dome-print-document {
+    font-size: 9px !important;
+    line-height: 1.1 !important;
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+  }
+
+  body.qcc-print-clone-dome .qcc-clone-dome-print-document h1,
+  body.qcc-print-clone-dome .qcc-clone-dome-print-document h2,
+  body.qcc-print-clone-dome .qcc-clone-dome-print-document h3 {
+    margin: 0 !important;
+    line-height: 1.05 !important;
+  }
+
+  .qcc-clone-dome-print-table {
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: 8px;
+  }
+
+  .qcc-clone-dome-print-table th,
+  .qcc-clone-dome-print-table td {
+    border: 1px solid #64748b !important;
+    padding: 3px 4px !important;
+    color: #111827 !important;
+    line-height: 1.05 !important;
+  }
+
+  .qcc-clone-dome-print-table thead {
+    display: table-header-group;
+  }
+
+  .qcc-clone-dome-print-table tr {
+    break-inside: avoid;
+  }
 }
