@@ -113,15 +113,37 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertIn("^FO190,2^A0B,18,15^FB250,1,0,C,0", zpl)
         self.assertIn("^FO191,2^A0B,18,15^FB250,1,0,C,0", zpl)
         self.assertEqual(zpl.count("Total Terpenes:"), 2)
-        self.assertIn("^FT225,244^A0B,17,9", zpl)
-        self.assertIn("^FT246,244^A0B,17,9", zpl)
+        self.assertIn("^FT225,244^A0B,17,9^FDLimonene: 1.10%^FS", zpl)
+        self.assertIn("^FT225,126^A0B,17,9^FDLinalool: 0.49%^FS", zpl)
+        self.assertIn("^FT246,244^A0B,17,9^FDAlpha-Pinene: 0.46%^FS", zpl)
+        self.assertIn("^FT246,126^A0B,17,9^FDOther: 0.83%^FS", zpl)
         self.assertIn("07/13/26      Expiration Date: 02/27/27", zpl)
         self.assertIn("^FT315,250^A0B,14,12", zpl)
         self.assertIn("^BY1,3,22", zpl)
-        self.assertIn("1.10%    Linalool: 0.49%", zpl)
-        self.assertIn("0.46%    Other: 0.83%", zpl)
+        self.assertIn("^BY1,3,22^FT412,254^BCB,,N,N", zpl)
+        self.assertIn(
+            "^FO418,2^AAB,9,5^FB190,1,0,C,0"
+            "^FD1A4110300002A31000037497-A^FS",
+            zpl,
+        )
         self.assertIn("1A4110300002A31000037497-A", zpl)
         self.assertNotIn("1A4110300002A31000037498-A", zpl)
+
+    def test_barcode_text_repositioning_is_vertical_only(self):
+        vertical_context, vertical_errors = prepare_label_context(
+            self.package(), DIAMOND_ANALYTES, "3.5g Flower"
+        )
+        horizontal_context, horizontal_errors = prepare_label_context(
+            self.package(), DIAMOND_ANALYTES, "7g Flower"
+        )
+
+        vertical_zpl = build_zpl(vertical_context, vertical_errors)
+        horizontal_zpl = build_zpl(horizontal_context, horizontal_errors)
+
+        self.assertIn("^BCB,,N,N", vertical_zpl)
+        self.assertIn("^AAB,9,5^FB190", vertical_zpl)
+        self.assertNotIn("^AAB,9,5^FB190", horizontal_zpl)
+        self.assertIn("^BCN,,Y,N", horizontal_zpl)
 
     def test_vertical_strain_titles_are_centered_and_sized_to_fit(self):
         context, errors = prepare_label_context(
