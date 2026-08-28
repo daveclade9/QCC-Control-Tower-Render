@@ -458,12 +458,22 @@ def prepare_label_context(
 
     strain = _clean_text(package.get("strain", ""), 32)
     brand = _clean_text(package.get("brand", ""), 24)
-    lot = _clean_text(
-        lot_number
-        or package.get("production_batch_number", "")
-        or package.get("source_harvest_names", ""),
-        42,
+    partner_flower = (
+        brand.lower() in {"craft kings", "royal smalls"}
+        and "flower" in package_format.lower()
     )
+    if partner_flower:
+        default_lot = (
+            package.get("source_production_batch", "")
+            or package.get("production_batch_number", "")
+            or package.get("source_harvest_names", "")
+        )
+    else:
+        default_lot = (
+            package.get("production_batch_number", "")
+            or package.get("source_harvest_names", "")
+        )
+    lot = _clean_text(lot_number or default_lot, 42)
     if not strain:
         errors.append("The strain/product name is missing.")
     if not lot:

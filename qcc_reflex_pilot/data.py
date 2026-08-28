@@ -906,11 +906,22 @@ def _infer_qa_strain(row: pd.Series) -> str:
     def text_value(value: Any) -> str:
         return "" if value is None or pd.isna(value) else str(value).strip()
 
-    inventory_value = text_value(row.get("inventory_strain", ""))
     invalid_values = {
         "", "nan", "none", "<na>", "strain needs review", "needs review",
         "bulk", "bulk flower", "flower", "packaged flower", "test sample",
     }
+
+    # Craft Kings and Royal Smalls flower labels must use Metrc's Item Strain
+    # (the Item Strain column in the package export). Their source harvests may
+    # contain several cultivars and are lineage, not the marketed label strain.
+    brand = text_value(row.get("inventory_brand", "")).lower()
+    sku_type = text_value(row.get("inventory_sku_type", "")).lower()
+    if brand in {"craft kings", "royal smalls"} and "flower" in sku_type:
+        item_strain = text_value(row.get("inventory_item_strain", ""))
+        if item_strain.lower() not in invalid_values:
+            return normalize_strain_name(item_strain)
+
+    inventory_value = text_value(row.get("inventory_strain", ""))
     if inventory_value.lower() not in invalid_values:
         return normalize_strain_name(inventory_value)
 
@@ -1006,9 +1017,11 @@ def _prepare_qa_packages(
         for source, target in [
             ("brand", "inventory_brand"),
             ("strain", "inventory_strain"),
+            ("metrc_strain", "inventory_item_strain"),
             ("sku_type", "inventory_sku_type"),
             ("expiration_date", "inventory_expiration_date"),
             ("production_batch_number", "inventory_production_batch_number"),
+            ("source_production_batch", "inventory_source_production_batch"),
         ]:
             if source in inventory_packages:
                 wanted.append(source)
@@ -1020,26 +1033,132 @@ def _prepare_qa_packages(
         current["bulk_package_tag"] = current["source_package_labels"].map(
             lambda value: (extract_metrc_tags(value) or [""])[0]
         )
-        if "production_batch_number" in inventory_packages:
-            batch_lookup = (
-                inventory_packages[["package_tag", "production_batch_number"]]
-                .drop_duplicates("package_tag", keep="last")
-                .rename(columns={
-                    "package_tag": "bulk_package_tag",
-                    "production_batch_number": "source_production_batch_number",
-                })
+        source_wanted = ["package_tag"]
+        source_rename = {"package_tag": "bulk_package_tag"}
+        for source, target in [
+            ("brand", "source_inventory_brand"),
+            ("strain", "source_inventory_strain"),
+            ("metrc_strain", "source_inventory_item_strain"),
+            ("sku_type", "source_inventory_sku_type"),
+            (
+                "source_production_batch",
+                "source_inventory_source_production_batch",
+            ),
+            (
+                "production_batch_number",
+                "source_inventory_production_batch_number",
+            ),
+        ]:
+            if source in inventory_packages:
+                source_wanted.append(source)
+                source_rename[source] = target
+        source_lookup = (
+            inventory_packages[source_wanted]
+            .drop_duplicates("package_tag", keep="last")
+            .rename(columns=source_rename)
+        )
+        current = current.merge(source_lookup, on="bulk_package_tag", how="left")
+
+        # A tested bulk tag may have been finished and therefore be absent from
+        # the latest Active Packages snapshot. Its active child packages still
+        # identify that tag in Source Package(s), and carry the authoritative
+        # Item Strain and production-batch fields needed by the label.
+        if "source_packages" in inventory_packages:
+            descendant_wanted = ["source_packages"]
+            descendant_rename: dict[str, str] = {}
+            for source, target in [
+                ("brand", "descendant_inventory_brand"),
+                ("strain", "descendant_inventory_strain"),
+                ("metrc_strain", "descendant_inventory_item_strain"),
+                ("sku_type", "descendant_inventory_sku_type"),
+                (
+                    "source_production_batch",
+                    "descendant_inventory_source_production_batch",
+                ),
+                (
+                    "production_batch_number",
+                    "descendant_inventory_production_batch_number",
+                ),
+            ]:
+                if source in inventory_packages:
+                    descendant_wanted.append(source)
+                    descendant_rename[source] = target
+            descendant_lookup = inventory_packages[descendant_wanted].copy()
+            descendant_lookup["ancestor_package_tag"] = descendant_lookup[
+                "source_packages"
+            ].map(extract_metrc_tags)
+            descendant_lookup = descendant_lookup.explode("ancestor_package_tag")
+            descendant_lookup["ancestor_package_tag"] = descendant_lookup[
+                "ancestor_package_tag"
+            ].fillna("").astype(str).str.strip()
+            descendant_lookup = descendant_lookup[
+                descendant_lookup["ancestor_package_tag"].ne("")
+            ]
+            descendant_lookup = (
+                descendant_lookup
+                .drop(columns=["source_packages"])
+                .drop_duplicates("ancestor_package_tag", keep="first")
+                .rename(columns=descendant_rename)
             )
-            current = current.merge(batch_lookup, on="bulk_package_tag", how="left")
+            current = current.merge(
+                descendant_lookup,
+                left_on="package_tag",
+                right_on="ancestor_package_tag",
+                how="left",
+            )
     for column in [
-        "inventory_brand", "inventory_strain", "inventory_sku_type",
+        "inventory_brand", "inventory_strain", "inventory_item_strain",
+        "inventory_sku_type",
         "inventory_expiration_date", "inventory_production_batch_number",
-        "source_production_batch_number",
+        "inventory_source_production_batch", "source_inventory_brand",
+        "source_inventory_strain", "source_inventory_item_strain",
+        "source_inventory_sku_type", "source_inventory_production_batch_number",
+        "source_inventory_source_production_batch",
+        "descendant_inventory_brand", "descendant_inventory_strain",
+        "descendant_inventory_item_strain", "descendant_inventory_sku_type",
+        "descendant_inventory_production_batch_number",
+        "descendant_inventory_source_production_batch",
     ]:
         if column not in current:
             current[column] = pd.NA
-    current["production_batch_number"] = current[
-        "source_production_batch_number"
-    ].combine_first(current["inventory_production_batch_number"])
+
+    def prefer_nonblank(*columns: str) -> pd.Series:
+        preferred = pd.Series(pd.NA, index=current.index, dtype="object")
+        for column in columns:
+            values = current[column].astype("string").str.strip()
+            values = values.mask(values.eq(""), pd.NA)
+            preferred = preferred.combine_first(values)
+        return preferred
+
+    # The tested package may not itself be present in the inventory snapshot;
+    # in that case, inherit its label metadata from the associated bulk package.
+    current["inventory_brand"] = prefer_nonblank(
+        "inventory_brand", "source_inventory_brand", "descendant_inventory_brand"
+    )
+    current["inventory_strain"] = prefer_nonblank(
+        "inventory_strain", "source_inventory_strain", "descendant_inventory_strain"
+    )
+    current["inventory_item_strain"] = prefer_nonblank(
+        "inventory_item_strain", "source_inventory_item_strain",
+        "descendant_inventory_item_strain",
+    )
+    current["inventory_sku_type"] = prefer_nonblank(
+        "inventory_sku_type", "source_inventory_sku_type",
+        "descendant_inventory_sku_type",
+    )
+
+    # Preserve Metrc Columns N and M separately. The label formatter applies
+    # the brand-specific priority: N, then M, then Source Harvest Name.
+    current["source_production_batch"] = prefer_nonblank(
+        "source_inventory_source_production_batch",
+        "inventory_source_production_batch",
+        "descendant_inventory_source_production_batch",
+    )
+    current["production_batch_number"] = prefer_nonblank(
+        "source_inventory_production_batch_number",
+        "inventory_production_batch_number",
+        "descendant_inventory_production_batch_number",
+    )
 
     fallback_rows = current.rename(columns={"category": "item_category"}).copy()
     fallback_rows["unit_weight_grams"] = pd.NA

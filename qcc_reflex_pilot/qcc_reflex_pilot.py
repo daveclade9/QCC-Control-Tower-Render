@@ -1471,11 +1471,23 @@ class DashboardState(rx.State):
         self.qa_zebra_bulk_uid = source_tags[0] if len(source_tags) == 1 else ""
         harvest = extract_harvest_date(selected.get("source_harvest_names", ""))
         self.qa_zebra_harvest_date = harvest.isoformat() if harvest else ""
-        self.qa_zebra_lot_number = str(
-            selected.get("production_batch_number", "")
-            or selected.get("source_harvest_names", "")
-            or ""
+        brand = str(selected.get("brand", "") or "").strip().lower()
+        partner_flower = (
+            brand in {"craft kings", "royal smalls"}
+            and "flower" in self.qa_zebra_package_format.lower()
         )
+        if partner_flower:
+            lot_number = (
+                selected.get("source_production_batch", "")
+                or selected.get("production_batch_number", "")
+                or selected.get("source_harvest_names", "")
+            )
+        else:
+            lot_number = (
+                selected.get("production_batch_number", "")
+                or selected.get("source_harvest_names", "")
+            )
+        self.qa_zebra_lot_number = str(lot_number or "")
         # A COA describes the tested material, not necessarily the finished
         # package size that will be printed from it. Preserve the operator's
         # explicit Package Format selection when switching laboratory records.
@@ -4957,6 +4969,14 @@ class DashboardState(rx.State):
                 self._initialize_production_target()
             return
         yield DashboardState.load_sales_background
+
+    @rx.event
+    def change_shipment_exception_view(self, value: str):
+        self.shipment_exception_view = value
+
+    @rx.event
+    def change_shipment_exception_summary_view(self, value: bool):
+        self.shipment_exception_show_manifest_summary = value
 
     @rx.event
     def change_workspace_view(self, value: str):

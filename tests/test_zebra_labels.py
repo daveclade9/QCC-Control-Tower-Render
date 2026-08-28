@@ -210,6 +210,47 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(context["lot_number"], "DB-F4.8-07.13.2026-L1")
 
+    def test_partner_flower_lot_uses_source_production_batch_first(self):
+        context, errors = prepare_label_context(
+            self.package(
+                brand="Craft Kings",
+                strain="Citrus Haze",
+                source_production_batch="CH-F4.3-06.08.2026-L1",
+                production_batch_number="CH-F4.3-06.08.2026",
+                source_harvest_names=(
+                    "1A-#1_Uncle_Snoop-F4.3-06.08.2026, "
+                    "1A-#37_Blue_Dream-F6.3-05.19.2026"
+                ),
+            ),
+            DIAMOND_ANALYTES,
+            "7g Flower",
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(context["lot_number"], "CH-F4.3-06.08.2026-L1")
+
+    def test_partner_flower_lot_falls_back_from_column_n_to_m_to_harvest(self):
+        base = self.package(
+            brand="Royal Smalls",
+            strain="Citrus Haze",
+            source_production_batch="",
+            production_batch_number="CH-F4.3-06.08.2026-L1",
+            source_harvest_names="Citrus Haze-F4.3-06.08.2026",
+        )
+        context, errors = prepare_label_context(
+            base, DIAMOND_ANALYTES, "28g Flower"
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(context["lot_number"], "CH-F4.3-06.08.2026-L1")
+
+        base["production_batch_number"] = ""
+        context, errors = prepare_label_context(
+            base, DIAMOND_ANALYTES, "28g Flower"
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            context["lot_number"], "Citrus Haze-F4.3-06.08.2026"
+        )
+
     def test_lab_sample_resolves_bulk_production_batch_number(self):
         lab_results = pd.DataFrame([{
             "packaged_license": "C000313",
@@ -236,6 +277,102 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertEqual(
             prepared.iloc[0]["production_batch_number"],
             "DB-F4.8-07.13.2026-L1",
+        )
+
+    def test_partner_flower_uses_item_strain_and_preserves_both_batch_columns(self):
+        sample_tag = "1A4110300002A31000037084"
+        bulk_tag = "1A4110300002A31000037083"
+        lab_results = pd.DataFrame([{
+            "packaged_license": "M000000",
+            "packaged_facility": "QCC Manufacturing",
+            "package_tag": sample_tag,
+            "source_harvest_names": (
+                "1A-#1_Uncle_Snoop-F4.3-06.08.2026, "
+                "1A-#37_Blue_Dream-F6.3-05.19.2026"
+            ),
+            "source_package_labels": bulk_tag,
+            "item": "Craft Kings Citrus Haze 7g Flower Test Sample",
+            "category": "Buds/Flower",
+            "lab_testing_status": "TestPassed",
+            "test_date": "2026-08-20",
+            "lab_facility": "Example Lab",
+            "test_name": "Total THC (%)",
+            "result": 30.0,
+        }])
+        inventory_packages = pd.DataFrame([{
+            "package_tag": bulk_tag,
+            "brand": "Craft Kings",
+            "strain": "1A-#1_Uncle_Snoop",
+            "metrc_strain": "Citrus Haze",
+            "sku_type": "7g Flower",
+            "source_production_batch": "CH-F4.3-06.08.2026-L1",
+            "production_batch_number": "CH-F4.3-06.08.2026",
+        }])
+
+        prepared = _prepare_qa_packages(lab_results, inventory_packages)
+        package = prepared.iloc[0].to_dict()
+
+        self.assertEqual(package["strain"], "Citrus Haze")
+        self.assertEqual(
+            package["source_production_batch"], "CH-F4.3-06.08.2026-L1"
+        )
+        self.assertEqual(
+            package["production_batch_number"], "CH-F4.3-06.08.2026"
+        )
+        context, errors = prepare_label_context(
+            package, DIAMOND_ANALYTES, "7g Flower"
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(context["strain"], "Citrus Haze")
+        self.assertEqual(context["lot_number"], "CH-F4.3-06.08.2026-L1")
+
+    def test_finished_tested_tag_inherits_label_fields_from_active_descendants(self):
+        tested_tag = "1A4110300002A31000037084"
+        lab_results = pd.DataFrame([{
+            "packaged_license": "C000313",
+            "packaged_facility": "QCC Cultivation",
+            "package_tag": tested_tag,
+            "source_harvest_names": (
+                "1A-#1_Uncle_Snoop-F4.3-06.08.2026, "
+                "1A-#37_Blue_Dream-F6.3-05.19.2026"
+            ),
+            "source_package_labels": "",
+            "item": "Lab Sample",
+            "category": "Buds/Flower",
+            "lab_testing_status": "TestPassed",
+            "test_date": "2026-08-20",
+            "lab_facility": "Example Lab",
+            "test_name": "Total THC (%)",
+            "result": 30.0,
+        }])
+        inventory_packages = pd.DataFrame([{
+            "package_tag": "1A4110300002A31000037410",
+            "source_packages": tested_tag,
+            "brand": "Craft Kings",
+            "strain": "Citrus Haze",
+            "metrc_strain": "Citrus Haze",
+            "sku_type": "14g Flower",
+            "source_production_batch": "Citrus_Haze-F6.3-05.19.2026-L1",
+            "production_batch_number": "",
+        }])
+
+        prepared = _prepare_qa_packages(lab_results, inventory_packages)
+        package = prepared.iloc[0].to_dict()
+
+        self.assertEqual(package["brand"], "Craft Kings")
+        self.assertEqual(package["strain"], "Citrus Haze")
+        self.assertEqual(
+            package["source_production_batch"],
+            "Citrus_Haze-F6.3-05.19.2026-L1",
+        )
+        context, errors = prepare_label_context(
+            package, DIAMOND_ANALYTES, "14g Flower",
+            bulk_uid="1A4110300002A31000037083",
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(context["strain"], "Citrus Haze")
+        self.assertEqual(
+            context["lot_number"], "Citrus_Haze-F6.3-05.19.2026-L1"
         )
 
     def test_package_format_controls_suffix_weight_and_quantity(self):
