@@ -31,13 +31,17 @@ def _records(frame: pd.DataFrame) -> list[dict[str, Any]]:
 def build_availability_demand_analysis(
     demand: pd.DataFrame,
     velocity: pd.DataFrame,
+    period_days: int | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Return all-strain flower summaries and weekly shipment signals.
 
     Weeks begin on Monday.  The first week in each strain/SKU series is the
     first shipped week, so pre-launch history is never treated as an outage.
-    A zero week followed by a later shipment is a likely constrained week; a
-    zero week after the latest shipment is a recent gap needing review.
+    A zero full week followed by a later shipment is a likely constrained
+    week; a zero week after the latest shipment is a recent gap needing review.
+    Only likely constrained weeks are removed from the adjusted denominator.
+    Recent trailing gaps remain counted so the operational shadow model does
+    not mistake slowing demand for a confirmed stockout.
     """
     if demand.empty:
         return {"summary": [], "weekly": []}
@@ -72,7 +76,14 @@ def build_availability_demand_analysis(
     weekly_actual = data.groupby(
         ["brand", "strain", "sku_type", "week_start"], dropna=False
     )["shipped_units"].sum()
-    history_end = data["week_start"].max()
+    history_end_date = pd.Timestamp(data["created_at"].max()).normalize()
+    history_end_week = history_end_date - pd.to_timedelta(
+        history_end_date.weekday(), unit="D"
+    )
+    period_start = (
+        history_end_date - pd.Timedelta(days=max(int(period_days), 1) - 1)
+        if period_days else None
+    )
 
     current_velocity: dict[tuple[str, str, str], float] = {}
     if not velocity.empty:
@@ -97,22 +108,58 @@ def build_availability_demand_analysis(
     for brand, strain, sku_type in keys.itertuples(index=False, name=None):
         key = (brand, strain, sku_type)
         series = weekly_actual.loc[key]
-        first_week = pd.Timestamp(series.index.min())
+        key_rows = data[
+            data["brand"].eq(brand)
+            & data["strain"].eq(strain)
+            & data["sku_type"].eq(sku_type)
+        ]
+        first_ship_date = pd.Timestamp(key_rows["created_at"].min()).normalize()
+        analysis_start = max(
+            first_ship_date,
+            period_start if period_start is not None else first_ship_date,
+        )
+        if analysis_start > history_end_date:
+            continue
+        window_rows = key_rows[
+            key_rows["created_at"].between(
+                analysis_start, history_end_date + pd.Timedelta(days=1),
+                inclusive="left",
+            )
+        ]
+        if window_rows.empty:
+            continue
+        first_week = analysis_start - pd.to_timedelta(
+            analysis_start.weekday(), unit="D"
+        )
         last_ship_week = pd.Timestamp(series.index.max())
-        all_weeks = pd.date_range(first_week, history_end, freq="W-MON")
+        all_weeks = pd.date_range(first_week, history_end_week, freq="W-MON")
         full = series.reindex(all_weeks, fill_value=0.0)
         active_weeks = int(full.gt(0).sum())
-        total_weeks = int(len(full))
+        calendar_days = int((history_end_date - analysis_start).days) + 1
+        calendar_weeks = calendar_days / 7
+        complete_week = (
+            (full.index >= analysis_start)
+            & ((full.index + pd.Timedelta(days=6)) <= history_end_date)
+        )
         constrained_weeks = int(
-            ((full.eq(0)) & (full.index < last_ship_week)).sum()
+            (
+                full.eq(0)
+                & (full.index < last_ship_week)
+                & complete_week
+            ).sum()
         )
         recent_gap_weeks = int(
-            ((full.eq(0)) & (full.index > last_ship_week)).sum()
+            (
+                full.eq(0)
+                & (full.index > last_ship_week)
+                & complete_week
+            ).sum()
         )
-        total_units = float(full.sum())
-        adjusted_velocity = total_units / active_weeks if active_weeks else 0.0
+        total_units = float(window_rows["shipped_units"].sum())
+        availability_weeks = max(calendar_weeks - constrained_weeks, 1 / 7)
+        adjusted_velocity = total_units / availability_weeks
         calendar_velocity = current_velocity.get(
-            key, total_units / total_weeks if total_weeks else 0.0
+            key, total_units / calendar_weeks if calendar_weeks else 0.0
         )
         uplift = (
             (adjusted_velocity / calendar_velocity - 1) * 100
@@ -129,9 +176,10 @@ def build_availability_demand_analysis(
             "Brand": brand,
             "Strain": strain,
             "SKU Type": sku_type,
-            "First Ship Week": first_week.date().isoformat(),
+            "First Ship Week": first_ship_date.date().isoformat(),
             "Last Ship Week": last_ship_week.date().isoformat(),
-            "Calendar Weeks": total_weeks,
+            "Calendar Weeks": round(calendar_weeks, 2),
+            "Availability Weeks": round(availability_weeks, 2),
             "Shipping Weeks": active_weeks,
             "Likely Constrained Weeks": constrained_weeks,
             "Recent Gap Weeks": recent_gap_weeks,

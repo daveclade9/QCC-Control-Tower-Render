@@ -1,5 +1,7 @@
 from qcc_reflex_pilot.cultivation import (
     UPCOMING_CROP_ALLOCATIONS,
+    HISTORICAL_CLONE_ALLOCATIONS,
+    approved_clone_plan_for_crop,
     bench_plant_capacity,
     crop_is_scheduled_supply,
     clone_plan_edit_window,
@@ -9,6 +11,7 @@ from qcc_reflex_pilot.cultivation import (
     cultivation_timeline,
     cultivation_flower_supply_bucket,
     default_split_percentages,
+    exact_bench_allocations,
     estimated_yield_g_per_sqft,
     estimated_yield_pounds,
     inventory_counts_as_current_cultivation_supply,
@@ -18,6 +21,7 @@ from qcc_reflex_pilot.cultivation import (
     forecast_two_week_balances,
     recommend_clone_trays,
     room_bench_plans,
+    scheduled_supply_reconciliation,
     sku_fill_grams,
 )
 
@@ -87,6 +91,22 @@ def test_default_bench_splits_always_total_one_hundred_percent():
     assert default_split_percentages(3) == (34.0, 33.0, 33.0)
 
 
+def test_exact_room_map_replaces_planning_values_with_physical_benches():
+    benches = room_bench_plans("Flower Room 5")
+    benches[0].update({"strain_1": "Diamond Bar", "percent_1": 100.0})
+    benches[1].update({
+        "strain_count": 2,
+        "strain_1": "Diamond Bar",
+        "percent_1": 60.0,
+        "strain_2": "J1",
+        "percent_2": 40.0,
+    })
+
+    allocations = exact_bench_allocations(benches)
+
+    assert allocations == {"Diamond Bar": 1.6, "J1": 0.4}
+
+
 def test_yield_estimate_blends_strain_and_room_history():
     assert estimated_yield_g_per_sqft("Diamond Bar", "Flower Room 1") == 95.3
     assert estimated_yield_pounds(185, "Diamond Bar", "Flower Room 1") == 38.9
@@ -97,6 +117,34 @@ def test_new_strain_uses_room_history_until_its_own_yield_exists():
         "Hood Candy", "Flower Room 1"
     ) == estimated_yield_g_per_sqft("Jelly Cake", "Flower Room 1")
     assert estimated_yield_pounds(185, "Hood Candy", "Flower Room 1") > 0
+
+
+def test_gelato_cherry_lemon_aliases_to_hood_candy_not_lcg():
+    assert normalized_strain("GCL") == "hood candy"
+    assert normalized_strain("Gelato Cherry Lemon") == "hood candy"
+    assert normalized_strain("Lemon Cherry Gelato") == "lemon cherry gelato"
+
+
+def test_gcl_canopy_is_separate_from_lemon_cherry_gelato():
+    expected = {
+        "F2.9": {"lemon cherry gelato": 185.0, "hood candy": 82.5},
+        "F4.9": {"lemon cherry gelato": 185.0, "hood candy": 60.0},
+        "F1.10": {"lemon cherry gelato": 165.0, "hood candy": 80.0},
+    }
+    actual: dict[str, dict[str, float]] = {}
+    for row in UPCOMING_CROP_ALLOCATIONS:
+        crop = str(row["crop"])
+        if crop not in expected:
+            continue
+        strain = normalized_strain(row["strain"])
+        if strain not in {"lemon cherry gelato", "hood candy"}:
+            continue
+        actual.setdefault(crop, {})[strain] = (
+            actual.setdefault(crop, {}).get(strain, 0.0)
+            + float(row["square_feet"])
+        )
+
+    assert actual == expected
 
 
 def test_projected_dates_include_flower_and_post_harvest_time():
@@ -110,9 +158,67 @@ def test_harvested_crop_remains_scheduled_until_processing_finishes():
     assert crop_is_scheduled_supply(
         date(2026, 8, 10), date(2026, 8, 23), date(2026, 9, 30), 30
     )
-    assert not crop_is_scheduled_supply(
+    assert crop_is_scheduled_supply(
         date(2026, 8, 10), date(2026, 9, 10), date(2026, 9, 30), 30
     )
+    assert not crop_is_scheduled_supply(
+        date(2026, 8, 10), date(2026, 9, 25), date(2026, 9, 30), 30
+    )
+
+
+def test_fresh_frozen_plants_reduce_scheduled_by_exact_crop_population():
+    result = scheduled_supply_reconciliation(
+        36.0, 139, 46, 0.0,
+        date(2026, 11, 6), date(2026, 10, 20),
+    )
+
+    assert result["fresh_frozen_percent"] == 33.1
+    assert result["fresh_frozen_reduction_lbs"] == 11.9
+    assert result["net_projected_lbs"] == 24.1
+    assert result["forecast_counted_lbs"] == 24.1
+
+
+def test_creative_use_reduces_post_fresh_frozen_scheduled_pounds():
+    result = scheduled_supply_reconciliation(
+        36.0, 139, 46, 0.0,
+        date(2026, 11, 6), date(2026, 10, 20),
+        creative_use_reduction_lbs=8.0,
+    )
+
+    assert result["fresh_frozen_reduction_lbs"] == 11.9
+    assert result["creative_use_reduction_lbs"] == 8.0
+    assert result["net_projected_lbs"] == 16.1
+    assert result["forecast_counted_lbs"] == 16.1
+
+
+def test_actual_processing_hides_unconfirmed_projection_remainder():
+    result = scheduled_supply_reconciliation(
+        36.0, 139, 0, 22.0,
+        date(2026, 8, 10), date(2026, 9, 10),
+    )
+
+    assert result["unconfirmed_remainder_lbs"] == 14.0
+    assert result["forecast_counted_lbs"] == 0.0
+    assert result["status"] == "Actual detected — remainder unconfirmed"
+
+
+def test_scheduled_supply_expires_45_days_after_harvest():
+    result = scheduled_supply_reconciliation(
+        36.0, 139, 0, 0.0,
+        date(2026, 8, 10), date(2026, 9, 25),
+    )
+
+    assert result["expired"]
+    assert result["forecast_counted_lbs"] == 0.0
+
+
+def test_historical_clone_workbook_allocations_cover_last_eight_crops():
+    assert list(HISTORICAL_CLONE_ALLOCATIONS) == [
+        "F2.9", "F3.9", "F4.9", "F5.9",
+        "F1.10", "F2.10", "F3.10", "F4.10",
+    ]
+    assert HISTORICAL_CLONE_ALLOCATIONS["F2.10"]["Diamond Bar"] == 1.0
+    assert HISTORICAL_CLONE_ALLOCATIONS["F4.10"]["Jelly Cake"] == 0.5
 
 
 def test_f19_uses_confirmed_crop_report_allocations():
@@ -225,8 +331,20 @@ def test_clone_plan_edit_window_locks_after_seven_days_without_override():
     assert clone_plan_is_editable("2026-08-28", date(2026, 9, 4), override=True)
 
 
-def test_two_week_forecast_keeps_negative_balances_visible():
-    assert forecast_two_week_balances(20, 15, [0, 35, 0]) == [-10.0, -5.0, -35.0]
+def test_two_week_forecast_floors_physical_inventory_at_zero():
+    assert forecast_two_week_balances(20, 15, [0, 35, 0]) == [0.0, 5.0, 0.0]
+
+
+def test_approved_current_plan_is_selected_for_planner_restoration():
+    plans = [
+        {"crop": "F5.10", "status": "Approved", "allocations": {"J1": 1.0}},
+        {"crop": "F4.10", "status": "Approved", "allocations": {"G13": 1.0}},
+    ]
+
+    selected = approved_clone_plan_for_crop(plans, "f5.10")
+
+    assert selected is not None
+    assert selected["allocations"] == {"J1": 1.0}
 
 
 def test_sku_weights_and_future_risk_bands():

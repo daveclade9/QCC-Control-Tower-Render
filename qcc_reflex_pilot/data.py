@@ -640,6 +640,23 @@ def _initialize_qa_database_once() -> None:
             """
         )
         connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS qa_adjusted_coas (
+                coa_key TEXT PRIMARY KEY,
+                package_tag TEXT NOT NULL,
+                packaged_license TEXT NOT NULL DEFAULT '',
+                test_date TEXT,
+                total_terpenes DOUBLE PRECISION NOT NULL,
+                total_cbg DOUBLE PRECISION NOT NULL,
+                terpene_names_json TEXT NOT NULL,
+                terpene_values_json TEXT NOT NULL,
+                suspect_flags_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL,
+                updated_by TEXT
+            )
+            """
+        )
+        connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_lab_package "
             "ON lab_result_records(package_tag)"
         )
@@ -654,6 +671,10 @@ def _initialize_qa_database_once() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_lab_test_name "
             "ON lab_result_records(test_name)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_adjusted_coa_package "
+            "ON qa_adjusted_coas(package_tag, packaged_license)"
         )
         now = datetime.now().astimezone().isoformat()
         connection.execute(
@@ -1237,6 +1258,105 @@ def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, 
         "result": "Result", "test_passed": "Passed",
     })
     return _qa_record_list(rows)
+
+
+def adjusted_coa_key(package_tag: str, packaged_license: str = "") -> str:
+    """Return the stable identifier used for one laboratory sample COA."""
+    identity = f"{str(packaged_license or '').strip()}|{str(package_tag or '').strip()}"
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def load_adjusted_coa(package_tag: str, packaged_license: str = "") -> dict[str, Any]:
+    """Load the operator-verified high-precision values for one lab sample."""
+    package_tag = str(package_tag or "").strip()
+    packaged_license = str(packaged_license or "").strip()
+    if not package_tag:
+        return {}
+    initialize_qa_database()
+    rows = safe_query_frame(
+        "SELECT * FROM qa_adjusted_coas WHERE coa_key = %s LIMIT 1",
+        (adjusted_coa_key(package_tag, packaged_license),),
+    )
+    if rows.empty and packaged_license:
+        rows = safe_query_frame(
+            "SELECT * FROM qa_adjusted_coas WHERE package_tag = %s "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (package_tag,),
+        )
+    if rows.empty:
+        return {}
+    record = rows.iloc[0].to_dict()
+    try:
+        record["terpene_names"] = json.loads(
+            str(record.get("terpene_names_json", "[]") or "[]")
+        )
+        record["terpene_values"] = json.loads(
+            str(record.get("terpene_values_json", "[]") or "[]")
+        )
+        record["suspect_flags"] = json.loads(
+            str(record.get("suspect_flags_json", "[]") or "[]")
+        )
+    except json.JSONDecodeError:
+        return {}
+    return record
+
+
+def save_adjusted_coa(
+    package_tag: str,
+    packaged_license: str,
+    test_date: str,
+    total_terpenes: float,
+    total_cbg: float,
+    terpene_names: list[str],
+    terpene_values: list[float],
+    suspect_flags: list[str],
+    updated_by: str,
+) -> dict[str, Any]:
+    """Upsert one auditable Adjusted COA and return its normalized values."""
+    initialize_qa_database()
+    package_tag = str(package_tag or "").strip()
+    packaged_license = str(packaged_license or "").strip()
+    now = datetime.now().astimezone().isoformat()
+    coa_key = adjusted_coa_key(package_tag, packaged_license)
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        connection.execute(
+            """
+            INSERT INTO qa_adjusted_coas (
+                coa_key, package_tag, packaged_license, test_date,
+                total_terpenes, total_cbg, terpene_names_json,
+                terpene_values_json, suspect_flags_json, updated_at, updated_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(coa_key) DO UPDATE SET
+                test_date = EXCLUDED.test_date,
+                total_terpenes = EXCLUDED.total_terpenes,
+                total_cbg = EXCLUDED.total_cbg,
+                terpene_names_json = EXCLUDED.terpene_names_json,
+                terpene_values_json = EXCLUDED.terpene_values_json,
+                suspect_flags_json = EXCLUDED.suspect_flags_json,
+                updated_at = EXCLUDED.updated_at,
+                updated_by = EXCLUDED.updated_by
+            """,
+            (
+                coa_key, package_tag, packaged_license, str(test_date or ""),
+                float(total_terpenes), float(total_cbg),
+                json.dumps(list(terpene_names)), json.dumps(list(terpene_values)),
+                json.dumps(list(suspect_flags)), now, str(updated_by or ""),
+            ),
+        )
+        connection.commit()
+    return {
+        "coa_key": coa_key,
+        "package_tag": package_tag,
+        "packaged_license": packaged_license,
+        "test_date": str(test_date or ""),
+        "total_terpenes": float(total_terpenes),
+        "total_cbg": float(total_cbg),
+        "terpene_names": list(terpene_names),
+        "terpene_values": [float(value) for value in terpene_values],
+        "suspect_flags": list(suspect_flags),
+        "updated_at": now,
+        "updated_by": str(updated_by or ""),
+    }
 
 
 def log_qa_label_download(
@@ -1904,6 +2024,219 @@ def _ensure_clone_planning_table(cursor: Any) -> None:
         )
         """
     )
+
+
+def _ensure_fresh_frozen_adjustments_table(cursor: Any) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS qcc_crop_fresh_frozen_adjustments (
+            adjustment_id TEXT PRIMARY KEY,
+            crop TEXT NOT NULL,
+            strain TEXT NOT NULL,
+            planned_plants INTEGER NOT NULL DEFAULT 0,
+            updated_by TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        "ALTER TABLE qcc_crop_fresh_frozen_adjustments "
+        "ADD COLUMN IF NOT EXISTS creative_use_lbs DOUBLE PRECISION NOT NULL DEFAULT 0"
+    )
+
+
+def save_fresh_frozen_adjustment(
+    *,
+    crop: str,
+    strain: str,
+    planned_plants: int,
+    updated_by: str = "QCC Reflex User",
+) -> str:
+    """Create or replace the planned Fresh Frozen plant count for a crop."""
+    if psycopg is None or not database_url():
+        raise RuntimeError(
+            "A live Supabase connection is required to save Fresh Frozen plans."
+        )
+    crop_text = str(crop or "").strip()
+    strain_text = " ".join(str(strain or "").strip().split())
+    if not crop_text or not strain_text:
+        raise ValueError("Crop and strain are required for Fresh Frozen planning.")
+    plants = max(0, int(planned_plants or 0))
+    adjustment_id = "QCC-FF-" + re.sub(
+        r"[^A-Za-z0-9]+", "-", f"{crop_text}-{strain_text}"
+    ).strip("-").upper()
+    now_text = datetime.now().astimezone().isoformat()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_fresh_frozen_adjustments_table(cursor)
+            cursor.execute(
+                "INSERT INTO qcc_crop_fresh_frozen_adjustments "
+                "(adjustment_id, crop, strain, planned_plants, updated_by, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (adjustment_id) DO UPDATE SET "
+                "planned_plants=EXCLUDED.planned_plants, "
+                "updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at",
+                (
+                    adjustment_id, crop_text, strain_text, plants,
+                    str(updated_by or "QCC Reflex User"), now_text,
+                ),
+            )
+        connection.commit()
+    return adjustment_id
+
+
+def load_fresh_frozen_adjustments() -> list[dict[str, Any]]:
+    """Return every saved planned Fresh Frozen crop/strain adjustment."""
+    if psycopg is None or not database_url():
+        return []
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_fresh_frozen_adjustments_table(cursor)
+            cursor.execute(
+                "SELECT adjustment_id, crop, strain, planned_plants, creative_use_lbs, "
+                "updated_by, updated_at FROM qcc_crop_fresh_frozen_adjustments "
+                "ORDER BY crop, strain"
+            )
+            frame = _cursor_frame(cursor)
+        connection.commit()
+    if frame.empty:
+        return []
+    return [
+        {
+            "adjustment_id": str(row.get("adjustment_id", "")),
+            "crop": str(row.get("crop", "")),
+            "strain": str(row.get("strain", "")),
+            "planned_plants": int(row.get("planned_plants", 0) or 0),
+            "creative_use_lbs": float(row.get("creative_use_lbs", 0) or 0),
+            "updated_by": str(row.get("updated_by", "")),
+            "updated_at": str(row.get("updated_at", "")),
+        }
+        for row in frame.to_dict("records")
+    ]
+
+
+def _ensure_metrc_plant_snapshots_table(cursor: Any) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS qcc_metrc_plant_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            imported_at TIMESTAMPTZ NOT NULL,
+            imported_by TEXT NOT NULL,
+            source_files JSONB NOT NULL,
+            flowering_count INTEGER NOT NULL DEFAULT 0,
+            vegetative_count INTEGER NOT NULL DEFAULT 0,
+            planting_count INTEGER NOT NULL DEFAULT 0,
+            harvest_count INTEGER NOT NULL DEFAULT 0,
+            payload_gzip BYTEA NOT NULL
+        )
+        """
+    )
+
+
+def save_metrc_plant_snapshot(
+    snapshot: dict[str, Any], *, imported_by: str = "QCC Reflex User"
+) -> str:
+    """Persist one normalized four-file Metrc plant snapshot."""
+    if psycopg is None or not database_url():
+        raise RuntimeError(
+            "A live Supabase connection is required to save Metrc plant snapshots."
+        )
+    snapshot_id = str(snapshot.get("snapshot_id", "")).strip()
+    if not snapshot_id:
+        raise ValueError("The Metrc plant snapshot has no snapshot ID.")
+    summary = dict(snapshot.get("summary") or {})
+    payload = gzip.compress(
+        json.dumps(snapshot, separators=(",", ":"), default=str).encode("utf-8"),
+        compresslevel=6,
+    )
+    with psycopg.connect(database_url(), connect_timeout=20) as connection:
+        with connection.cursor() as cursor:
+            _ensure_metrc_plant_snapshots_table(cursor)
+            cursor.execute(
+                "INSERT INTO qcc_metrc_plant_snapshots "
+                "(snapshot_id, imported_at, imported_by, source_files, "
+                "flowering_count, vegetative_count, planting_count, harvest_count, "
+                "payload_gzip) VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (snapshot_id) DO UPDATE SET "
+                "imported_at=EXCLUDED.imported_at, imported_by=EXCLUDED.imported_by, "
+                "source_files=EXCLUDED.source_files, "
+                "flowering_count=EXCLUDED.flowering_count, "
+                "vegetative_count=EXCLUDED.vegetative_count, "
+                "planting_count=EXCLUDED.planting_count, "
+                "harvest_count=EXCLUDED.harvest_count, payload_gzip=EXCLUDED.payload_gzip",
+                (
+                    snapshot_id,
+                    snapshot.get("imported_at") or datetime.now().astimezone().isoformat(),
+                    str(imported_by or "QCC Reflex User"),
+                    json.dumps(snapshot.get("source_files") or {}),
+                    int(summary.get("flowering_plants", 0) or 0),
+                    int(summary.get("vegetative_plants", 0) or 0),
+                    int(summary.get("active_plantings", 0) or 0),
+                    int(summary.get("harvest_batches", 0) or 0),
+                    payload,
+                ),
+            )
+        connection.commit()
+    return snapshot_id
+
+
+def load_latest_metrc_plant_snapshot() -> dict[str, Any]:
+    """Return the newest normalized Metrc plant snapshot from Supabase."""
+    if psycopg is None or not database_url():
+        return {}
+    with psycopg.connect(database_url(), connect_timeout=20) as connection:
+        with connection.cursor() as cursor:
+            _ensure_metrc_plant_snapshots_table(cursor)
+            cursor.execute(
+                "SELECT payload_gzip FROM qcc_metrc_plant_snapshots "
+                "ORDER BY imported_at DESC LIMIT 1"
+            )
+            row = cursor.fetchone()
+        connection.commit()
+    if not row or not row[0]:
+        return {}
+    raw = bytes(row[0])
+    return dict(json.loads(gzip.decompress(raw).decode("utf-8")))
+
+
+def save_creative_use_adjustment(
+    *,
+    crop: str,
+    strain: str,
+    reduction_lbs: float,
+    updated_by: str = "QCC Reflex User",
+) -> str:
+    """Create or replace a dry-pound reduction for blends, co-packing, or other use."""
+    if psycopg is None or not database_url():
+        raise RuntimeError(
+            "A live Supabase connection is required to save Creative Use plans."
+        )
+    crop_text = str(crop or "").strip()
+    strain_text = " ".join(str(strain or "").strip().split())
+    if not crop_text or not strain_text:
+        raise ValueError("Crop and strain are required for Creative Use planning.")
+    pounds = max(0.0, float(reduction_lbs or 0))
+    adjustment_id = "QCC-FF-" + re.sub(
+        r"[^A-Za-z0-9]+", "-", f"{crop_text}-{strain_text}"
+    ).strip("-").upper()
+    now_text = datetime.now().astimezone().isoformat()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_fresh_frozen_adjustments_table(cursor)
+            cursor.execute(
+                "INSERT INTO qcc_crop_fresh_frozen_adjustments "
+                "(adjustment_id, crop, strain, planned_plants, creative_use_lbs, "
+                "updated_by, updated_at) VALUES (%s, %s, %s, 0, %s, %s, %s) "
+                "ON CONFLICT (adjustment_id) DO UPDATE SET "
+                "creative_use_lbs=EXCLUDED.creative_use_lbs, "
+                "updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at",
+                (
+                    adjustment_id, crop_text, strain_text, pounds,
+                    str(updated_by or "QCC Reflex User"), now_text,
+                ),
+            )
+        connection.commit()
+    return adjustment_id
 
 
 def save_clone_plan(
@@ -3091,6 +3424,83 @@ def build_velocity(
     ).reset_index(drop=True)
 
 
+def apply_availability_adjusted_velocity(
+    velocity: pd.DataFrame,
+    availability_summary: list[dict[str, Any]],
+) -> pd.DataFrame:
+    """Apply one availability shadow model without altering base velocity.
+
+    Flower and pre-roll series with experimental evidence receive adjusted
+    weekly velocity, weeks of supply, and demand status. Other SKU types retain
+    their current calculation so the SKU Planning table remains complete.
+    """
+    if velocity.empty:
+        return velocity.copy()
+    result = velocity.copy()
+    result["Likely OOS Weeks"] = 0
+    result["Recent Gap Weeks"] = 0
+    result["Availability Weeks"] = 0.0
+    result["Velocity Model"] = "Current SKU Velocity — no adjusted evidence"
+    if not availability_summary:
+        return result
+
+    evidence_columns = [
+        "Brand", "Strain", "SKU Type", "Experimental Adjusted Velocity",
+        "Likely Constrained Weeks", "Recent Gap Weeks", "Availability Weeks",
+    ]
+    evidence = pd.DataFrame(availability_summary)
+    if evidence.empty or not set(evidence_columns).issubset(evidence.columns):
+        return result
+    evidence = evidence[evidence_columns].rename(columns={
+        "Likely Constrained Weeks": "Adjusted Likely OOS Weeks",
+        "Recent Gap Weeks": "Adjusted Recent Gap Weeks",
+        "Availability Weeks": "Adjusted Availability Weeks",
+    })
+    result = result.merge(
+        evidence,
+        on=["Brand", "Strain", "SKU Type"],
+        how="left",
+    )
+    adjusted = pd.to_numeric(
+        result["Experimental Adjusted Velocity"], errors="coerce"
+    )
+    matched = adjusted.gt(0)
+    result.loc[matched, "Avg Weekly Units"] = adjusted[matched]
+    result.loc[matched, "Likely OOS Weeks"] = pd.to_numeric(
+        result.loc[matched, "Adjusted Likely OOS Weeks"], errors="coerce"
+    ).fillna(0).astype(int)
+    result.loc[matched, "Recent Gap Weeks"] = pd.to_numeric(
+        result.loc[matched, "Adjusted Recent Gap Weeks"], errors="coerce"
+    ).fillna(0).astype(int)
+    result.loc[matched, "Availability Weeks"] = pd.to_numeric(
+        result.loc[matched, "Adjusted Availability Weeks"], errors="coerce"
+    ).fillna(0)
+    result.loc[matched, "Velocity Model"] = "Experimental Availability-Adjusted"
+    current_units = pd.to_numeric(
+        result["Current Units"], errors="coerce"
+    ).fillna(0)
+    result.loc[matched, "Weeks of Supply"] = (
+        current_units[matched] / adjusted[matched]
+    )
+    result.loc[matched, "Demand Status"] = result.loc[matched].apply(
+        lambda row: demand_status(
+            float(row.get("Current Units", 0) or 0),
+            float(row.get("Avg Weekly Units", 0) or 0),
+        ),
+        axis=1,
+    )
+    result["Avg Weekly Units"] = pd.to_numeric(
+        result["Avg Weekly Units"], errors="coerce"
+    ).fillna(0).round(2)
+    result["Weeks of Supply"] = pd.to_numeric(
+        result["Weeks of Supply"], errors="coerce"
+    ).fillna(0).round(2)
+    return result.drop(columns=[
+        "Experimental Adjusted Velocity", "Adjusted Likely OOS Weeks",
+        "Adjusted Recent Gap Weeks", "Adjusted Availability Weeks",
+    ])
+
+
 def build_saved_plan_rows(
     plans: pd.DataFrame, outputs: pd.DataFrame, sources: pd.DataFrame
 ) -> pd.DataFrame:
@@ -3443,6 +3853,16 @@ def build_shipment_exceptions(analysis: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+def build_shipment_exception_packages(analysis: pd.DataFrame) -> pd.DataFrame:
+    """Preserve package detail for open, rejected, and returned transfers."""
+    if analysis.empty:
+        return build_transfer_display(analysis)
+    exception_packages = analysis[
+        analysis["is_open_shipment"] | analysis["is_shipment_exception"]
+    ].copy()
+    return build_transfer_display(exception_packages)
+
+
 def build_transfer_display(analysis: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Manifest", "Invoice Number", "Created", "Received", "State",
@@ -3782,6 +4202,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
             "sku_types": options("SKU Type"),
             "monthly": [], "top_skus": [], "business_pulse": [],
             "velocity": [], "velocity_windows": {"All Time": []},
+            "availability_adjusted_velocity_windows": {"All Time": []},
             "availability_demand_summary": [],
             "availability_demand_weekly": [],
             "stockouts": [], "customers": [], "exceptions": [],
@@ -3866,7 +4287,33 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         velocity_windows.update({
             "1 Week": [], "60 Days": [], "90 Days": [], "120 Days": [],
         })
-    availability_demand = build_availability_demand_analysis(demand, velocity)
+    availability_period_days = {
+        "1 Week": 7,
+        "60 Days": 60,
+        "90 Days": 90,
+        "120 Days": 120,
+        "All Time": None,
+    }
+    availability_demand_windows: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    availability_adjusted_velocity_windows: dict[
+        str, list[dict[str, Any]]
+    ] = {}
+    for label, days in availability_period_days.items():
+        base_velocity = pd.DataFrame(velocity_windows.get(label, []))
+        window_analysis = build_availability_demand_analysis(
+            demand,
+            base_velocity,
+            period_days=days,
+        )
+        availability_demand_windows[label] = window_analysis
+        adjusted_velocity = apply_availability_adjusted_velocity(
+            base_velocity,
+            window_analysis["summary"],
+        )
+        availability_adjusted_velocity_windows[label] = record_list(
+            adjusted_velocity
+        )
+    availability_demand = availability_demand_windows["All Time"]
     # The Sales background load reuses the inventory context and must not
     # rebuild every inventory table a second time during the same login.
     inventory_views = (
@@ -3944,6 +4391,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
     retail_delivery_history = build_retail_delivery_history(analysis)
     retailer_locations = load_retailer_locations()
     exceptions = build_shipment_exceptions(analysis)
+    exception_packages = build_shipment_exception_packages(analysis)
     transfer_display = build_transfer_display(analysis)
     transfer_import_log = load_transfer_import_log()
     total_units = native_number(demand["shipped_units"].sum()) if not demand.empty else 0
@@ -4000,6 +4448,9 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         "business_pulse": record_list(business_pulse.round(2)),
         "velocity": record_list(velocity),
         "velocity_windows": velocity_windows,
+        "availability_adjusted_velocity_windows": (
+            availability_adjusted_velocity_windows
+        ),
         "availability_demand_summary": availability_demand["summary"],
         "availability_demand_weekly": availability_demand["weekly"],
         "stockouts": record_list(stockouts),
@@ -4011,6 +4462,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         "retail_delivery_history": record_list(retail_delivery_history),
         "retailer_locations": retailer_locations,
         "exceptions": record_list(exceptions),
+        "exception_packages": record_list(exception_packages),
         "transfer_data": record_list(transfer_display.head(2000)),
         "transfer_import_log": record_list(transfer_import_log),
         "sales_ready": bool(sales_snapshot) and not analysis.empty,
@@ -4111,6 +4563,16 @@ def demo_dashboard_data() -> dict[str, Any]:
             "Lifecycle Reason": "Shipped to a customer within 90 days",
         },
     ]
+    adjusted_demo_velocity = [
+        {
+            **row,
+            "Likely OOS Weeks": 0,
+            "Recent Gap Weeks": 0,
+            "Availability Weeks": 0.0,
+            "Velocity Model": "Current SKU Velocity — demo fallback",
+        }
+        for row in velocity
+    ]
     return {
         "metrics": {
             "units": 21800, "value": 192500, "customers": 48,
@@ -4145,6 +4607,13 @@ def demo_dashboard_data() -> dict[str, Any]:
             "1 Week": velocity, "60 Days": velocity, "90 Days": velocity,
             "120 Days": velocity, "All Time": velocity,
         },
+        "availability_adjusted_velocity_windows": {
+            "1 Week": adjusted_demo_velocity,
+            "60 Days": adjusted_demo_velocity,
+            "90 Days": adjusted_demo_velocity,
+            "120 Days": adjusted_demo_velocity,
+            "All Time": adjusted_demo_velocity,
+        },
         "stockouts": [velocity[1]],
         "saved_plans": [],
         "saved_plan_cards": [],
@@ -4154,6 +4623,7 @@ def demo_dashboard_data() -> dict[str, Any]:
         "retail_delivery_history": [],
         "retailer_locations": _directory_retailer_location_rows(),
         "exceptions": [],
+        "exception_packages": [],
         "transfer_data": [],
         "transfer_import_log": [],
         "inventory_ready": False,

@@ -15,6 +15,7 @@ CLONE_TO_FLOWER_DAYS = ROOTING_DAYS + VEG_DAYS
 CLONES_PER_TRAY = 32
 STANDARD_FLOWER_DAYS = 68
 DEFAULT_POST_HARVEST_DAYS = 30
+SCHEDULED_SUPPLY_EXPIRY_DAYS = 45
 
 CLADE9_CLONE_STRAINS = (
     "Blue Dream", "Brooklyn Runtz", "Diamond Bar", "Diamond Dust",
@@ -57,6 +58,22 @@ class ScheduledCropAllocation(TypedDict):
     harvest_date: str
     strain: str
     square_feet: float
+
+
+class ScheduledSupplyReconciliation(TypedDict):
+    gross_projected_lbs: float
+    fresh_frozen_plants: int
+    planted_plants: int
+    fresh_frozen_percent: float
+    fresh_frozen_reduction_lbs: float
+    creative_use_reduction_lbs: float
+    net_projected_lbs: float
+    actual_processed_lbs: float
+    unconfirmed_remainder_lbs: float
+    forecast_counted_lbs: float
+    expired: bool
+    actual_detected: bool
+    status: str
 
 
 # Confirmed physical bench layouts. These are defaults rather than hard-coded
@@ -151,8 +168,8 @@ STRAIN_ALIASES: dict[str, str] = {
     "private reserve og": "private reserve",
     "razruntz": "razberry runtz",
     "razberry runtz (rpg 103)": "razberry runtz",
-    "gelato cherry lemon": "lemon cherry gelato",
-    "gcl": "lemon cherry gelato",
+    "gelato cherry lemon": "hood candy",
+    "gcl": "hood candy",
 }
 
 
@@ -173,7 +190,8 @@ UPCOMING_CROP_ALLOCATIONS: tuple[ScheduledCropAllocation, ...] = (
     {"crop": "F2.9", "room": "Flower Room 2", "harvest_date": "2026-08-24", "strain": "Pine Tar", "square_feet": 185.0},
     {"crop": "F2.9", "room": "Flower Room 2", "harvest_date": "2026-08-24", "strain": "LA Piff", "square_feet": 185.0},
     {"crop": "F2.9", "room": "Flower Room 2", "harvest_date": "2026-08-24", "strain": "Jelly Cake", "square_feet": 82.5},
-    {"crop": "F2.9", "room": "Flower Room 2", "harvest_date": "2026-08-24", "strain": "Lemon Cherry Gelato", "square_feet": 267.5},
+    {"crop": "F2.9", "room": "Flower Room 2", "harvest_date": "2026-08-24", "strain": "Lemon Cherry Gelato", "square_feet": 185.0},
+    {"crop": "F2.9", "room": "Flower Room 2", "harvest_date": "2026-08-24", "strain": "Hood Candy", "square_feet": 82.5},
     {"crop": "F2.9", "room": "Flower Room 2", "harvest_date": "2026-08-24", "strain": "Lipsmackerz", "square_feet": 92.5},
     {"crop": "F2.9", "room": "Flower Room 2", "harvest_date": "2026-08-24", "strain": "South Central Purps", "square_feet": 92.5},
     {"crop": "F2.9", "room": "Flower Room 2", "harvest_date": "2026-08-24", "strain": "Diamond Dust", "square_feet": 185.0},
@@ -188,7 +206,7 @@ UPCOMING_CROP_ALLOCATIONS: tuple[ScheduledCropAllocation, ...] = (
     {"crop": "F4.9", "room": "Flower Room 4", "harvest_date": "2026-09-21", "strain": "Lemon Cherry Gelato", "square_feet": 185.0},
     {"crop": "F4.9", "room": "Flower Room 4", "harvest_date": "2026-09-21", "strain": "Orange Push Pop", "square_feet": 185.0},
     {"crop": "F4.9", "room": "Flower Room 4", "harvest_date": "2026-09-21", "strain": "Jelly Cake", "square_feet": 80.0},
-    {"crop": "F4.9", "room": "Flower Room 4", "harvest_date": "2026-09-21", "strain": "Lemon Cherry Gelato", "square_feet": 60.0},
+    {"crop": "F4.9", "room": "Flower Room 4", "harvest_date": "2026-09-21", "strain": "Hood Candy", "square_feet": 60.0},
     {"crop": "F4.9", "room": "Flower Room 4", "harvest_date": "2026-09-21", "strain": "Pine Tar", "square_feet": 185.0},
     {"crop": "F4.9", "room": "Flower Room 4", "harvest_date": "2026-09-21", "strain": "South Central Purps", "square_feet": 185.0},
     {"crop": "F4.9", "room": "Flower Room 4", "harvest_date": "2026-09-21", "strain": "Diamond Dust", "square_feet": 185.0},
@@ -200,13 +218,65 @@ UPCOMING_CROP_ALLOCATIONS: tuple[ScheduledCropAllocation, ...] = (
     {"crop": "F5.9", "room": "Flower Room 5", "harvest_date": "2026-10-05", "strain": "Razberry Runtz", "square_feet": 160.0},
     {"crop": "F1.10", "room": "Flower Room 1", "harvest_date": "2026-10-19", "strain": "Private Reserve", "square_feet": 185.0},
     {"crop": "F1.10", "room": "Flower Room 1", "harvest_date": "2026-10-19", "strain": "Fig Bar", "square_feet": 185.0},
-    {"crop": "F1.10", "room": "Flower Room 1", "harvest_date": "2026-10-19", "strain": "Lemon Cherry Gelato", "square_feet": 245.0},
+    {"crop": "F1.10", "room": "Flower Room 1", "harvest_date": "2026-10-19", "strain": "Lemon Cherry Gelato", "square_feet": 165.0},
+    {"crop": "F1.10", "room": "Flower Room 1", "harvest_date": "2026-10-19", "strain": "Hood Candy", "square_feet": 80.0},
     {"crop": "F1.10", "room": "Flower Room 1", "harvest_date": "2026-10-19", "strain": "Jelly Cake", "square_feet": 80.0},
     {"crop": "F1.10", "room": "Flower Room 1", "harvest_date": "2026-10-19", "strain": "Pine Tar", "square_feet": 185.0},
     {"crop": "F1.10", "room": "Flower Room 1", "harvest_date": "2026-10-19", "strain": "Diamond Dust", "square_feet": 185.0},
     {"crop": "F1.10", "room": "Flower Room 1", "harvest_date": "2026-10-19", "strain": "Tahoe OG", "square_feet": 92.5},
     {"crop": "F1.10", "room": "Flower Room 1", "harvest_date": "2026-10-19", "strain": "TPR #16", "square_feet": 92.5},
 )
+
+
+# Allocation-only history transcribed from ``Clone Planner new Notes.xlsx``.
+# Crop reports remain authoritative when they exist; these rows fill the gaps
+# needed for the four- and eight-crop lookback and future supply audit.
+HISTORICAL_CLONE_ALLOCATIONS: dict[str, dict[str, float]] = {
+    "F2.9": {
+        "Fig Bar": 1.0, "Lemon Cherry Gelato": 1.0, "Diamond Dust": 1.0,
+        "LA Piff": 1.0, "Pine Tar": 1.0, "Razberry Runtz": 1.0,
+        "Lipsmackerz": 0.5, "Hood Candy": 0.5, "Jelly Cake": 0.5,
+        "South Central Purps": 0.5,
+    },
+    "F3.9": {
+        "Orange Push Pop": 1.0, "Diamond Bar": 1.0, "J1": 1.0,
+        "LA Piff": 1.0, "Private Reserve": 1.0, "G13": 1.0,
+        "Razberry Runtz": 1.0,
+    },
+    "F4.9": {
+        "Orange Push Pop": 1.0, "Fig Bar": 1.0,
+        "Lemon Cherry Gelato": 1.0, "Diamond Dust": 1.0,
+        "Pine Tar": 1.0, "Hood Candy": 0.5, "Jelly Cake": 0.5,
+        "South Central Purps": 1.0,
+    },
+    "F5.9": {
+        "Diamond Bar": 1.0, "J1": 1.0, "LA Piff": 1.0,
+        "Tahoe OG": 1.0, "G13": 0.5, "Razberry Runtz": 1.0,
+        "EZ Gas OG (TPR 14)": 0.5,
+    },
+    "F1.10": {
+        "Fig Bar": 1.0, "Lemon Cherry Gelato": 1.0,
+        "Diamond Dust": 1.0, "Private Reserve": 1.0,
+        "Tahoe OG": 0.5, "Pine Tar": 1.0, "Hood Candy": 0.5,
+        "Jelly Cake": 0.5, "Shoreline OG (TPR 16)": 0.5,
+    },
+    "F2.10": {
+        "Orange Push Pop": 1.0, "Diamond Bar": 1.0, "G13": 1.0,
+        "Razberry Runtz": 1.0, "Lipsmackerz": 1.0,
+        "EZ Gas OG (TPR 14)": 0.5, "Shoreline OG (TPR 16)": 0.5,
+    },
+    "F3.10": {
+        "Diamond Bar": 1.0, "Fig Bar": 1.0,
+        "Lemon Cherry Gelato": 1.0, "Diamond Dust": 1.0,
+        "LA Piff": 1.0, "Pine Tar": 1.0, "Jelly Cake": 0.5,
+        "South Central Purps": 0.5,
+    },
+    "F4.10": {
+        "Orange Push Pop": 1.0, "Diamond Bar": 1.0, "J1": 1.0,
+        "Private Reserve": 1.0, "Tahoe OG": 1.0,
+        "Lipsmackerz": 1.0, "Hood Candy": 0.5, "Jelly Cake": 0.5,
+    },
+}
 
 
 class CloneRecommendation(TypedDict):
@@ -352,6 +422,37 @@ def default_split_percentages(strain_count: int) -> tuple[float, float, float]:
 def normalized_strain(value: Any) -> str:
     name = re.sub(r"\s+", " ", str(value or "").strip().lower())
     return STRAIN_ALIASES.get(name, name)
+
+
+def exact_bench_allocations(
+    bench_plans: list[dict[str, Any]],
+) -> dict[str, float]:
+    """Convert a finalized physical room map into bench equivalents by strain."""
+    square_feet_by_strain: dict[str, float] = {}
+    labels: dict[str, str] = {}
+    for bench in bench_plans:
+        square_feet = max(0.0, float(bench.get("square_feet", 0) or 0))
+        strain_count = min(3, max(1, int(bench.get("strain_count", 1) or 1)))
+        for index in range(1, strain_count + 1):
+            strain = " ".join(
+                str(bench.get(f"strain_{index}", "") or "").strip().split()
+            )
+            percent = max(
+                0.0, min(100.0, float(bench.get(f"percent_{index}", 0) or 0))
+            )
+            key = normalized_strain(strain)
+            if not key or percent <= 0:
+                continue
+            labels.setdefault(key, strain)
+            square_feet_by_strain[key] = (
+                square_feet_by_strain.get(key, 0.0)
+                + square_feet * percent / 100
+            )
+    return {
+        labels[key]: round(square_feet / 185.0, 2)
+        for key, square_feet in square_feet_by_strain.items()
+        if square_feet > 0
+    }
 
 
 def estimated_yield_g_per_sqft(strain: str, room: str) -> float:
@@ -516,16 +617,35 @@ def valid_bench_equivalent(value: Any) -> float:
     return parsed
 
 
+def approved_clone_plan_for_crop(
+    plans: list[dict[str, Any]], crop: str
+) -> dict[str, Any] | None:
+    """Return the newest approved saved plan for a crop, if one exists."""
+    crop_key = str(crop or "").strip().casefold()
+    return next(
+        (
+            dict(plan)
+            for plan in plans
+            if str(plan.get("crop", "") or "").strip().casefold() == crop_key
+            and str(plan.get("status", "") or "").strip().casefold() == "approved"
+        ),
+        None,
+    )
+
+
 def forecast_two_week_balances(
     current_lbs: float,
     weekly_demand_lbs: float,
     scheduled_by_period: list[float],
 ) -> list[float]:
-    """Apply Current + Scheduled - two weeks of demand without hiding deficits."""
-    balance = float(current_lbs)
+    """Apply Current + Scheduled - demand, flooring physical inventory at zero."""
+    balance = max(0.0, float(current_lbs))
     results: list[float] = []
     for scheduled in scheduled_by_period:
-        balance = balance + float(scheduled) - (2 * float(weekly_demand_lbs))
+        balance = max(
+            0.0,
+            balance + float(scheduled) - (2 * float(weekly_demand_lbs)),
+        )
         results.append(round(balance, 1))
     return results
 
@@ -535,10 +655,79 @@ def crop_is_scheduled_supply(
     today: date,
     plan_available_date: date,
     post_harvest_days: int = DEFAULT_POST_HARVEST_DAYS,
+    expiry_days: int = SCHEDULED_SUPPLY_EXPIRY_DAYS,
 ) -> bool:
-    """Count a crop from harvest through its expected usable inventory date."""
+    """Keep a projection visible until its 45-day reconciliation deadline."""
     crop_available = harvest_date + timedelta(days=max(0, int(post_harvest_days)))
-    return crop_available >= today and crop_available <= plan_available_date
+    crop_expires = harvest_date + timedelta(
+        days=max(int(post_harvest_days), int(expiry_days))
+    )
+    return today <= crop_expires and crop_available <= plan_available_date
+
+
+def scheduled_supply_reconciliation(
+    gross_projected_lbs: float,
+    planted_plants: int,
+    fresh_frozen_plants: int,
+    actual_processed_lbs: float,
+    harvest_date: date,
+    today: date,
+    expiry_days: int = SCHEDULED_SUPPLY_EXPIRY_DAYS,
+    creative_use_reduction_lbs: float = 0.0,
+) -> ScheduledSupplyReconciliation:
+    """Reconcile projected dry flower without counting uncertain remainder.
+
+    Fresh Frozen is entered as plants and translated through the crop's exact
+    planted population. Once any crop-matched actual inventory appears, that
+    actual inventory is authoritative: the expected remainder remains visible
+    for investigation but contributes zero usable forecast pounds.
+    """
+    gross = max(0.0, float(gross_projected_lbs or 0))
+    planted = max(0, int(planted_plants or 0))
+    frozen = max(0, min(int(fresh_frozen_plants or 0), planted))
+    frozen_percent = (frozen / planted * 100) if planted else 0.0
+    frozen_reduction = gross * frozen_percent / 100
+    creative_use = max(
+        0.0,
+        min(float(creative_use_reduction_lbs or 0), gross - frozen_reduction),
+    )
+    net = max(0.0, gross - frozen_reduction - creative_use)
+    actual = max(0.0, float(actual_processed_lbs or 0))
+    actual_detected = actual > 0
+    expired = today > harvest_date + timedelta(days=max(0, int(expiry_days)))
+    unconfirmed = max(0.0, net - actual) if actual_detected else 0.0
+    if expired:
+        forecast = 0.0
+        status = "Expired — processing overdue"
+    elif actual_detected:
+        forecast = 0.0
+        status = "Actual detected — remainder unconfirmed"
+    elif frozen >= planted and planted > 0:
+        forecast = 0.0
+        status = "Fresh Frozen — no dry flower scheduled"
+    elif creative_use >= gross - frozen_reduction and gross > 0:
+        forecast = 0.0
+        status = "Creative Use — no dry flower scheduled"
+    else:
+        forecast = net
+        status = (
+            "Projected — Creative Use planned" if creative_use > 0 else "Projected"
+        )
+    return {
+        "gross_projected_lbs": round(gross, 1),
+        "fresh_frozen_plants": frozen,
+        "planted_plants": planted,
+        "fresh_frozen_percent": round(frozen_percent, 1),
+        "fresh_frozen_reduction_lbs": round(frozen_reduction, 1),
+        "creative_use_reduction_lbs": round(creative_use, 1),
+        "net_projected_lbs": round(net, 1),
+        "actual_processed_lbs": round(actual, 1),
+        "unconfirmed_remainder_lbs": round(unconfirmed, 1),
+        "forecast_counted_lbs": round(forecast, 1),
+        "expired": expired,
+        "actual_detected": actual_detected,
+        "status": status,
+    }
 
 
 def projected_harvest_dates(

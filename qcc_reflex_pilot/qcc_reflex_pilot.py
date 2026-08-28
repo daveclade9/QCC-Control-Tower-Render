@@ -30,13 +30,20 @@ from .data import (
     get_dashboard_data,
     get_sales_dashboard_data,
     import_lab_results_bytes,
+    load_adjusted_coa,
     load_qa_analytes,
     load_qa_module_data,
     load_clone_allocations,
     load_clone_plans,
+    load_fresh_frozen_adjustments,
+    load_latest_metrc_plant_snapshot,
     save_clone_plan,
+    save_creative_use_adjustment,
+    save_fresh_frozen_adjustment,
+    save_metrc_plant_snapshot,
     load_production_module_data,
     log_qa_label_download,
+    save_adjusted_coa,
     potential_wip_for_sku,
     PRODUCTION_LINE_OPTIONS,
     PRODUCTION_PLAN_STATUSES,
@@ -67,6 +74,9 @@ from .zebra_labels import (
     default_package_format,
     extract_harvest_date,
     extract_metrc_tags,
+    label_analytes,
+    chop_percent,
+    adjusted_other_terpenes,
     prepare_label_context,
 )
 from .retailer_directory import (
@@ -85,8 +95,11 @@ from .cultivation import (
     CLONE_PLANNING_FIRST_CUT_DATE,
     CRAFT_KINGS_CLONE_STRAINS,
     DEFAULT_POST_HARVEST_DAYS,
+    HISTORICAL_CLONE_ALLOCATIONS,
+    SCHEDULED_SUPPLY_EXPIRY_DAYS,
     UPCOMING_CROP_ALLOCATIONS,
     bench_plant_capacity,
+    approved_clone_plan_for_crop,
     cultivation_timeline,
     clone_plan_edit_window,
     clone_plan_is_editable,
@@ -95,11 +108,13 @@ from .cultivation import (
     crop_is_scheduled_supply,
     cultivation_flower_supply_bucket,
     default_split_percentages,
+    exact_bench_allocations,
     estimated_yield_pounds,
     inventory_counts_as_current_cultivation_supply,
     normalized_strain,
     projected_harvest_dates,
     projected_risk,
+    scheduled_supply_reconciliation,
     recommend_clone_trays,
     room_bench_plans,
     sku_fill_grams,
@@ -124,9 +139,10 @@ from .historical_yield import (
     historical_strain_rows,
     historical_strain_table_data,
 )
+from .plant_data import parse_metrc_plant_exports, plant_crop_reconciliation
 
 
-PILOT_VERSION = "0.9.6.8-cultivation"
+PILOT_VERSION = "0.9.6.12-cultivation"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -373,6 +389,31 @@ CultivationAllocationRow = TypedDict(
         "actual_overage_percent": float,
     },
 )
+ScheduledSupplyDetail = TypedDict(
+    "ScheduledSupplyDetail",
+    {
+        "crop": str,
+        "room": str,
+        "strain": str,
+        "harvest_date": str,
+        "available_date": str,
+        "gross_projected_lbs": float,
+        "fresh_frozen_plants": int,
+        "planted_plants": int,
+        "fresh_frozen_percent": float,
+        "fresh_frozen_reduction_lbs": float,
+        "creative_use_reduction_lbs": float,
+        "net_projected_lbs": float,
+        "actual_processed_lbs": float,
+        "unconfirmed_remainder_lbs": float,
+        "forecast_counted_lbs": float,
+        "expired": bool,
+        "actual_detected": bool,
+        "status": str,
+        "can_edit_fresh_frozen": bool,
+        "can_edit_creative_use": bool,
+    },
+)
 ClonePlanMatrixValue = TypedDict(
     "ClonePlanMatrixValue",
     {
@@ -383,6 +424,12 @@ ClonePlanMatrixValue = TypedDict(
         "untested_lbs": float,
         "passed_quarantine_lbs": float,
         "current_total_lbs": float,
+        "available": bool,
+        "editable_allocation": bool,
+        "historical_allocation": bool,
+        "historical_editable": bool,
+        "crop": str,
+        "scheduled_details": list[ScheduledSupplyDetail],
     },
 )
 ClonePlanMatrixRow = TypedDict(
@@ -496,6 +543,18 @@ class DashboardState(rx.State):
     qa_zebra_quantity: int = 1
     qa_zebra_message: str = ""
     qa_zebra_error: str = ""
+    qa_adjusted_coa_open: bool = False
+    qa_adjusted_coa_saving: bool = False
+    qa_adjusted_coa: dict[str, Any] = {}
+    qa_adjusted_total_terpenes: str = ""
+    qa_adjusted_total_cbg: str = ""
+    qa_adjusted_terpene_names: list[str] = ["", "", ""]
+    qa_adjusted_terpene_values: list[str] = ["", "", ""]
+    qa_adjusted_metrc_total_terpenes: str = ""
+    qa_adjusted_metrc_total_cbg: str = ""
+    qa_adjusted_metrc_terpene_values: list[str] = ["", "", ""]
+    qa_adjusted_coa_message: str = ""
+    qa_adjusted_coa_error: str = ""
     inventory_stage_filter: str = "All Production Stages"
     inventory_license_filter: str = "All Licenses"
     inventory_qa_filter: str = "All QA Statuses"
@@ -584,9 +643,13 @@ class DashboardState(rx.State):
     sku_planning_page_size: int = 10
     sku_planning_sort: str = "Avg Weekly Units - High to Low"
     sku_velocity_period: str = "All Time"
+    sku_use_availability_adjusted: bool = False
     demand_lifecycle_filter: str = "Active Products Only"
     sales_loaded_views: list[str] = []
     velocity_windows: dict[str, list[dict[str, Any]]] = {}
+    availability_adjusted_velocity_windows: dict[
+        str, list[dict[str, Any]]
+    ] = {}
     saved_plan_search: str = ""
     saved_plan_status_filter: str = "All Plan Statuses"
     retail_timeframe: str = "4 Weeks"
@@ -624,13 +687,33 @@ class DashboardState(rx.State):
     cultivation_clone_plan_error: str = ""
     cultivation_clone_plan_history: list[dict[str, Any]] = []
     cultivation_clone_plan_history_loaded: bool = False
-    cultivation_clone_plan_lookback: str = "Last 4 Plans"
-    cultivation_historical_plan_crop: str = "F4.10"
+    cultivation_clone_plan_lookback: str = "No Historical Crops"
+    cultivation_fresh_frozen_adjustments: dict[str, int] = {}
+    cultivation_creative_use_adjustments: dict[str, float] = {}
+    cultivation_fresh_frozen_saving: bool = False
+    cultivation_historical_plan_crop: str = ""
     cultivation_historical_plan_allocations: dict[str, float] = {}
     cultivation_historical_plan_edit_id: str = ""
     cultivation_historical_plan_edit_status: str = "Approved"
+    cultivation_historical_plan_editing: bool = False
     cultivation_historical_plan_saving: bool = False
     cultivation_historical_plan_entry_version: int = 0
+    _cultivation_plant_snapshot: dict[str, Any] = {}
+    cultivation_plant_snapshot_loaded: bool = False
+    # The normalized snapshot stays backend-only because it can contain tens of
+    # thousands of plant records.  Cached computed vars cannot observe changes
+    # to a backend-only var, so this lightweight public revision invalidates the
+    # plant tables after a load or import without sending the full snapshot to
+    # the browser.
+    cultivation_plant_snapshot_revision: int = 0
+    cultivation_plant_importing: bool = False
+    cultivation_plant_message: str = ""
+    cultivation_plant_error: str = ""
+    cultivation_plant_facility_filter: str = "All Facilities"
+    cultivation_plant_phase_filter: str = "All Phases"
+    cultivation_plant_location_filter: str = "All Locations"
+    cultivation_plant_strain_filter: str = "All Strains"
+    cultivation_plant_view: str = "active_plants"
     cultivation_flower_room: str = "Flower Room 1"
     cultivation_cycle_name: str = ""
     cultivation_flower_entry_date: str = (
@@ -688,6 +771,12 @@ class DashboardState(rx.State):
     retail_delivery_history: list[dict[str, Any]] = []
     retailer_locations: list[dict[str, Any]] = []
     exceptions: list[dict[str, Any]] = []
+    exception_packages: list[dict[str, Any]] = []
+    shipment_exception_view: str = "Open Transfers"
+    shipment_exception_view_options: list[str] = [
+        "Open Transfers", "Rejected Transfers", "Returned Transfers"
+    ]
+    shipment_exception_show_manifest_summary: bool = False
     _transfer_data: list[dict[str, Any]] = []
     transfer_import_log: list[dict[str, Any]] = []
     cpg_inventory: list[dict[str, Any]] = []
@@ -1102,6 +1191,15 @@ class DashboardState(rx.State):
     @rx.event
     def change_qa_view(self, value: str):
         self.qa_view = value
+        if value not in {"customers", "retail", "transfers", "exceptions"}:
+            return
+        self.sales_demand_view = value
+        self.transfer_page = 1
+        # Release the navigation update before hydrating a potentially large
+        # transfer-backed distribution view.
+        yield
+        if value not in self.sales_loaded_views:
+            yield DashboardState.load_sales_background
 
     @rx.event
     def change_qa_cultivation_test_type(self, value: str):
@@ -1134,6 +1232,26 @@ class DashboardState(rx.State):
     @rx.event
     def change_qa_preview_open(self, value: bool):
         self.qa_preview_open = value
+
+    @rx.event
+    def change_qa_adjusted_coa_open(self, value: bool):
+        self.qa_adjusted_coa_open = value
+
+    @rx.event
+    def open_qa_adjusted_coa(self):
+        if self.qa_selected_analytes_loading:
+            self.qa_zebra_error = "Wait for the laboratory analytes to finish loading."
+            return
+        if len(self.qa_adjusted_terpene_names) < 3 or not all(
+            self.qa_adjusted_terpene_names
+        ):
+            self.qa_zebra_error = (
+                "Three individual terpene results are required before an Adjusted COA can be entered."
+            )
+            return
+        self.qa_adjusted_coa_error = ""
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_open = True
 
     @rx.event
     def change_qa_label_operation_filter(self, value: str):
@@ -1297,6 +1415,8 @@ class DashboardState(rx.State):
             self.qa_selected_analytes = []
             self.qa_zebra_message = ""
             self.qa_zebra_error = ""
+            self.qa_adjusted_coa = {}
+            self.qa_adjusted_coa_open = False
             return
         self.qa_selected_package = dict(selected)
         self.qa_selected_package.setdefault("record_origin", "Lab Results / COA")
@@ -1367,6 +1487,17 @@ class DashboardState(rx.State):
         self.qa_zebra_quantity = 1
         self.qa_zebra_message = ""
         self.qa_zebra_error = ""
+        self.qa_adjusted_coa = {}
+        self.qa_adjusted_coa_open = False
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+        self.qa_adjusted_total_terpenes = ""
+        self.qa_adjusted_total_cbg = ""
+        self.qa_adjusted_terpene_names = ["", "", ""]
+        self.qa_adjusted_terpene_values = ["", "", ""]
+        self.qa_adjusted_metrc_total_terpenes = ""
+        self.qa_adjusted_metrc_total_cbg = ""
+        self.qa_adjusted_metrc_terpene_values = ["", "", ""]
 
     @rx.event
     def select_qa_package(self, package_tag: str, packaged_license: str):
@@ -1402,9 +1533,18 @@ class DashboardState(rx.State):
             rows = await rx.run_in_thread(
                 lambda: load_qa_analytes(package_tag, packaged_license)
             )
+            try:
+                adjusted_coa = await rx.run_in_thread(
+                    lambda: load_adjusted_coa(package_tag, packaged_license)
+                )
+            except Exception:
+                # An adjustment is optional; a temporary persistence outage must
+                # not hide the underlying Metrc analytes or block label review.
+                adjusted_coa = {}
             async with self:
                 if str(self.qa_selected_package.get("package_tag", "")) == package_tag:
                     self.qa_selected_analytes = rows
+                    self._initialize_adjusted_coa_inputs(rows, adjusted_coa)
                     self.qa_analyte_message = (
                         f"{len(rows):,} analyte result(s) loaded."
                         if rows else "No detailed analyte rows were found for this record."
@@ -1421,6 +1561,174 @@ class DashboardState(rx.State):
             async with self:
                 if str(self.qa_selected_package.get("package_tag", "")) == package_tag:
                     self.qa_selected_analytes_loading = False
+
+    @staticmethod
+    def _adjusted_number(value: Any) -> float | None:
+        text = str(value or "").strip().replace("%", "")
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+
+    def _initialize_adjusted_coa_inputs(
+        self, rows: list[dict[str, Any]], adjusted_coa: dict[str, Any]
+    ) -> None:
+        metrc = label_analytes(rows)
+        top = list(metrc.get("top_terpenes", []))[:3]
+        while len(top) < 3:
+            top.append(("", None))
+        self.qa_adjusted_terpene_names = [str(name or "") for name, _ in top]
+        self.qa_adjusted_metrc_terpene_values = [
+            "" if value is None else f"{float(value):.3f}" for _, value in top
+        ]
+        metrc_total = self._adjusted_number(metrc.get("total_terpenes"))
+        metrc_cbg = self._adjusted_number(metrc.get("total_cbg"))
+        self.qa_adjusted_metrc_total_terpenes = (
+            "" if metrc_total is None else f"{metrc_total:.3f}"
+        )
+        self.qa_adjusted_metrc_total_cbg = (
+            "" if metrc_cbg is None else f"{metrc_cbg:.2f}"
+        )
+        self.qa_adjusted_coa = dict(adjusted_coa or {})
+        if adjusted_coa:
+            saved_names = list(adjusted_coa.get("terpene_names", []))
+            saved_values = list(adjusted_coa.get("terpene_values", []))
+            saved_by_name = {
+                str(name): value for name, value in zip(saved_names, saved_values)
+            }
+            self.qa_adjusted_total_terpenes = f"{float(adjusted_coa['total_terpenes']):.3f}"
+            self.qa_adjusted_total_cbg = f"{float(adjusted_coa['total_cbg']):.2f}"
+            self.qa_adjusted_terpene_values = [
+                f"{float(saved_by_name[name]):.3f}" if name in saved_by_name else ""
+                for name in self.qa_adjusted_terpene_names
+            ]
+        else:
+            self.qa_adjusted_total_terpenes = ""
+            self.qa_adjusted_total_cbg = ""
+            self.qa_adjusted_terpene_values = ["", "", ""]
+
+    @rx.event
+    def change_qa_adjusted_total_terpenes(self, value: str):
+        self.qa_adjusted_total_terpenes = value
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+
+    @rx.event
+    def change_qa_adjusted_total_cbg(self, value: str):
+        self.qa_adjusted_total_cbg = value
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+
+    @rx.event
+    def change_qa_adjusted_terpene_1(self, value: str):
+        self.qa_adjusted_terpene_values[0] = value
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+
+    @rx.event
+    def change_qa_adjusted_terpene_2(self, value: str):
+        self.qa_adjusted_terpene_values[1] = value
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+
+    @rx.event
+    def change_qa_adjusted_terpene_3(self, value: str):
+        self.qa_adjusted_terpene_values[2] = value
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+
+    def _adjusted_coa_payload(
+        self,
+    ) -> tuple[dict[str, Any], list[str], list[str]]:
+        total = self._adjusted_number(self.qa_adjusted_total_terpenes)
+        total_cbg = self._adjusted_number(self.qa_adjusted_total_cbg)
+        terpene_values = [
+            self._adjusted_number(value) for value in self.qa_adjusted_terpene_values
+        ]
+        errors: list[str] = []
+        if total is None:
+            errors.append("Enter Total Terpenes as a percentage.")
+        if total_cbg is None:
+            errors.append("Enter Total CBG exactly as shown on the COA.")
+        if any(value is None for value in terpene_values):
+            errors.append("Enter all three individual terpene percentages.")
+        numbers = [float(value) for value in terpene_values if value is not None]
+        if any(value < 0 for value in [total, total_cbg, *numbers] if value is not None):
+            errors.append("Adjusted COA percentages cannot be negative.")
+        if total is not None and total > 20:
+            errors.append("Total Terpenes is outside the supported percentage range.")
+        if total_cbg is not None and total_cbg > 20:
+            errors.append("Total CBG is outside the supported percentage range.")
+        if any(value > 20 for value in numbers):
+            errors.append("An individual terpene is outside the supported percentage range.")
+        if total is not None and len(numbers) == 3 and sum(numbers) > total + 0.0005:
+            errors.append("The three terpene values cannot exceed Total Terpenes.")
+
+        suspects: list[str] = []
+        metrc_total = self._adjusted_number(self.qa_adjusted_metrc_total_terpenes)
+        if total is not None and metrc_total is not None and abs(total - metrc_total) > 0.011:
+            suspects.append("Total Terpenes differs from Metrc by more than 0.01%.")
+        metrc_cbg = self._adjusted_number(self.qa_adjusted_metrc_total_cbg)
+        if total_cbg is not None and metrc_cbg is not None and abs(total_cbg - metrc_cbg) > 0.021:
+            suspects.append("Total CBG differs from the Metrc-derived value by more than 0.02%.")
+        for index, (name, value, metrc_text) in enumerate(zip(
+            self.qa_adjusted_terpene_names,
+            terpene_values,
+            self.qa_adjusted_metrc_terpene_values,
+        ), start=1):
+            metrc_value = self._adjusted_number(metrc_text)
+            if value is not None and metrc_value is not None and abs(value - metrc_value) > 0.011:
+                suspects.append(
+                    f"{name or f'Terpene {index}'} differs from Metrc by more than 0.01%."
+                )
+        payload = {
+            "total_terpenes": total,
+            "total_cbg": total_cbg,
+            "terpene_names": list(self.qa_adjusted_terpene_names),
+            "terpene_values": numbers,
+        }
+        return payload, errors, suspects
+
+    @rx.event
+    async def save_qa_adjusted_coa(self):
+        payload, errors, suspects = self._adjusted_coa_payload()
+        if errors:
+            self.qa_adjusted_coa_error = " ".join(errors)
+            self.qa_adjusted_coa_message = ""
+            return
+        if not self._require_active_session():
+            self.qa_adjusted_coa_error = "Your session expired. Sign in again to save this COA."
+            return
+        self.qa_adjusted_coa_saving = True
+        self.qa_adjusted_coa_error = ""
+        self.qa_adjusted_coa_message = ""
+        try:
+            package = self.qa_selected_package
+            saved = await rx.run_in_thread(
+                lambda: save_adjusted_coa(
+                    str(package.get("package_tag", "")),
+                    str(package.get("packaged_license", "")),
+                    str(package.get("test_date", "")),
+                    float(payload["total_terpenes"]),
+                    float(payload["total_cbg"]),
+                    list(payload["terpene_names"]),
+                    list(payload["terpene_values"]),
+                    suspects,
+                    self.auth_email or self.auth_name,
+                )
+            )
+            self.qa_adjusted_coa = saved
+            self.qa_adjusted_coa_message = (
+                "Adjusted COA saved. The Zebra preview and future labels now use these verified values."
+            )
+            self.qa_zebra_message = "Adjusted COA — verified values applied."
+        except Exception as error:
+            self.qa_adjusted_coa_error = f"The Adjusted COA could not be saved: {error}"
+        finally:
+            self.qa_adjusted_coa_saving = False
 
     @rx.event
     def select_native_template(self, value: str):
@@ -2053,6 +2361,77 @@ class DashboardState(rx.State):
     def qa_filtered_analyte_count(self) -> int:
         return len(self.qa_selected_analyte_rows)
 
+    @rx.var(cache=True)
+    def qa_adjusted_coa_status(self) -> str:
+        return (
+            "Adjusted COA — verified"
+            if self.qa_adjusted_coa
+            else "Metrc data — estimated"
+        )
+
+    @rx.var(cache=True)
+    def qa_adjusted_other_preview(self) -> str:
+        total = self._adjusted_number(self.qa_adjusted_total_terpenes)
+        values = [
+            self._adjusted_number(value) for value in self.qa_adjusted_terpene_values
+        ]
+        if total is None or any(value is None for value in values):
+            return "Enter all four terpene values"
+        precise = [float(value) for value in values if value is not None]
+        if sum(precise) > total + 0.0005:
+            return "Top-three values exceed Total Terpenes"
+        other = adjusted_other_terpenes(total, precise)
+        return "" if other is None else f"{other:.2f}%"
+
+    @rx.var(cache=True)
+    def qa_adjusted_coa_review_rows(self) -> list[dict[str, Any]]:
+        entries = [
+            (
+                "Total Terpenes",
+                self.qa_adjusted_metrc_total_terpenes,
+                self.qa_adjusted_total_terpenes,
+                0.011,
+            ),
+            *[
+                (
+                    self.qa_adjusted_terpene_names[index] or f"Terpene {index + 1}",
+                    self.qa_adjusted_metrc_terpene_values[index],
+                    self.qa_adjusted_terpene_values[index],
+                    0.011,
+                )
+                for index in range(3)
+            ],
+            (
+                "Total CBG",
+                self.qa_adjusted_metrc_total_cbg,
+                self.qa_adjusted_total_cbg,
+                0.021,
+            ),
+        ]
+        rows: list[dict[str, Any]] = []
+        for label, metrc_text, entered_text, tolerance in entries:
+            entered = self._adjusted_number(entered_text)
+            metrc = self._adjusted_number(metrc_text)
+            if entered is None:
+                status, color = "Required", "gray"
+            elif metrc is not None and abs(entered - metrc) > tolerance:
+                status, color = "Suspect", "orange"
+            else:
+                status, color = "Matches Metrc range", "teal"
+            rows.append({
+                "Field": label,
+                "Metrc": "—" if metrc is None else f"{metrc:.3f}%",
+                "Entered": "—" if entered is None else f"{entered:.3f}%",
+                "Status": status,
+                "Color": color,
+            })
+        return rows
+
+    @rx.var(cache=True)
+    def qa_adjusted_coa_has_suspect_values(self) -> bool:
+        _payload, _errors, suspects = self._adjusted_coa_payload()
+        return bool(suspects)
+
     def _qa_zebra_context(self) -> tuple[dict[str, Any], list[str]]:
         return prepare_label_context(
             self.qa_selected_package,
@@ -2062,6 +2441,7 @@ class DashboardState(rx.State):
             harvest_date=self.qa_zebra_harvest_date,
             lot_number=self.qa_zebra_lot_number,
             quantity=self.qa_zebra_quantity,
+            adjusted_coa=self.qa_adjusted_coa,
         )
 
     @rx.var(cache=True)
@@ -2082,6 +2462,19 @@ class DashboardState(rx.State):
             ["Harvest Date", str(context.get("harvest_date", ""))],
             ["Expiration Date", str(context.get("expiration_date", ""))],
             ["Lot", str(context.get("lot_number", ""))],
+            ["COA Values", self.qa_adjusted_coa_status],
+            ["Total Terpenes", (
+                "" if context.get("analytes", {}).get("total_terpenes") is None
+                else f"{context['analytes']['total_terpenes']:.2f}%"
+            )],
+            ["Total CBG", (
+                "" if context.get("analytes", {}).get("total_cbg") is None
+                else f"{context['analytes']['total_cbg']:.2f}%"
+            )],
+            ["Other Terpenes", (
+                "" if context.get("analytes", {}).get("other_terpenes") is None
+                else f"{context['analytes']['other_terpenes']:.2f}%"
+            )],
             ["Printer", self.qa_zebra_printer],
             ["Quantity", str(context.get("quantity", 1))],
         ]
@@ -2601,9 +2994,10 @@ class DashboardState(rx.State):
         self.velocity_windows = payload.get(
             "velocity_windows", {"All Time": payload["velocity"]}
         )
-        self.velocity = self.velocity_windows.get(
-            self.sku_velocity_period, payload["velocity"]
+        self.availability_adjusted_velocity_windows = payload.get(
+            "availability_adjusted_velocity_windows", {}
         )
+        self.velocity = self._selected_sku_velocity()
         self.availability_demand_summary = payload.get(
             "availability_demand_summary", []
         )
@@ -2621,6 +3015,7 @@ class DashboardState(rx.State):
         )
         self.retailer_locations = payload.get("retailer_locations", [])
         self.exceptions = payload.get("exceptions", [])
+        self.exception_packages = payload.get("exception_packages", [])
         self._transfer_data = payload.get("transfer_data", [])
         self.transfer_import_log = payload.get("transfer_import_log", [])
         self.cpg_inventory = payload.get("cpg_inventory", [])
@@ -2757,9 +3152,10 @@ class DashboardState(rx.State):
         self.velocity_windows = payload.get(
             "velocity_windows", {"All Time": payload.get("velocity", [])}
         )
-        self.velocity = self.velocity_windows.get(
-            self.sku_velocity_period, payload.get("velocity", [])
+        self.availability_adjusted_velocity_windows = payload.get(
+            "availability_adjusted_velocity_windows", {}
         )
+        self.velocity = self._selected_sku_velocity()
         self.availability_demand_summary = payload.get(
             "availability_demand_summary", []
         )
@@ -2858,9 +3254,10 @@ class DashboardState(rx.State):
         self.velocity_windows = payload.get(
             "velocity_windows", {"All Time": payload["velocity"]}
         )
-        self.velocity = self.velocity_windows.get(
-            self.sku_velocity_period, payload["velocity"]
+        self.availability_adjusted_velocity_windows = payload.get(
+            "availability_adjusted_velocity_windows", {}
         )
+        self.velocity = self._selected_sku_velocity()
         self.stockouts = payload["stockouts"]
         self.saved_plans = payload["saved_plans"]
         self.saved_plan_cards = payload.get("saved_plan_cards", [])
@@ -2875,6 +3272,7 @@ class DashboardState(rx.State):
         self.calendar = payload["calendar"]
         self.customers = payload.get("customers", [])
         self.exceptions = payload.get("exceptions", [])
+        self.exception_packages = payload.get("exception_packages", [])
         self._transfer_data = payload.get("transfer_data", [])
         self.availability_demand_summary = payload.get(
             "availability_demand_summary", []
@@ -2908,9 +3306,11 @@ class DashboardState(rx.State):
             self.customers = []
             self.retail_delivery_history = []
             self.exceptions = []
+            self.exception_packages = []
             self._transfer_data = []
             self.transfer_import_log = []
             self.velocity_windows = {}
+            self.availability_adjusted_velocity_windows = {}
 
         # The executive action queue and business pulse remain immediately
         # available. They are comparatively small and avoid a second load when
@@ -2918,23 +3318,30 @@ class DashboardState(rx.State):
         self.business_pulse = payload.get("business_pulse", [])
         self.velocity = payload.get("velocity", [])
 
-        if self.workspace_view != "sales_demand":
+        optional_view = self.sales_demand_view
+        if (
+            self.workspace_view == "qa"
+            and self.qa_view in {"customers", "retail", "transfers", "exceptions"}
+        ):
+            optional_view = self.qa_view
+        elif self.workspace_view != "sales_demand":
             return
-        if self.sales_demand_view in self.sales_loaded_views:
+        if optional_view in self.sales_loaded_views:
             return
-        if self.sales_demand_view == "overview":
+        if optional_view == "overview":
             self.monthly = payload.get("monthly", [])
             self.top_skus = payload.get("top_skus", [])
-        elif self.sales_demand_view == "stockouts":
+        elif optional_view == "stockouts":
             self.stockouts = payload.get("stockouts", [])
-        elif self.sales_demand_view in {"planning", "production"}:
+        elif optional_view in {"planning", "production"}:
             self.velocity_windows = payload.get(
                 "velocity_windows", {"All Time": self.velocity}
             )
-            self.velocity = self.velocity_windows.get(
-                self.sku_velocity_period, payload.get("velocity", [])
+            self.availability_adjusted_velocity_windows = payload.get(
+                "availability_adjusted_velocity_windows", {}
             )
-            if self.sales_demand_view == "production":
+            self.velocity = self._selected_sku_velocity()
+            if optional_view == "production":
                 self.saved_plans = payload.get("saved_plans", [])
                 self.saved_plan_cards = payload.get("saved_plan_cards", [])
                 self.production_templates = payload.get(
@@ -2942,21 +3349,22 @@ class DashboardState(rx.State):
                 )
                 self.calendar = payload.get("calendar", [])
                 self.production_module_loaded = True
-        elif self.sales_demand_view == "customers":
+        elif optional_view == "customers":
             self.customers = payload.get("customers", [])
-        elif self.sales_demand_view == "retail":
+        elif optional_view == "retail":
             self.retail_delivery_history = payload.get(
                 "retail_delivery_history", []
             )
             self.retailer_locations = payload.get("retailer_locations", [])
-        elif self.sales_demand_view == "exceptions":
+        elif optional_view == "exceptions":
             self.exceptions = payload.get("exceptions", [])
-        elif self.sales_demand_view == "transfers":
+            self.exception_packages = payload.get("exception_packages", [])
+        elif optional_view == "transfers":
             self._transfer_data = payload.get("transfer_data", [])
             self.transfer_import_log = payload.get("transfer_import_log", [])
 
         self.sales_loaded_views = [
-            *self.sales_loaded_views, self.sales_demand_view
+            *self.sales_loaded_views, optional_view
         ]
 
         available_plan_ids = {
@@ -4486,10 +4894,27 @@ class DashboardState(rx.State):
             self.sku_planning_page_size = 10
         self.sku_planning_page = 1
 
+    def _selected_sku_velocity(self) -> list[dict[str, Any]]:
+        windows = (
+            self.availability_adjusted_velocity_windows
+            if self.sku_use_availability_adjusted
+            else self.velocity_windows
+        )
+        return windows.get(
+            self.sku_velocity_period,
+            self.velocity_windows.get(self.sku_velocity_period, self.velocity),
+        )
+
     @rx.event
     def change_sku_velocity_period(self, value: str):
         self.sku_velocity_period = value
-        self.velocity = self.velocity_windows.get(value, self.velocity)
+        self.velocity = self._selected_sku_velocity()
+        self.sku_planning_page = 1
+
+    @rx.event
+    def change_sku_availability_adjusted(self, value: bool):
+        self.sku_use_availability_adjusted = bool(value)
+        self.velocity = self._selected_sku_velocity()
         self.sku_planning_page = 1
 
     @rx.event
@@ -4545,6 +4970,12 @@ class DashboardState(rx.State):
         if value == "qa":
             if not self.qa_loaded and not self.qa_loading:
                 yield DashboardState.load_qa_background(False)
+            if (
+                self.qa_view in {"customers", "retail", "transfers", "exceptions"}
+                and self.qa_view not in self.sales_loaded_views
+            ):
+                self.sales_demand_view = self.qa_view
+                yield DashboardState.load_sales_background
             return
         if value != "sales_demand":
             return
@@ -4556,6 +4987,14 @@ class DashboardState(rx.State):
         if self.sales_demand_view in self.sales_loaded_views:
             return
         yield DashboardState.load_sales_background
+
+    @rx.event
+    def change_shipment_exception_view(self, value: str):
+        self.shipment_exception_view = value
+
+    @rx.event
+    def change_shipment_exception_summary_view(self, value: bool):
+        self.shipment_exception_show_manifest_summary = value
 
     @rx.event
     def change_cultivation_view(self, value: str):
@@ -4576,6 +5015,309 @@ class DashboardState(rx.State):
                 )
         if value == "clone_planning" and not self.cultivation_clone_plan_history_loaded:
             yield DashboardState.load_cultivation_clone_plan_history
+        if value == "metrc_plants" and not self.cultivation_plant_snapshot_loaded:
+            yield DashboardState.load_cultivation_plant_snapshot
+
+    @rx.event
+    def load_cultivation_plant_snapshot(self):
+        self.cultivation_plant_error = ""
+        try:
+            self._cultivation_plant_snapshot = load_latest_metrc_plant_snapshot()
+            self.cultivation_plant_snapshot_revision += 1
+            self.cultivation_plant_snapshot_loaded = True
+            if not self._cultivation_plant_snapshot:
+                self.cultivation_plant_message = (
+                    "No Metrc plant snapshot has been published yet. Upload all four "
+                    "active exports to create the first snapshot."
+                )
+            else:
+                self.cultivation_plant_message = "Latest Metrc plant snapshot loaded."
+        except Exception as error:
+            self.cultivation_plant_snapshot_loaded = True
+            self.cultivation_plant_error = (
+                "The Metrc plant snapshot could not be loaded: " + str(error)
+            )
+
+    @rx.event
+    async def import_cultivation_plant_files(self, files: list[rx.UploadFile]):
+        self.cultivation_plant_error = ""
+        self.cultivation_plant_message = ""
+        if not self._require_active_session():
+            self.cultivation_plant_error = (
+                "Your session expired. Sign in again to import Metrc plant data."
+            )
+            return
+        if not files:
+            self.cultivation_plant_error = "Choose all four active Metrc plant exports."
+            return
+        self.cultivation_plant_importing = True
+        yield
+        try:
+            uploaded = [(file.name, await file.read()) for file in files]
+            snapshot = parse_metrc_plant_exports(uploaded)
+            self._cultivation_plant_snapshot = snapshot
+            self.cultivation_plant_snapshot_revision += 1
+            self.cultivation_plant_snapshot_loaded = True
+            try:
+                save_metrc_plant_snapshot(
+                    snapshot,
+                    imported_by=self.auth_name or self.auth_email or "QCC Reflex User",
+                )
+                self.cultivation_plant_message = (
+                    "Metrc plant snapshot imported and saved. The previous snapshot "
+                    "remains available in Supabase history."
+                )
+            except Exception as save_error:
+                self.cultivation_plant_message = (
+                    "The snapshot is available for this session but could not be saved: "
+                    + str(save_error)
+                )
+        except Exception as error:
+            self.cultivation_plant_error = "Plant import failed: " + str(error)
+        finally:
+            self.cultivation_plant_importing = False
+        yield rx.clear_selected_files("cultivation_plant_upload")
+
+    @rx.event
+    def change_cultivation_plant_view(self, value: str):
+        self.cultivation_plant_view = value
+
+    @rx.event
+    def change_cultivation_plant_facility_filter(self, value: str):
+        self.cultivation_plant_facility_filter = value
+        self.cultivation_plant_location_filter = "All Locations"
+
+    @rx.event
+    def change_cultivation_plant_phase_filter(self, value: str):
+        self.cultivation_plant_phase_filter = value
+
+    @rx.event
+    def change_cultivation_plant_location_filter(self, value: str):
+        self.cultivation_plant_location_filter = value
+
+    @rx.event
+    def change_cultivation_plant_strain_filter(self, value: str):
+        self.cultivation_plant_strain_filter = value
+
+    def _cultivation_active_plant_rows(self) -> list[dict[str, Any]]:
+        rows = [
+            *self._cultivation_plant_snapshot.get("flowering", []),
+            *self._cultivation_plant_snapshot.get("vegetative", []),
+        ]
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            if (
+                self.cultivation_plant_facility_filter != "All Facilities"
+                and row.get("facility") != self.cultivation_plant_facility_filter
+            ):
+                continue
+            if (
+                self.cultivation_plant_phase_filter != "All Phases"
+                and row.get("phase") != self.cultivation_plant_phase_filter
+            ):
+                continue
+            if (
+                self.cultivation_plant_location_filter != "All Locations"
+                and row.get("location") != self.cultivation_plant_location_filter
+            ):
+                continue
+            if (
+                self.cultivation_plant_strain_filter != "All Strains"
+                and row.get("strain") != self.cultivation_plant_strain_filter
+            ):
+                continue
+            result.append(row)
+        return result
+
+    @rx.var(cache=True)
+    def cultivation_plant_snapshot_label(self) -> str:
+        _ = self.cultivation_plant_snapshot_revision
+        imported = str(self._cultivation_plant_snapshot.get("imported_at", "") or "")
+        return imported[:19].replace("T", " ") if imported else "No snapshot"
+
+    @rx.var(cache=True)
+    def cultivation_plant_source_rows(self) -> list[list[str]]:
+        _ = self.cultivation_plant_snapshot_revision
+        labels = {
+            "flowering": "Flowering Plants",
+            "vegetative": "Vegetative Plants",
+            "plantings": "Active Plantings",
+            "harvests": "Harvests",
+        }
+        files = dict(self._cultivation_plant_snapshot.get("source_files") or {})
+        return [
+            [labels[kind], str(files.get(kind, "Missing"))]
+            for kind in labels
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_plant_kpis(self) -> dict[str, str]:
+        _ = self.cultivation_plant_snapshot_revision
+        summary = dict(self._cultivation_plant_snapshot.get("summary") or {})
+        return {
+            "flowering": f"{int(summary.get('flowering_plants', 0) or 0):,}",
+            "vegetative": f"{int(summary.get('vegetative_plants', 0) or 0):,}",
+            "plantings": f"{int(summary.get('active_plantings', 0) or 0):,}",
+            "planting_plants": f"{int(summary.get('planting_plants', 0) or 0):,}",
+            "harvests": f"{int(summary.get('harvest_batches', 0) or 0):,}",
+        }
+
+    @rx.var(cache=True)
+    def cultivation_plant_facility_options(self) -> list[str]:
+        _ = self.cultivation_plant_snapshot_revision
+        rows = [
+            *self._cultivation_plant_snapshot.get("flowering", []),
+            *self._cultivation_plant_snapshot.get("vegetative", []),
+            *self._cultivation_plant_snapshot.get("plantings", []),
+        ]
+        return ["All Facilities", *sorted({str(row.get("facility", "")) for row in rows if row.get("facility")})]
+
+    @rx.var(cache=True)
+    def cultivation_plant_location_options(self) -> list[str]:
+        _ = self.cultivation_plant_snapshot_revision
+        rows = [
+            *self._cultivation_plant_snapshot.get("flowering", []),
+            *self._cultivation_plant_snapshot.get("vegetative", []),
+        ]
+        values = {
+            str(row.get("location", ""))
+            for row in rows
+            if row.get("location")
+            and (
+                self.cultivation_plant_facility_filter == "All Facilities"
+                or row.get("facility") == self.cultivation_plant_facility_filter
+            )
+        }
+        return ["All Locations", *sorted(values, key=str.casefold)]
+
+    @rx.var(cache=True)
+    def cultivation_plant_strain_options(self) -> list[str]:
+        _ = self.cultivation_plant_snapshot_revision
+        rows = [
+            *self._cultivation_plant_snapshot.get("flowering", []),
+            *self._cultivation_plant_snapshot.get("vegetative", []),
+            *self._cultivation_plant_snapshot.get("plantings", []),
+            *self._cultivation_plant_snapshot.get("harvests", []),
+        ]
+        return ["All Strains", *sorted({str(row.get("strain", "")) for row in rows if row.get("strain")}, key=str.casefold)]
+
+    @rx.var(cache=True)
+    def cultivation_active_plant_count(self) -> str:
+        _ = self.cultivation_plant_snapshot_revision
+        return f"{len(self._cultivation_active_plant_rows()):,} matching plants"
+
+    @rx.var(cache=True)
+    def cultivation_active_plant_table_rows(self) -> list[list[Any]]:
+        _ = self.cultivation_plant_snapshot_revision
+        rows = sorted(
+            self._cultivation_active_plant_rows(),
+            key=lambda row: (str(row.get("location", "")), str(row.get("strain", "")), str(row.get("tag", ""))),
+        )
+        return [
+            [
+                row.get("tag", ""),
+                row.get("strain", ""),
+                row.get("phase", ""),
+                row.get("facility", ""),
+                row.get("location", ""),
+                row.get("plant_batch", ""),
+                row.get("plant_batch_date", ""),
+                row.get("phase_date", ""),
+                "Yes" if row.get("hold") else "No",
+            ]
+            for row in rows[:2000]
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_plant_location_summary_rows(self) -> list[list[Any]]:
+        _ = self.cultivation_plant_snapshot_revision
+        grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in self._cultivation_active_plant_rows():
+            key = (str(row.get("facility", "")), str(row.get("phase", "")), str(row.get("location", "")))
+            item = grouped.setdefault(key, {"plants": 0, "strains": set()})
+            item["plants"] += 1
+            if row.get("strain"):
+                item["strains"].add(str(row["strain"]))
+        return [
+            [
+                facility,
+                phase,
+                location,
+                values["plants"],
+                len(values["strains"]),
+            ]
+            for (facility, phase, location), values in sorted(grouped.items())
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_active_planting_rows(self) -> list[list[Any]]:
+        _ = self.cultivation_plant_snapshot_revision
+        rows = self._cultivation_plant_snapshot.get("plantings", [])
+        filtered: list[dict[str, Any]] = []
+        for row in rows:
+            if self.cultivation_plant_facility_filter != "All Facilities" and row.get("facility") != self.cultivation_plant_facility_filter:
+                continue
+            if self.cultivation_plant_strain_filter != "All Strains" and row.get("strain") != self.cultivation_plant_strain_filter:
+                continue
+            filtered.append({
+                "Plant Batch": row.get("plant_batch", ""),
+                "Strain": row.get("strain", ""),
+                "Facility": row.get("facility", ""),
+                "Location": row.get("location", ""),
+                "Available Plants": row.get("plants", 0),
+                "Tracked": row.get("tracked", 0),
+                "Packaged": row.get("packaged", 0),
+                "Destroyed": row.get("destroyed", 0),
+                "Batch Date": row.get("batch_date", ""),
+            })
+        return [
+            [row.get(column, "") for column in PLANTING_COLUMNS]
+            for row in sorted(
+                filtered,
+                key=lambda row: (row["Batch Date"], row["Strain"]),
+                reverse=True,
+            )
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_plant_harvest_rows(self) -> list[list[Any]]:
+        _ = self.cultivation_plant_snapshot_revision
+        rows = []
+        for row in self._cultivation_plant_snapshot.get("harvests", []):
+            if self.cultivation_plant_facility_filter != "All Facilities" and row.get("facility") != self.cultivation_plant_facility_filter:
+                continue
+            if self.cultivation_plant_strain_filter != "All Strains" and row.get("strain") != self.cultivation_plant_strain_filter:
+                continue
+            rows.append({
+                "Harvest Batch": row.get("harvest_batch", ""),
+                "Strain": row.get("strain", ""),
+                "Harvest Date": row.get("harvest_date", ""),
+                "Plants": row.get("plants", 0),
+                "Wet Weight (lb)": round(float(row.get("wet_weight_lb", 0) or 0), 2),
+                "Packaged Weight (lb)": round(float(row.get("packaged_weight_lb", 0) or 0), 2),
+                "Remaining Weight (lb)": round(float(row.get("remaining_weight_lb", 0) or 0), 2),
+                "Packages": row.get("package_count", 0),
+                "Fresh Frozen": "Yes" if row.get("fresh_frozen") else "No",
+            })
+        return [
+            [row.get(column, "") for column in PLANT_HARVEST_COLUMNS]
+            for row in sorted(
+                rows,
+                key=lambda row: (row["Harvest Date"], row["Harvest Batch"]),
+                reverse=True,
+            )[:2000]
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_plant_reconciliation_rows(self) -> list[list[Any]]:
+        _ = self.cultivation_plant_snapshot_revision
+        rows = plant_crop_reconciliation(
+            self._cultivation_plant_snapshot, UPCOMING_CROP_ALLOCATIONS
+        )
+        return [
+            [row.get(column, "") for column in PLANT_RECONCILIATION_COLUMNS]
+            for row in rows
+        ]
 
     @rx.event
     def change_cultivation_history_room_filter(self, value: str):
@@ -4617,7 +5359,11 @@ class DashboardState(rx.State):
     @rx.event
     def change_cultivation_clone_plan_lookback(self, value: str):
         self.cultivation_clone_plan_lookback = (
-            value if value in {"Last 4 Plans", "Last 8 Plans"} else "Last 4 Plans"
+            value
+            if value in {
+                "No Historical Crops", "Last 4 Crops", "Last 8 Crops"
+            }
+            else "No Historical Crops"
         )
 
     @rx.event
@@ -4742,11 +5488,150 @@ class DashboardState(rx.State):
     def load_cultivation_clone_plan_history(self):
         try:
             self.cultivation_clone_plan_history = load_clone_plans()
+            adjustment_rows = load_fresh_frozen_adjustments()
+            self.cultivation_fresh_frozen_adjustments = {
+                f"{str(row.get('crop', '')).casefold()}|"
+                f"{normalized_strain(row.get('strain', ''))}":
+                int(row.get("planned_plants", 0) or 0)
+                for row in adjustment_rows
+            }
+            self.cultivation_creative_use_adjustments = {
+                f"{str(row.get('crop', '')).casefold()}|"
+                f"{normalized_strain(row.get('strain', ''))}":
+                float(row.get("creative_use_lbs", 0) or 0)
+                for row in adjustment_rows
+            }
+            if not self.cultivation_clone_plan_dirty:
+                self._restore_approved_current_clone_plan()
             self.cultivation_clone_plan_history_loaded = True
         except Exception as error:
             self.cultivation_clone_plan_error = (
                 "Saved clone-plan history could not be loaded: " + str(error)
             )
+
+    def _restore_approved_current_clone_plan(self) -> bool:
+        """Hydrate the Rolling Planner from its saved approved current crop."""
+        period = clone_planning_periods(1)[0]
+        plan = approved_clone_plan_for_crop(
+            self.cultivation_clone_plan_history, period["crop"]
+        )
+        if plan is None:
+            return False
+        self.cultivation_clone_plan_allocations = {
+            str(strain): float(value or 0)
+            for strain, value in dict(plan.get("allocations") or {}).items()
+            if float(value or 0) > 0
+        }
+        self.cultivation_clone_plan_demand_model = str(
+            plan.get("demand_model", "Experimental Availability-Adjusted")
+            or "Experimental Availability-Adjusted"
+        )
+        self.cultivation_clone_plan_status = "Approved"
+        self.cultivation_clone_plan_dirty = False
+        self.cultivation_clone_plan_entry_version += 1
+        return True
+
+    @rx.event
+    def save_cultivation_fresh_frozen_plants(
+        self,
+        crop: str,
+        strain: str,
+        harvest_date: str,
+        planted_plants: int,
+        value: str,
+    ):
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = ""
+        try:
+            plants = max(0, int(float(value or 0)))
+        except (TypeError, ValueError):
+            self.cultivation_clone_plan_error = (
+                "Fresh Frozen plants must be entered as a whole number."
+            )
+            return
+        maximum = max(0, int(planted_plants or 0))
+        if plants > maximum:
+            self.cultivation_clone_plan_error = (
+                f"Fresh Frozen cannot exceed the {maximum} planted plants for "
+                f"{strain} in {crop}."
+            )
+            return
+        try:
+            harvest = date.fromisoformat(str(harvest_date))
+        except ValueError:
+            self.cultivation_clone_plan_error = "That crop has no valid harvest date."
+            return
+        if date.today() > harvest:
+            self.cultivation_clone_plan_error = (
+                "Planned Fresh Frozen can only be changed through harvest day."
+            )
+            return
+        self.cultivation_fresh_frozen_saving = True
+        try:
+            save_fresh_frozen_adjustment(
+                crop=crop,
+                strain=strain,
+                planned_plants=plants,
+                updated_by=self.auth_name or self.auth_email or "QCC Reflex User",
+            )
+            updated = dict(self.cultivation_fresh_frozen_adjustments)
+            updated[f"{crop.casefold()}|{normalized_strain(strain)}"] = plants
+            self.cultivation_fresh_frozen_adjustments = updated
+            self.cultivation_clone_plan_message = (
+                f"{crop} {strain}: planned Fresh Frozen updated to {plants} plants."
+            )
+        except Exception as error:
+            self.cultivation_clone_plan_error = (
+                "Fresh Frozen plan could not be saved: " + str(error)
+            )
+        finally:
+            self.cultivation_fresh_frozen_saving = False
+
+    @rx.event
+    def save_cultivation_creative_use_lbs(
+        self,
+        crop: str,
+        strain: str,
+        maximum_lbs: float,
+        value: str,
+    ):
+        """Save dry flower intentionally redirected to blends or co-packing."""
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = ""
+        try:
+            pounds = max(0.0, round(float(value or 0), 1))
+        except (TypeError, ValueError):
+            self.cultivation_clone_plan_error = (
+                "Creative Use must be entered as a number of pounds."
+            )
+            return
+        maximum = max(0.0, float(maximum_lbs or 0))
+        if pounds > maximum + 0.05:
+            self.cultivation_clone_plan_error = (
+                f"Creative Use cannot exceed the {maximum:.1f} lb remaining after "
+                f"Fresh Frozen for {strain} in {crop}."
+            )
+            return
+        self.cultivation_fresh_frozen_saving = True
+        try:
+            save_creative_use_adjustment(
+                crop=crop,
+                strain=strain,
+                reduction_lbs=pounds,
+                updated_by=self.auth_name or self.auth_email or "QCC Reflex User",
+            )
+            updated = dict(self.cultivation_creative_use_adjustments)
+            updated[f"{crop.casefold()}|{normalized_strain(strain)}"] = pounds
+            self.cultivation_creative_use_adjustments = updated
+            self.cultivation_clone_plan_message = (
+                f"{crop} {strain}: Creative Use updated to {pounds:.1f} lb."
+            )
+        except Exception as error:
+            self.cultivation_clone_plan_error = (
+                "Creative Use reduction could not be saved: " + str(error)
+            )
+        finally:
+            self.cultivation_fresh_frozen_saving = False
 
     @rx.event
     def edit_cultivation_clone_plan_history(self, plan_id: str):
@@ -4764,6 +5649,7 @@ class DashboardState(rx.State):
         self.cultivation_historical_plan_edit_status = str(
             plan.get("status", "Approved") or "Approved"
         )
+        self.cultivation_historical_plan_editing = True
         self.cultivation_historical_plan_crop = str(plan.get("crop", ""))
         self.cultivation_historical_plan_allocations = {
             str(strain): float(value or 0)
@@ -4777,10 +5663,44 @@ class DashboardState(rx.State):
         )
 
     @rx.event
+    def edit_cultivation_historical_lookback(self, crop: str):
+        valid = {period["crop"] for period in prior_clone_planning_periods(8)}
+        if crop not in valid:
+            self.cultivation_clone_plan_error = "That historical crop is not editable."
+            return
+        plan = next(
+            (
+                row for row in self.cultivation_clone_plan_history
+                if str(row.get("crop", "")) == crop
+                and str(row.get("status", "")).casefold() == "approved"
+            ),
+            None,
+        )
+        allocations = self._clone_plan_allocations_by_crop().get(crop, {})
+        self.cultivation_historical_plan_crop = crop
+        self.cultivation_historical_plan_edit_id = (
+            str(plan.get("plan_id", "")) if plan else ""
+        )
+        self.cultivation_historical_plan_edit_status = "Approved"
+        self.cultivation_historical_plan_allocations = {
+            str(strain): float(value or 0)
+            for strain, value in allocations.items()
+            if float(value or 0) > 0
+        }
+        self.cultivation_historical_plan_editing = True
+        self.cultivation_historical_plan_entry_version += 1
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = (
+            f"Editing {crop} directly in the historical lookback column."
+        )
+
+    @rx.event
     def cancel_cultivation_clone_plan_history_edit(self):
         self.cultivation_historical_plan_edit_id = ""
         self.cultivation_historical_plan_edit_status = "Approved"
         self.cultivation_historical_plan_allocations = {}
+        self.cultivation_historical_plan_crop = ""
+        self.cultivation_historical_plan_editing = False
         self.cultivation_historical_plan_entry_version += 1
         self.cultivation_clone_plan_message = ""
 
@@ -4793,6 +5713,9 @@ class DashboardState(rx.State):
             self.cultivation_clone_plan_error = (
                 "Enter at least one historical bench allocation before saving."
             )
+            return
+        if not self.cultivation_historical_plan_editing:
+            self.cultivation_clone_plan_error = "Choose Edit on a historical column first."
             return
         existing_plan = next(
             (
@@ -4858,6 +5781,8 @@ class DashboardState(rx.State):
             self.cultivation_historical_plan_allocations = {}
             self.cultivation_historical_plan_edit_id = ""
             self.cultivation_historical_plan_edit_status = "Approved"
+            self.cultivation_historical_plan_crop = ""
+            self.cultivation_historical_plan_editing = False
             self.cultivation_historical_plan_entry_version += 1
             self.cultivation_clone_plan_message = (
                 f"Plan {plan_id} was saved and now feeds Scheduled supply."
@@ -4960,7 +5885,7 @@ class DashboardState(rx.State):
             self.cultivation_clone_plan_dirty = False
             self.cultivation_clone_plan_message = (
                 f"{plan_id} was approved and replaced the prior saved version for this crop. "
-                "It is now available in Saved Facility Clone Allocations."
+                f"It is now available in the {period['crop']} Clone Allocation Plan."
             )
             self.cultivation_clone_plan_history = load_clone_plans()
             self.cultivation_clone_plan_history_loaded = True
@@ -5020,19 +5945,135 @@ class DashboardState(rx.State):
             for strain, value in dict(plan.get("allocations") or {}).items()
             if float(value or 0) > 0
         }
+        self.cultivation_clone_plan_demand_model = str(
+            plan.get("demand_model", "Experimental Availability-Adjusted")
+            or "Experimental Availability-Adjusted"
+        )
         self.cultivation_clone_plan_status = "Approved"
         self.cultivation_clone_plan_dirty = False
         self.cultivation_flower_room = str(plan.get("flower_room", ""))
         self.cultivation_cycle_name = str(plan.get("crop", ""))
         self.cultivation_flower_entry_date = (clone_cut + timedelta(days=40)).isoformat()
-        self.cultivation_bench_plans = room_bench_plans(
-            self.cultivation_flower_room, self.cultivation_plant_density
-        )
+        stored_benches = [
+            dict(row) for row in list(plan.get("bench_assignments") or [])
+            if isinstance(row, dict) and str(row.get("bench", "")).strip()
+        ]
+        if stored_benches:
+            settings = stored_benches[0]
+            self.cultivation_plant_density = round(
+                min(2.0, max(0.1, float(
+                    settings.get("saved_plant_density", self.cultivation_plant_density)
+                    or self.cultivation_plant_density
+                ))),
+                2,
+            )
+            self.cultivation_overage_percent = min(
+                30,
+                max(25, int(
+                    settings.get("saved_overage_percent", self.cultivation_overage_percent)
+                    or self.cultivation_overage_percent
+                )),
+            )
+            self.cultivation_post_harvest_days = max(
+                0,
+                int(
+                    settings.get(
+                        "saved_post_harvest_days",
+                        self.cultivation_post_harvest_days,
+                    ) or self.cultivation_post_harvest_days
+                ),
+            )
+        defaults = {
+            str(row.get("bench", "")): dict(row)
+            for row in room_bench_plans(
+                self.cultivation_flower_room, self.cultivation_plant_density
+            )
+        }
+        if stored_benches:
+            restored: list[BenchPlan] = []
+            stored_by_name = {
+                str(row.get("bench", "")): row for row in stored_benches
+            }
+            for bench_name, default in defaults.items():
+                merged = dict(default)
+                merged.update(stored_by_name.get(bench_name, {}))
+                restored.append(merged)  # type: ignore[arg-type]
+            self.cultivation_bench_plans = restored
+        else:
+            self.cultivation_bench_plans = list(defaults.values())  # type: ignore[assignment]
+        self.cultivation_layout_editing = False
         self.cultivation_error = ""
         self.cultivation_message = (
-            f"Approved plan {self.cultivation_cycle_name} is loaded. "
-            "Assign its strains to the exact physical benches below."
+            f"{self.cultivation_cycle_name}'s saved room bench map is loaded and ready to print."
+            if stored_benches
+            else f"Approved plan {self.cultivation_cycle_name} is loaded. "
+            "Assign its strains to the exact physical benches, then print and save it."
         )
+
+    @rx.event
+    def save_and_print_cultivation_clone_plan(self):
+        """Replace the approved current plan with its finalized physical map."""
+        self.cultivation_error = ""
+        self.cultivation_message = ""
+        if not self.cultivation_strain_summary_rows:
+            self.cultivation_error = "Assign at least one strain before saving the room map."
+            return
+        if self.cultivation_unbalanced_benches:
+            self.cultivation_error = (
+                "Correct bench percentages before saving: "
+                + self.cultivation_unbalanced_benches
+            )
+            return
+        allocations = exact_bench_allocations(
+            [dict(row) for row in self.cultivation_bench_plans]
+        )
+        if not allocations:
+            self.cultivation_error = "The room map does not contain a valid strain allocation."
+            return
+        self.cultivation_saving = True
+        yield
+        try:
+            saved_benches = [
+                {
+                    **dict(bench),
+                    "saved_plant_density": self.cultivation_plant_density,
+                    "saved_overage_percent": self.cultivation_overage_percent,
+                    "saved_post_harvest_days": self.cultivation_post_harvest_days,
+                }
+                for bench in self.cultivation_bench_plans
+            ]
+            plan_id = save_clone_plan(
+                crop=self.cultivation_cycle_name,
+                flower_room=self.cultivation_flower_room,
+                clone_cut_date=self.cultivation_cut_date,
+                demand_model=self.cultivation_clone_plan_demand_model,
+                status="Approved",
+                allocations=allocations,
+                bench_assignments=saved_benches,
+                override_reason="Finalized room bench map",
+                updated_by=self.auth_name or self.auth_email or "QCC Reflex User",
+            )
+            self.cultivation_clone_plan_allocations = allocations
+            self.cultivation_clone_plan_history = load_clone_plans()
+            self.cultivation_clone_plan_history_loaded = True
+            self.cultivation_clone_plan_dirty = False
+            self.cultivation_message = (
+                f"{self.cultivation_cycle_name} was saved with its exact bench map "
+                f"and replaced approved plan {plan_id}. Printing is ready."
+            )
+            yield rx.call_script(
+                "(() => {"
+                "const c='qcc-print-clone-dome';"
+                "const done=()=>document.body.classList.remove(c);"
+                "document.body.classList.add(c);"
+                "window.addEventListener('afterprint',done,{once:true});"
+                "window.print();window.setTimeout(done,3000);"
+                "})()"
+            )
+        except Exception as error:
+            self.cultivation_error = "Clone plan could not be saved and printed: " + str(error)
+        finally:
+            self.cultivation_saving = False
 
     @rx.event
     def change_cultivation_flower_room(self, value: str):
@@ -5369,13 +6410,26 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def cultivation_clone_plan_periods(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        for index, period in enumerate(clone_planning_periods(13)):
+        history_count = {
+            "Last 4 Crops": 4,
+            "Last 8 Crops": 8,
+        }.get(self.cultivation_clone_plan_lookback, 0)
+        historical_periods = list(reversed(prior_clone_planning_periods(history_count))) \
+            if history_count else []
+        periods = [*historical_periods, *clone_planning_periods(13)]
+        for index, period in enumerate(periods):
             cut = date.fromisoformat(period["clone_cut_date"])
+            harvest = date.fromisoformat(period["harvest_date"])
             rows.append({
                 **period,
                 "date_label": f"{cut.strftime('%b')} {cut.day}",
+                "harvest_date_label": f"{harvest.strftime('%b')} {harvest.day}",
+                "harvest_date_full_label": (
+                    f"{harvest.strftime('%B')} {harvest.day}, {harvest.year}"
+                ),
                 "header": f"{period['crop']} · {cut.strftime('%b')} {cut.day}",
-                "is_current": index == 0,
+                "is_current": index == history_count,
+                "is_historical": index < history_count,
             })
         return rows
 
@@ -5430,7 +6484,14 @@ class DashboardState(rx.State):
 
     def _clone_plan_actual_crop_lbs(self) -> dict[tuple[str, str], float]:
         totals: dict[tuple[str, str], float] = {}
-        crop_names = {str(row["crop"]).casefold() for row in UPCOMING_CROP_ALLOCATIONS}
+        crop_names = {
+            str(row["crop"]).casefold() for row in UPCOMING_CROP_ALLOCATIONS
+        } | {crop.casefold() for crop in HISTORICAL_CLONE_ALLOCATIONS}
+        crop_names.update(
+            str(plan.get("crop", "") or "").casefold()
+            for plan in self.cultivation_clone_plan_history
+            if str(plan.get("crop", "") or "").strip()
+        )
         for row in self.all_inventory:
             if not inventory_counts_as_current_cultivation_supply(row):
                 continue
@@ -5451,11 +6512,85 @@ class DashboardState(rx.State):
             ) / 453.59237
         return totals
 
+    def _clone_plan_allocations_by_crop(self) -> dict[str, dict[str, float]]:
+        """Return workbook history with saved plans taking precedence."""
+        allocations = {
+            crop: dict(values)
+            for crop, values in HISTORICAL_CLONE_ALLOCATIONS.items()
+        }
+        for plan in self.cultivation_clone_plan_history:
+            if str(plan.get("status", "") or "").casefold() != "approved":
+                continue
+            crop = str(plan.get("crop", "") or "").strip()
+            if crop:
+                allocations[crop] = {
+                    str(strain): float(value or 0)
+                    for strain, value in dict(plan.get("allocations") or {}).items()
+                    if float(value or 0) > 0
+                }
+        return allocations
+
     def _clone_plan_scheduled_by_period(
         self, periods: list[dict[str, Any]]
-    ) -> dict[str, list[float]]:
+    ) -> tuple[dict[str, list[float]], dict[str, list[list[ScheduledSupplyDetail]]]]:
         result: dict[str, list[float]] = {}
+        detail_result: dict[str, list[list[ScheduledSupplyDetail]]] = {}
         actual = self._clone_plan_actual_crop_lbs()
+        today = date.today()
+
+        def add_projection(
+            crop_name: str,
+            room: str,
+            harvest_text: str,
+            strain: str,
+            square_feet: float,
+        ) -> None:
+            harvest = date.fromisoformat(harvest_text)
+            available = harvest + timedelta(days=self.cultivation_post_harvest_days)
+            distances = [
+                abs((date.fromisoformat(period["clone_cut_date"]) - available).days)
+                for period in periods
+            ]
+            if not distances:
+                return
+            position = min(range(len(distances)), key=distances.__getitem__)
+            if distances[position] > 7:
+                return
+            strain_key = normalized_strain(strain)
+            gross = estimated_yield_pounds(square_feet, strain, room)
+            planted_plants = bench_plant_capacity(square_feet)
+            adjustment_key = f"{crop_name.casefold()}|{strain_key}"
+            reconciliation = scheduled_supply_reconciliation(
+                gross,
+                planted_plants,
+                int(self.cultivation_fresh_frozen_adjustments.get(adjustment_key, 0) or 0),
+                actual.get((crop_name.casefold(), strain_key), 0.0),
+                harvest,
+                today,
+                SCHEDULED_SUPPLY_EXPIRY_DAYS,
+                creative_use_reduction_lbs=float(
+                    self.cultivation_creative_use_adjustments.get(
+                        adjustment_key, 0
+                    ) or 0
+                ),
+            )
+            result.setdefault(strain_key, [0.0] * len(periods))[position] += (
+                reconciliation["forecast_counted_lbs"]
+            )
+            detail_result.setdefault(strain_key, [[] for _ in periods])[position].append({
+                "crop": crop_name,
+                "room": room,
+                "strain": strain,
+                "harvest_date": harvest.isoformat(),
+                "available_date": available.isoformat(),
+                **reconciliation,
+                "can_edit_fresh_frozen": today <= harvest,
+                "can_edit_creative_use": (
+                    not reconciliation["expired"]
+                    and not reconciliation["actual_detected"]
+                ),
+            })
+
         grouped: dict[tuple[str, str, str, str], float] = {}
         for crop in UPCOMING_CROP_ALLOCATIONS:
             group_key = (
@@ -5467,62 +6602,53 @@ class DashboardState(rx.State):
             grouped[group_key] = grouped.get(group_key, 0.0) + float(crop["square_feet"])
 
         for (crop_name, room, harvest_date, strain_key), square_feet in grouped.items():
-            available = date.fromisoformat(harvest_date) + timedelta(
-                days=self.cultivation_post_harvest_days
+            add_projection(
+                crop_name, room, harvest_date, strain_key, square_feet
             )
-            position = next((
-                index for index, period in enumerate(periods)
-                if date.fromisoformat(period["clone_cut_date"])
-                <= available
-                <= date.fromisoformat(period["clone_cut_date"]) + timedelta(days=13)
-            ), None)
-            if position is None:
-                continue
-            estimated = estimated_yield_pounds(
-                square_feet, strain_key, room
-            )
-            actual_key = (crop_name.casefold(), strain_key)
-            residual = max(0.0, estimated - actual.get(actual_key, 0.0))
-            buckets = result.setdefault(strain_key, [0.0] * len(periods))
-            buckets[position] += residual
 
         known_crops = {str(row["crop"]).casefold() for row in UPCOMING_CROP_ALLOCATIONS}
-        for plan in self.cultivation_clone_plan_history:
-            crop_name = str(plan.get("crop", "") or "").strip()
+        plan_periods = {row["crop"]: row for row in prior_clone_planning_periods(8)}
+        saved_by_crop = {
+            str(plan.get("crop", "") or "").strip(): plan
+            for plan in self.cultivation_clone_plan_history
+            if str(plan.get("status", "") or "").casefold() == "approved"
+        }
+        for crop_name, allocations in self._clone_plan_allocations_by_crop().items():
             if (
-                not crop_name
-                or crop_name.casefold() in known_crops
-                or str(plan.get("status", "") or "").casefold() != "approved"
+                crop_name.casefold() in known_crops
+                or crop_name == clone_planning_periods(1)[0]["crop"]
             ):
                 continue
+            plan = saved_by_crop.get(crop_name, {})
+            period = plan_periods.get(crop_name)
+            if not plan and period is None:
+                continue
             try:
-                available = date.fromisoformat(str(plan.get("clone_cut_date", ""))) + timedelta(
-                    days=40 + 68 + self.cultivation_post_harvest_days
+                cut = date.fromisoformat(
+                    str(plan.get("clone_cut_date", ""))
+                    if plan else str(period["clone_cut_date"])
                 )
             except ValueError:
                 continue
-            position = next((
-                index for index, period in enumerate(periods)
-                if date.fromisoformat(period["clone_cut_date"])
-                <= available
-                <= date.fromisoformat(period["clone_cut_date"]) + timedelta(days=13)
-            ), None)
-            if position is None:
-                continue
-            room = str(plan.get("flower_room", "") or "")
-            for strain, bench_value in dict(plan.get("allocations") or {}).items():
+            room = str(
+                plan.get("flower_room", "") if plan else period.get("room", "")
+            )
+            harvest = cut + timedelta(days=40 + 68)
+            for strain, bench_value in allocations.items():
                 benches = float(bench_value or 0)
                 strain_key = normalized_strain(strain)
                 if benches <= 0 or not strain_key:
                     continue
-                estimated = estimated_yield_pounds(benches * 185.0, strain, room)
-                buckets = result.setdefault(strain_key, [0.0] * len(periods))
-                buckets[position] += estimated
-        return result
+                add_projection(
+                    crop_name, room, harvest.isoformat(), strain, benches * 185.0
+                )
+        return result, detail_result
 
     @rx.var(cache=True)
     def cultivation_clone_plan_lookback_rows(self) -> list[dict[str, Any]]:
-        limit = 8 if self.cultivation_clone_plan_lookback == "Last 8 Plans" else 4
+        if self.cultivation_clone_plan_lookback == "No Historical Crops":
+            return []
+        limit = 8 if self.cultivation_clone_plan_lookback == "Last 8 Crops" else 4
         current_crop = clone_planning_periods(1)[0]["crop"]
         historical = [
             row for row in self.cultivation_clone_plan_history
@@ -5560,6 +6686,11 @@ class DashboardState(rx.State):
                 "flower_entry_date": flower_entry_text,
             })
         return rows
+
+    @rx.var(cache=True)
+    def cultivation_current_clone_plan_title(self) -> str:
+        crop = self.cultivation_cycle_name.strip() or clone_planning_periods(1)[0]["crop"]
+        return f"{crop} Clone Allocation Plan"
 
     @rx.var(cache=True)
     def cultivation_historical_plan_crop_options(self) -> list[str]:
@@ -5600,15 +6731,20 @@ class DashboardState(rx.State):
             for key, values in current_breakdown.items()
         }
         demand = self._clone_plan_weekly_demand_by_strain()
-        scheduled = self._clone_plan_scheduled_by_period(periods)
+        scheduled, scheduled_details = self._clone_plan_scheduled_by_period(periods)
+        historical_allocations = self._clone_plan_allocations_by_crop()
+        actual_crop_lbs = self._clone_plan_actual_crop_lbs()
         plan_period = clone_planning_periods(1)[0]
         plan_available = date.fromisoformat(plan_period["available_date"])
-        plan_bucket = next((
-            index for index, period in enumerate(periods)
-            if date.fromisoformat(period["clone_cut_date"])
-            <= plan_available
-            <= date.fromisoformat(period["clone_cut_date"]) + timedelta(days=13)
-        ), len(periods) - 1)
+        plan_bucket = min(
+            range(len(periods)),
+            key=lambda index: abs(
+                (
+                    date.fromisoformat(periods[index]["clone_cut_date"])
+                    - plan_available
+                ).days
+            ),
+        )
         strains = self._cultivation_planning_strain_names()
         rows: list[ClonePlanMatrixRow] = []
 
@@ -5618,6 +6754,12 @@ class DashboardState(rx.State):
             highlight: bool = False,
             show_breakdown: bool = False,
             breakdown: dict[str, float] | None = None,
+            available: bool = True,
+            editable_allocation: bool = False,
+            historical_allocation: bool = False,
+            historical_editable: bool = False,
+            crop: str = "",
+            details: list[ScheduledSupplyDetail] | None = None,
         ) -> dict[str, Any]:
             detail = breakdown or {}
             return {
@@ -5630,6 +6772,12 @@ class DashboardState(rx.State):
                     float(detail.get("passed_quarantine_lbs", 0) or 0), 1
                 ),
                 "current_total_lbs": round(float(detail.get("total_lbs", 0) or 0), 1),
+                "available": available,
+                "editable_allocation": editable_allocation,
+                "historical_allocation": historical_allocation,
+                "historical_editable": historical_editable,
+                "crop": crop,
+                "scheduled_details": list(details or []),
             }
 
         for strain in strains:
@@ -5637,25 +6785,92 @@ class DashboardState(rx.State):
             breakdown = current_breakdown.get(key, {})
             weekly = demand.get(key, 0.0)
             scheduled_values = list(scheduled.get(key, [0.0] * len(periods)))
+            strain_details = scheduled_details.get(key, [[] for _ in periods])
             allocation = float(self.cultivation_clone_plan_allocations.get(strain, 0.0) or 0.0)
             if allocation > 0:
-                scheduled_values[plan_bucket] += estimated_yield_pounds(
-                    allocation * 185.0, strain, plan_period["room"]
+                square_feet = allocation * 185.0
+                gross = estimated_yield_pounds(
+                    square_feet, strain, plan_period["room"]
                 )
-            balance = current.get(key, 0.0)
+                harvest = date.fromisoformat(plan_period["harvest_date"])
+                planted_plants = bench_plant_capacity(square_feet)
+                adjustment_key = f"{plan_period['crop'].casefold()}|{key}"
+                reconciliation = scheduled_supply_reconciliation(
+                    gross,
+                    planted_plants,
+                    int(self.cultivation_fresh_frozen_adjustments.get(adjustment_key, 0) or 0),
+                    actual_crop_lbs.get((plan_period["crop"].casefold(), key), 0.0),
+                    harvest,
+                    date.today(),
+                    SCHEDULED_SUPPLY_EXPIRY_DAYS,
+                    creative_use_reduction_lbs=float(
+                        self.cultivation_creative_use_adjustments.get(
+                            adjustment_key, 0
+                        ) or 0
+                    ),
+                )
+                scheduled_values[plan_bucket] += reconciliation["forecast_counted_lbs"]
+                strain_details[plan_bucket] = [
+                    *strain_details[plan_bucket],
+                    {
+                        "crop": plan_period["crop"],
+                        "room": plan_period["room"],
+                        "strain": strain,
+                        "harvest_date": plan_period["harvest_date"],
+                        "available_date": plan_period["available_date"],
+                        **reconciliation,
+                        "can_edit_fresh_frozen": date.today() <= harvest,
+                        "can_edit_creative_use": (
+                            not reconciliation["expired"]
+                            and not reconciliation["actual_detected"]
+                        ),
+                    },
+                ]
+            balance = max(0.0, current.get(key, 0.0))
             balance_values: list[float] = []
-            for supply in scheduled_values:
-                balance_values.append(round(balance, 1))
-                balance = balance + supply - (2 * weekly)
+            for index, supply in enumerate(scheduled_values):
+                if bool(periods[index].get("is_historical", False)):
+                    balance_values.append(0.0)
+                    continue
+                balance_values.append(round(max(0.0, balance), 1))
+                balance = max(0.0, balance + supply - (2 * weekly))
+
+            allocation_values: list[dict[str, Any]] = []
+            for period in periods:
+                is_historical = bool(period.get("is_historical", False))
+                is_historical_editable = (
+                    is_historical
+                    and self.cultivation_historical_plan_editing
+                    and self.cultivation_historical_plan_crop == str(period["crop"])
+                )
+                historical_value = next(
+                    (
+                        float(value or 0)
+                        for label, value in (
+                            self.cultivation_historical_plan_allocations
+                            if is_historical_editable
+                            else historical_allocations.get(str(period["crop"]), {})
+                        ).items()
+                        if normalized_strain(label) == key
+                    ),
+                    0.0,
+                )
+                allocation_values.append(matrix_value(
+                    historical_value if is_historical else (
+                        allocation if bool(period.get("is_current", False)) else 0.0
+                    ),
+                    available=is_historical or bool(period.get("is_current", False)),
+                    editable_allocation=bool(period.get("is_current", False)),
+                    historical_allocation=is_historical,
+                    historical_editable=is_historical_editable,
+                    crop=str(period["crop"]),
+                ))
             rows.extend([
                 {
                     "strain": strain, "metric": "Clone Allocation",
                     "allocation": allocation,
                     "weekly_demand": weekly,
-                    "values": [
-                        matrix_value(value)
-                        for value in [allocation, *([0.0] * (len(periods) - 1))]
-                    ],
+                    "values": allocation_values,
                 },
                 {
                     "strain": strain, "metric": "Current Pounds",
@@ -5663,8 +6878,9 @@ class DashboardState(rx.State):
                     "values": [
                         matrix_value(
                             value,
-                            show_breakdown=index == 0,
+                            show_breakdown=bool(periods[index].get("is_current", False)),
                             breakdown=breakdown,
+                            available=not bool(periods[index].get("is_historical", False)),
                         )
                         for index, value in enumerate(balance_values)
                     ],
@@ -5681,6 +6897,8 @@ class DashboardState(rx.State):
                                 and allocation > 0
                                 and index == plan_bucket
                             ),
+                            available=not bool(periods[index].get("is_historical", False)),
+                            details=strain_details[index],
                         )
                         for index, value in enumerate(scheduled_values)
                     ],
@@ -5690,8 +6908,11 @@ class DashboardState(rx.State):
                     "allocation": 0.0,
                     "weekly_demand": weekly,
                     "values": [
-                        matrix_value(round(2 * weekly, 1))
-                        for _ in periods
+                        matrix_value(
+                            round(2 * weekly, 1),
+                            available=not bool(period.get("is_historical", False)),
+                        )
+                        for period in periods
                     ],
                 },
             ])
@@ -6014,18 +7235,44 @@ class DashboardState(rx.State):
         demand = self._cultivation_weekly_demand_by_strain()
         scheduled: dict[str, float] = {}
         scheduled_arrivals: dict[str, list[date]] = {}
+        actual_crop_lbs = self._clone_plan_actual_crop_lbs()
+        grouped_crops: dict[tuple[str, str, str, str], float] = {}
         for crop in UPCOMING_CROP_ALLOCATIONS:
-            harvest = date.fromisoformat(crop["harvest_date"])
+            group_key = (
+                str(crop["crop"]), str(crop["room"]),
+                str(crop["harvest_date"]), normalized_strain(crop["strain"]),
+            )
+            grouped_crops[group_key] = grouped_crops.get(group_key, 0.0) + float(
+                crop["square_feet"]
+            )
+        for (crop_name, room, harvest_text, key), square_feet in grouped_crops.items():
+            harvest = date.fromisoformat(harvest_text)
             crop_available = harvest + timedelta(days=self.cultivation_post_harvest_days)
             if not crop_is_scheduled_supply(
                 harvest, today, available, self.cultivation_post_harvest_days
             ):
                 continue
-            key = normalized_strain(crop["strain"])
-            scheduled[key] = scheduled.get(key, 0.0) + estimated_yield_pounds(
-                crop["square_feet"], crop["strain"], crop["room"]
+            gross = estimated_yield_pounds(square_feet, key, room)
+            reconciliation = scheduled_supply_reconciliation(
+                gross,
+                bench_plant_capacity(square_feet),
+                int(self.cultivation_fresh_frozen_adjustments.get(
+                    f"{crop_name.casefold()}|{key}", 0
+                ) or 0),
+                actual_crop_lbs.get((crop_name.casefold(), key), 0.0),
+                harvest,
+                today,
+                SCHEDULED_SUPPLY_EXPIRY_DAYS,
+                creative_use_reduction_lbs=float(
+                    self.cultivation_creative_use_adjustments.get(
+                        f"{crop_name.casefold()}|{key}", 0
+                    ) or 0
+                ),
             )
-            scheduled_arrivals.setdefault(key, []).append(crop_available)
+            forecast = reconciliation["forecast_counted_lbs"]
+            if forecast > 0:
+                scheduled[key] = scheduled.get(key, 0.0) + forecast
+                scheduled_arrivals.setdefault(key, []).append(crop_available)
         rows: list[dict[str, Any]] = []
         for plan in planned:
             key = normalized_strain(plan["strain"])
@@ -6695,7 +7942,70 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def filtered_exceptions(self) -> list[dict[str, Any]]:
-        return [row for row in self.exceptions if self._matches(row)]
+        package_keys = {
+            (str(row.get("Manifest", "")), str(row.get("State", "")))
+            for row in self.filtered_exception_packages
+        }
+        return [
+            row for row in self.exceptions
+            if (str(row.get("Manifest", "")), str(row.get("State", "")))
+            in package_keys
+        ]
+
+    @rx.var(cache=True)
+    def selected_exception_state(self) -> str:
+        return {
+            "Open Transfers": "Shipped",
+            "Rejected Transfers": "Rejected",
+            "Returned Transfers": "Returned",
+        }.get(self.shipment_exception_view, "Shipped")
+
+    @rx.var(cache=True)
+    def filtered_exception_packages(self) -> list[dict[str, Any]]:
+        return [
+            row for row in self.exception_packages
+            if str(row.get("State", "")) == self.selected_exception_state
+            and self._matches(row)
+        ]
+
+    @rx.var(cache=True)
+    def selected_exception_manifests_metric(self) -> str:
+        manifests = {
+            str(row.get("Manifest", ""))
+            for row in self.filtered_exception_packages
+            if str(row.get("Manifest", ""))
+        }
+        return f"{len(manifests):,}"
+
+    @rx.var(cache=True)
+    def selected_exception_packages_metric(self) -> str:
+        return f"{len(self.filtered_exception_packages):,}"
+
+    @rx.var(cache=True)
+    def selected_exception_value_metric(self) -> str:
+        value = sum(
+            float(row.get("Shipper Value", 0) or 0)
+            for row in self.filtered_exception_packages
+        )
+        return f"${value:,.2f}"
+
+    @rx.var(cache=True)
+    def shipment_exception_description(self) -> str:
+        if self.shipment_exception_view == "Rejected Transfers":
+            return (
+                "Rejected package lines are shown separately from returned "
+                "product. A manifest may also contain packages that were accepted."
+            )
+        if self.shipment_exception_view == "Returned Transfers":
+            return (
+                "Returned package lines are shown separately from outright "
+                "rejections. Review package detail before treating the full manifest "
+                "as a return."
+            )
+        return (
+            "Open transfers are still marked Shipped in Metrc and have not yet "
+            "been accepted, rejected, or returned."
+        )
 
     @rx.var(cache=True)
     def filtered_transfer_data(self) -> list[dict[str, Any]]:
@@ -7871,6 +9181,18 @@ class DashboardState(rx.State):
         ]
 
     @rx.var(cache=True)
+    def exception_package_rows(self) -> list[list[Any]]:
+        columns = [
+            "Manifest", "State", "Destination License", "Customer",
+            "Package Tag", "Metrc Item", "Brand", "Strain", "SKU Type",
+            "Shipped Units", "Shipper Value", "Created", "Received",
+        ]
+        return [
+            [row.get(column, "") for column in columns]
+            for row in self.filtered_exception_packages
+        ]
+
+    @rx.var(cache=True)
     def transfer_rows(self) -> list[list[Any]]:
         columns = [
             "Manifest", "Invoice Number", "Created", "Received", "State",
@@ -7980,6 +9302,16 @@ class DashboardState(rx.State):
         return rx.download(
             data=self._csv_bytes(self.filtered_exceptions),
             filename=f"qcc_reflex_shipment_exceptions_{date.today().isoformat()}.csv",
+        )
+
+    @rx.event
+    def download_exception_packages(self):
+        return rx.download(
+            data=self._csv_bytes(self.filtered_exception_packages),
+            filename=(
+                "qcc_reflex_shipment_exception_packages_"
+                f"{date.today().isoformat()}.csv"
+            ),
         )
 
     @rx.event
@@ -8878,6 +10210,14 @@ def sku_planning_action_row(row: rx.Var) -> rx.Component:
         sku_planning_cell(row["Units Shipped"].to_string(), "125px"),
         sku_planning_cell(row["Avg Weekly Units"].to_string(), "145px"),
         sku_planning_cell(
+            rx.cond(
+                DashboardState.sku_use_availability_adjusted,
+                row["Likely OOS Weeks"].to_string(),
+                "—",
+            ),
+            "125px",
+        ),
+        sku_planning_cell(
             row["Avg Weekly Units - Last 30 Days"].to_string(), "145px"
         ),
         sku_planning_cell(row["Packages"].to_string(), "105px"),
@@ -8937,6 +10277,7 @@ def sku_planning_action_row(row: rx.Var) -> rx.Component:
 SKU_PLANNING_COLUMN_WIDTHS = {
     "Brand": "140px", "Strain": "175px", "SKU Type": "205px",
     "Units Shipped": "125px", "Avg Weekly Units": "145px",
+    "Likely OOS Weeks": "125px",
     "Avg Weekly Units - Last 30 Days": "145px", "Packages": "105px",
     "Current Units": "125px", "Weeks of Supply": "130px",
     "Potential Matching WIP": "205px", "Committed WIP": "175px",
@@ -8949,7 +10290,8 @@ SKU_PLANNING_COLUMN_WIDTHS = {
 def sku_planning_action_table() -> rx.Component:
     columns = [
         "Brand", "Strain", "SKU Type", "Units Shipped",
-        "Avg Weekly Units", "Avg Weekly Units - Last 30 Days", "Packages",
+        "Avg Weekly Units", "Likely OOS Weeks",
+        "Avg Weekly Units - Last 30 Days", "Packages",
         "Current Units", "Weeks of Supply", "Potential Matching WIP",
         "Committed WIP", "Matching Pre-WIP Weight", "Customers",
         "Demand Status", "Last Shipped", "Lifecycle Status",
@@ -8965,6 +10307,15 @@ def sku_planning_action_table() -> rx.Component:
                                 line_height="1.05",
                             )
                             if column == "Avg Weekly Units - Last 30 Days"
+                            else rx.cond(
+                                DashboardState.sku_use_availability_adjusted,
+                                rx.text(
+                                    "Availability-Adjusted", rx.el.br(),
+                                    "Weekly Units", line_height="1.05",
+                                ),
+                                "Avg Weekly Units",
+                            )
+                            if column == "Avg Weekly Units"
                             else column
                         ),
                         background="#111111",
@@ -9073,6 +10424,32 @@ def sku_planning_panel() -> rx.Component:
                 ),
             ),
             rx.box(
+                rx.text("Demand model", size="1", weight="bold", color=MUTED),
+                rx.hstack(
+                    rx.switch(
+                        checked=DashboardState.sku_use_availability_adjusted,
+                        on_change=DashboardState.change_sku_availability_adjusted,
+                        color_scheme="purple",
+                        size="3",
+                    ),
+                    rx.badge(
+                        rx.cond(
+                            DashboardState.sku_use_availability_adjusted,
+                            "Experimental Adjusted",
+                            "Current SKU Velocity",
+                        ),
+                        color_scheme=rx.cond(
+                            DashboardState.sku_use_availability_adjusted,
+                            "purple",
+                            "gray",
+                        ),
+                        size="2",
+                    ),
+                    gap="2",
+                    align="center",
+                ),
+            ),
+            rx.box(
                 rx.text("Sort SKU planning", size="1", weight="bold", color=MUTED),
                 rx.select(
                     [
@@ -9101,6 +10478,15 @@ def sku_planning_panel() -> rx.Component:
                 ),
             ),
             align="end", gap="2", wrap="wrap", width="100%",
+        ),
+        rx.cond(
+            DashboardState.sku_use_availability_adjusted,
+            rx.callout(
+                "Experimental mode removes only full internal weeks identified as Likely OOS from the selected timeframe. Recent trailing gaps remain included. Unsupported SKU types retain Current SKU Velocity.",
+                icon="flask-conical",
+                color_scheme="purple",
+                width="100%",
+            ),
         ),
         sku_planning_action_table(),
         rx.flex(
@@ -10485,27 +11871,88 @@ def retail_availability_panel() -> rx.Component:
 
 def exceptions_panel() -> rx.Component:
     return rx.vstack(
+        rx.flex(
+            rx.box(
+                rx.text("Exception view", size="1", color=MUTED, weight="bold"),
+                rx.select(
+                    DashboardState.shipment_exception_view_options,
+                    value=DashboardState.shipment_exception_view,
+                    on_change=DashboardState.change_shipment_exception_view,
+                    width="230px",
+                ),
+            ),
+            rx.spacer(),
+            rx.hstack(
+                rx.switch(
+                    checked=DashboardState.shipment_exception_show_manifest_summary,
+                    on_change=DashboardState.change_shipment_exception_summary_view,
+                ),
+                rx.text("Manifest summary", weight="bold"),
+            ),
+            rx.cond(
+                DashboardState.shipment_exception_show_manifest_summary,
+                rx.button(
+                    "Download Selected Manifest Summary",
+                    on_click=DashboardState.download_exceptions,
+                    variant="outline",
+                ),
+                rx.button(
+                    "Download Selected Package Detail",
+                    on_click=DashboardState.download_exception_packages,
+                    variant="outline",
+                ),
+            ),
+            align="end", gap="3", wrap="wrap", width="100%",
+        ),
+        rx.callout(
+            DashboardState.shipment_exception_description,
+            icon="info", color_scheme="blue", width="100%",
+        ),
         rx.grid(
-            metric_card("Open Manifests", DashboardState.open_manifests_metric, "Shipped, not accepted"),
-            metric_card("Rejected / Returned", DashboardState.exception_manifests_metric, "Exception manifests"),
-            metric_card("Exception Rows", DashboardState.exception_rows_metric, "Package rows"),
+            metric_card("Selected Manifests", DashboardState.selected_exception_manifests_metric, DashboardState.shipment_exception_view),
+            metric_card("Selected Package Rows", DashboardState.selected_exception_packages_metric, "Package-level outcomes"),
+            metric_card("Selected Shipper Value", DashboardState.selected_exception_value_metric, "Value recorded in Metrc"),
             columns=rx.breakpoints(initial="1", sm="3"),
             gap="4",
             width="100%",
         ),
-        rx.hstack(
-            rx.heading("Open, Rejected, and Returned Transfers", size="4"),
-            rx.spacer(),
-            rx.button("Download Exceptions CSV", on_click=DashboardState.download_exceptions, variant="outline"),
-            width="100%",
-        ),
-        data_grid(
-            DashboardState.exception_rows,
-            [
-                "Manifest", "State", "Destination License", "Customer",
-                "Created", "Received", "Packages", "Items", "Shipper Value",
-            ],
-            "560px",
+        rx.cond(
+            DashboardState.shipment_exception_show_manifest_summary,
+            rx.vstack(
+                rx.heading(
+                    DashboardState.shipment_exception_view + " — Manifest Summary",
+                    size="4",
+                ),
+                data_grid(
+                    DashboardState.exception_rows,
+                    [
+                        "Manifest", "State", "Destination License", "Customer",
+                        "Created", "Received", "Packages", "Items", "Shipper Value",
+                    ],
+                    "560px",
+                    class_name="qcc-exception-data-grid",
+                ),
+                width="100%",
+                spacing="3",
+            ),
+            rx.vstack(
+                rx.heading(
+                    DashboardState.shipment_exception_view + " — Package Detail",
+                    size="4",
+                ),
+                data_grid(
+                    DashboardState.exception_package_rows,
+                    [
+                        "Manifest", "State", "Destination License", "Customer",
+                        "Package\nTag", "Metrc\nItem", "Brand", "Strain", "SKU\nType",
+                        "Shipped\nUnits", "Shipper\nValue", "Created", "Received",
+                    ],
+                    "620px",
+                    class_name="qcc-exception-data-grid",
+                ),
+                width="100%",
+                spacing="3",
+            ),
         ),
         width="100%",
         spacing="4",
@@ -10534,6 +11981,7 @@ def transfer_data_panel() -> rx.Component:
                 "Updated Rows", "Created Min", "Created Max", "Imported At",
             ],
             "280px",
+            class_name="qcc-transfer-data-grid",
         ),
         rx.heading("Recent Transfer Records", size="3"),
         rx.flex(
@@ -10568,7 +12016,7 @@ def transfer_data_panel() -> rx.Component:
                 "Shipped\nUnits", "Shipper\nValue", "Demand\nRecord",
             ],
             "640px",
-            class_name="qcc-14px-data-grid",
+            class_name="qcc-transfer-data-grid",
         ),
         width="100%",
         spacing="4",
@@ -11014,7 +12462,7 @@ def sales_demand_workspace() -> rx.Component:
         rx.box(
             rx.heading("Sales & Demand Planning", size="6"),
             rx.text(
-                "Historical demand, stockouts, SKU coverage, production plans, customers, and transfers.",
+                "Historical demand, stockouts, SKU coverage, and production plans.",
                 color=MUTED,
             ),
             width="100%",
@@ -11025,10 +12473,6 @@ def sales_demand_workspace() -> rx.Component:
                 rx.tabs.trigger("Stockouts", value="stockouts"),
                 rx.tabs.trigger("SKU Planning & Coverage", value="planning"),
                 rx.tabs.trigger("Production Planning", value="production"),
-                rx.tabs.trigger("Customers", value="customers"),
-                rx.tabs.trigger("Retail Availability", value="retail"),
-                rx.tabs.trigger("Transfer Data", value="transfers"),
-                rx.tabs.trigger("Shipment Exceptions", value="exceptions"),
                 class_name="qcc-tabs",
                 width="100%",
             ),
@@ -11043,10 +12487,6 @@ def sales_demand_workspace() -> rx.Component:
                 ("stockouts", stockouts_panel()),
                 ("planning", sku_planning_panel()),
                 ("production", production_planning_panel()),
-                ("customers", customers_panel()),
-                ("retail", retail_availability_panel()),
-                ("transfers", transfer_data_panel()),
-                ("exceptions", exceptions_panel()),
                 overview_panel(),
             ),
             width="100%", padding_top="1.25rem",
@@ -11361,6 +12801,171 @@ def qa_analyte_category_badge(row: rx.Var) -> rx.Component:
     )
 
 
+def qa_adjusted_coa_review_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["Field"]),
+        rx.table.cell(row["Metrc"]),
+        rx.table.cell(row["Entered"]),
+        rx.table.cell(
+            rx.badge(row["Status"], color_scheme=row["Color"], variant="soft")
+        ),
+    )
+
+
+def qa_adjusted_terpene_input(index: int, on_change: Any) -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.flex(
+                rx.text(
+                    DashboardState.qa_adjusted_terpene_names[index],
+                    weight="bold", color=DARK,
+                ),
+                rx.spacer(),
+                rx.badge(
+                    "Metrc " + DashboardState.qa_adjusted_metrc_terpene_values[index] + "%",
+                    color_scheme="gray", variant="soft",
+                ),
+                width="100%", align="center",
+            ),
+            rx.input(
+                type="number", min="0", max="20", step="0.001",
+                value=DashboardState.qa_adjusted_terpene_values[index],
+                on_change=on_change,
+                placeholder="Enter the three-decimal COA percentage",
+                width="100%",
+            ),
+            width="100%", spacing="2",
+        ),
+        width="100%",
+    )
+
+
+def qa_adjusted_coa_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Adjusted COA Values"),
+            rx.dialog.description(
+                "Enter the higher-precision values printed on the laboratory COA. "
+                "The app compares them with Metrc before saving them to this lab sample."
+            ),
+            rx.callout(
+                "Enter percentages as displayed—for example, 1.567 rather than 0.01567.",
+                icon="info", color_scheme="blue", width="100%",
+            ),
+            rx.grid(
+                rx.box(
+                    rx.flex(
+                        rx.text("Total Terpenes %", weight="bold"), rx.spacer(),
+                        rx.badge(
+                            "Metrc " + DashboardState.qa_adjusted_metrc_total_terpenes + "%",
+                            color_scheme="gray", variant="soft",
+                        ),
+                        width="100%",
+                    ),
+                    rx.input(
+                        type="number", min="0", max="20", step="0.001",
+                        value=DashboardState.qa_adjusted_total_terpenes,
+                        on_change=DashboardState.change_qa_adjusted_total_terpenes,
+                        placeholder="Example: 1.567", width="100%", margin_top="0.4rem",
+                    ),
+                ),
+                rx.box(
+                    rx.flex(
+                        rx.text("Total CBG %", weight="bold"), rx.spacer(),
+                        rx.badge(
+                            "Metrc-derived " + DashboardState.qa_adjusted_metrc_total_cbg + "%",
+                            color_scheme="gray", variant="soft",
+                        ),
+                        width="100%",
+                    ),
+                    rx.input(
+                        type="number", min="0", max="20", step="0.01",
+                        value=DashboardState.qa_adjusted_total_cbg,
+                        on_change=DashboardState.change_qa_adjusted_total_cbg,
+                        placeholder="Enter exactly as printed", width="100%", margin_top="0.4rem",
+                    ),
+                ),
+                columns=rx.breakpoints(initial="1", md="2"), gap="3", width="100%",
+            ),
+            rx.heading("Top three terpenes", size="3"),
+            rx.grid(
+                qa_adjusted_terpene_input(0, DashboardState.change_qa_adjusted_terpene_1),
+                qa_adjusted_terpene_input(1, DashboardState.change_qa_adjusted_terpene_2),
+                qa_adjusted_terpene_input(2, DashboardState.change_qa_adjusted_terpene_3),
+                columns=rx.breakpoints(initial="1", md="3"), gap="3", width="100%",
+            ),
+            rx.card(
+                rx.flex(
+                    rx.box(
+                        rx.text("Calculated Other", size="1", color=MUTED, weight="bold"),
+                        rx.text(
+                            DashboardState.qa_adjusted_other_preview,
+                            size="5", weight="bold", color=DARK,
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.text(
+                        "Total and each top terpene are chopped to two decimals first; the three chopped values are then subtracted from the chopped total.",
+                        size="1", color=MUTED, max_width="390px",
+                    ),
+                    width="100%", align="center", gap="3", wrap="wrap",
+                ),
+                width="100%", border_top="4px solid #8b5cf6",
+            ),
+            rx.table.root(
+                rx.table.header(
+                    rx.table.row(*[
+                        rx.table.column_header_cell(column)
+                        for column in ["Field", "Metrc", "Entered COA", "Check"]
+                    ])
+                ),
+                rx.table.body(
+                    rx.foreach(
+                        DashboardState.qa_adjusted_coa_review_rows,
+                        qa_adjusted_coa_review_row,
+                    )
+                ),
+                size="1", variant="surface", width="100%",
+            ),
+            rx.cond(
+                DashboardState.qa_adjusted_coa_has_suspect_values,
+                rx.callout(
+                    "One or more entries differ materially from Metrc. Recheck the lab report before saving.",
+                    icon="triangle-alert", color_scheme="orange", width="100%",
+                ),
+            ),
+            rx.cond(
+                DashboardState.qa_adjusted_coa_message != "",
+                rx.callout(
+                    DashboardState.qa_adjusted_coa_message,
+                    icon="circle-check", color_scheme="teal", width="100%",
+                ),
+            ),
+            rx.cond(
+                DashboardState.qa_adjusted_coa_error != "",
+                rx.callout(
+                    DashboardState.qa_adjusted_coa_error,
+                    icon="triangle-alert", color_scheme="red", width="100%",
+                ),
+            ),
+            rx.flex(
+                rx.button(
+                    "Save Adjusted COA",
+                    on_click=DashboardState.save_qa_adjusted_coa,
+                    loading=DashboardState.qa_adjusted_coa_saving,
+                    background=ACCENT, color="white",
+                ),
+                rx.dialog.close(rx.button("Close", variant="outline")),
+                justify="end", gap="3", width="100%",
+            ),
+            max_width="980px", width="calc(100vw - 32px)",
+            max_height="calc(100vh - 32px)", overflow_y="auto",
+        ),
+        open=DashboardState.qa_adjusted_coa_open,
+        on_open_change=DashboardState.change_qa_adjusted_coa_open,
+    )
+
+
 def qa_zebra_label_card() -> rx.Component:
     return rx.card(
         rx.vstack(
@@ -11442,6 +13047,29 @@ def qa_zebra_label_card() -> rx.Component:
                 rx.foreach(DashboardState.qa_zebra_preview, qa_compliance_summary_item),
                 columns=rx.breakpoints(initial="1", sm="2", lg="3"),
                 gap="2", width="100%",
+            ),
+            rx.flex(
+                rx.cond(
+                    DashboardState.qa_adjusted_coa.length() > 0,
+                    rx.badge(
+                        DashboardState.qa_adjusted_coa_status,
+                        color_scheme="teal", size="3",
+                    ),
+                    rx.badge(
+                        DashboardState.qa_adjusted_coa_status,
+                        color_scheme="orange", size="3",
+                    ),
+                ),
+                rx.button(
+                    "Enter / Edit Adjusted COA",
+                    on_click=DashboardState.open_qa_adjusted_coa,
+                    variant="outline",
+                ),
+                rx.text(
+                    "Use the laboratory report to verify high-precision terpene and Total CBG values.",
+                    size="1", color=MUTED,
+                ),
+                align="center", gap="3", wrap="wrap", width="100%",
             ),
             rx.cond(
                 DashboardState.qa_zebra_ready,
@@ -11536,6 +13164,7 @@ def qa_compliance_summary_dialog() -> rx.Component:
 def qa_label_panel() -> rx.Component:
     return rx.vstack(
         qa_compliance_summary_dialog(),
+        qa_adjusted_coa_dialog(),
         rx.heading("Compliance Label Search and Printing", size="5", color=DARK),
         rx.text(
             "Search a package tag or harvest, verify its compliance result, and download the approved printable summary.",
@@ -11811,9 +13440,9 @@ def qa_panel() -> rx.Component:
     return rx.vstack(
         rx.flex(
             rx.box(
-                rx.heading("Quality Assurance", size="6", color=DARK),
+                rx.heading("Distribution Operations", size="6", color=DARK),
                 rx.text(
-                    "Shared cultivation and manufacturing compliance performance, potency consistency, and label printing.",
+                    "Lab data, compliance label printing, customer activity, retail availability, and transfer operations.",
                     color=MUTED,
                 ),
             ),
@@ -11823,7 +13452,7 @@ def qa_panel() -> rx.Component:
                 color_scheme="teal", size="3",
             ),
             rx.button(
-                "Reconnect & Reload QA", on_click=DashboardState.refresh_qa,
+                "Reconnect & Reload Lab Data", on_click=DashboardState.refresh_qa,
                 variant="outline", loading=DashboardState.qa_loading,
             ),
             align="center", gap="3", wrap="wrap", width="100%",
@@ -11844,16 +13473,20 @@ def qa_panel() -> rx.Component:
         ),
         qa_import_panel(),
         rx.text(
-            "The global Brand and Strain filters above apply to both operational QA views.",
+            "The global Brand and Strain filters above apply to lab and distribution views where relevant.",
             size="1", color=MUTED,
         ),
         rx.tabs.root(
             rx.tabs.list(
-                rx.tabs.trigger("Cultivation", value="cultivation"),
-                rx.tabs.trigger("Manufacturing", value="manufacturing"),
+                rx.tabs.trigger("Cultivation Lab Data", value="cultivation"),
+                rx.tabs.trigger("Manufacturing Lab Data", value="manufacturing"),
                 rx.tabs.trigger(
                     "Compliance Label Search & Printing", value="labels"
                 ),
+                rx.tabs.trigger("Customers", value="customers"),
+                rx.tabs.trigger("Retail Availability", value="retail"),
+                rx.tabs.trigger("Shipment Exceptions", value="exceptions"),
+                rx.tabs.trigger("Transfer Data", value="transfers"),
                 class_name="qcc-tabs",
                 width="100%",
             ),
@@ -11893,6 +13526,10 @@ def qa_panel() -> rx.Component:
                     DashboardState.qa_manufacturing_detail,
                 )),
                 ("labels", qa_label_panel()),
+                ("customers", customers_panel()),
+                ("retail", retail_availability_panel()),
+                ("exceptions", exceptions_panel()),
+                ("transfers", transfer_data_panel()),
                 qa_operation_panel(
                     "Cultivation",
                     DashboardState.qa_cultivation_test_type,
@@ -12697,8 +14334,151 @@ def cultivation_saved_allocation_row(row: rx.Var) -> rx.Component:
     )
 
 
+def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
+    """One auditable crop/strain projection inside a Scheduled popover."""
+    return rx.box(
+        rx.hstack(
+            rx.text(detail["crop"], weight="bold", color=DARK),
+            rx.badge(
+                detail["status"],
+                color_scheme=rx.cond(
+                    detail["forecast_counted_lbs"] > 0, "blue", "orange"
+                ),
+            ),
+            justify="between",
+            width="100%",
+        ),
+        rx.text(
+            "Harvest " + detail["harvest_date"]
+            + " · Expected " + detail["available_date"],
+            size="1",
+            color=MUTED,
+        ),
+        rx.grid(
+            rx.text("Gross projected", size="2"),
+            rx.text(
+                detail["gross_projected_lbs"].to_string() + " lb",
+                size="2", weight="bold", text_align="right",
+            ),
+            rx.text("Fresh Frozen reduction", size="2"),
+            rx.text(
+                detail["fresh_frozen_reduction_lbs"].to_string() + " lb",
+                size="2", weight="bold", text_align="right",
+            ),
+            rx.text("Creative Use reduction", size="2"),
+            rx.text(
+                detail["creative_use_reduction_lbs"].to_string() + " lb",
+                size="2", weight="bold", text_align="right",
+            ),
+            rx.text("Net projected", size="2"),
+            rx.text(
+                detail["net_projected_lbs"].to_string() + " lb",
+                size="2", weight="bold", text_align="right",
+            ),
+            rx.text("Actual processed", size="2"),
+            rx.text(
+                detail["actual_processed_lbs"].to_string() + " lb",
+                size="2", weight="bold", text_align="right",
+            ),
+            rx.text("Unconfirmed remainder", size="2"),
+            rx.text(
+                detail["unconfirmed_remainder_lbs"].to_string() + " lb",
+                size="2", weight="bold", text_align="right",
+            ),
+            rx.text("Forecast counted", size="2", weight="bold"),
+            rx.text(
+                detail["forecast_counted_lbs"].to_string() + " lb",
+                size="2", weight="bold", color="#0f766e", text_align="right",
+            ),
+            columns="1fr auto",
+            gap="2",
+            width="100%",
+            margin_top="8px",
+        ),
+        rx.cond(
+            detail["can_edit_fresh_frozen"],
+            rx.box(
+                rx.text(
+                    "Planned Fresh Frozen plants",
+                    size="1", weight="bold", color=MUTED,
+                ),
+                rx.hstack(
+                    rx.input(
+                        type="number",
+                        min="0",
+                        max=detail["planted_plants"].to_string(),
+                        step="1",
+                        default_value=detail["fresh_frozen_plants"].to_string(),
+                        on_blur=lambda value: DashboardState.save_cultivation_fresh_frozen_plants(
+                            detail["crop"], detail["strain"],
+                            detail["harvest_date"], detail["planted_plants"], value,
+                        ),
+                        width="110px",
+                        size="1",
+                    ),
+                    rx.text(
+                        "of " + detail["planted_plants"].to_string()
+                        + " plants (" + detail["fresh_frozen_percent"].to_string()
+                        + "%)",
+                        size="1", color=MUTED,
+                    ),
+                    align="center",
+                    gap="2",
+                ),
+                margin_top="10px",
+            ),
+            rx.text(
+                "Fresh Frozen planning locked after harvest day.",
+                size="1", color=MUTED, margin_top="8px",
+            ),
+        ),
+        rx.cond(
+            detail["can_edit_creative_use"],
+            rx.box(
+                rx.text(
+                    "Creative Use reduction (lb)",
+                    size="1", weight="bold", color=MUTED,
+                ),
+                rx.hstack(
+                    rx.input(
+                        type="number",
+                        min="0",
+                        max=(
+                            detail["gross_projected_lbs"]
+                            - detail["fresh_frozen_reduction_lbs"]
+                        ).to_string(),
+                        step="0.1",
+                        default_value=detail["creative_use_reduction_lbs"].to_string(),
+                        on_blur=lambda value: DashboardState.save_cultivation_creative_use_lbs(
+                            detail["crop"], detail["strain"],
+                            detail["gross_projected_lbs"]
+                            - detail["fresh_frozen_reduction_lbs"], value,
+                        ),
+                        width="110px",
+                        size="1",
+                    ),
+                    rx.text(
+                        "Redirected to blends, co-packing, or another planned use",
+                        size="1", color=MUTED,
+                    ),
+                    align="center",
+                    gap="2",
+                ),
+                margin_top="10px",
+            ),
+            rx.text(
+                "Creative Use is locked after actual crop inventory appears or the projection expires.",
+                size="1", color=MUTED, margin_top="8px",
+            ),
+        ),
+        padding_bottom="10px",
+        border_bottom="1px solid #e5e7eb",
+        width="100%",
+    )
+
+
 def cultivation_clone_plan_value_cell(
-    cell: rx.Var, metric: rx.Var, weekly_demand: rx.Var
+    cell: rx.Var, metric: rx.Var, weekly_demand: rx.Var, strain: rx.Var
 ) -> rx.Component:
     value = cell["value"]
     is_current_pounds = metric == "Current Pounds"
@@ -12729,7 +14509,7 @@ def cultivation_clone_plan_value_cell(
             ),
         ),
     )
-    value_content = rx.cond(
+    current_breakdown_content = rx.cond(
         cell["show_breakdown"],
         rx.popover.root(
             rx.popover.trigger(
@@ -12807,6 +14587,94 @@ def cultivation_clone_plan_value_cell(
         ),
         rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
     )
+    scheduled_content = rx.popover.root(
+        rx.popover.trigger(
+            rx.button(
+                rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
+                rx.icon("info", size=12),
+                variant="ghost",
+                size="1",
+                color="#1d4ed8",
+                font_weight="800",
+                cursor="pointer",
+                text_decoration="underline dotted",
+                text_underline_offset="3px",
+            )
+        ),
+        rx.popover.content(
+            rx.vstack(
+                rx.heading("Scheduled Supply Detail", size="3", color=DARK),
+                rx.text(
+                    "Projected pounds are excluded once actual crop-matched inventory appears and expire 45 days after harvest.",
+                    size="1",
+                    color=MUTED,
+                ),
+                rx.foreach(
+                    cell["scheduled_details"],
+                    cultivation_scheduled_supply_detail,
+                ),
+                spacing="3",
+                width="390px",
+            ),
+            side="top",
+            align="center",
+        ),
+    )
+    allocation_content = rx.cond(
+        cell["editable_allocation"],
+        rx.input(
+            type="number",
+            min="0",
+            max="7",
+            step="0.1",
+            default_value=value.to_string(),
+            key=(
+                DashboardState.cultivation_clone_plan_entry_version.to_string()
+                + "-" + strain.to_string()
+            ),
+            on_blur=lambda input_value: DashboardState.change_cultivation_clone_plan_allocation(
+                strain, input_value
+            ),
+            disabled=~DashboardState.cultivation_clone_plan_editable,
+            width="100%",
+            size="1",
+            text_align="center",
+        ),
+        rx.cond(
+            cell["historical_editable"],
+            rx.input(
+                type="number",
+                min="0",
+                max="7",
+                step="0.1",
+                default_value=value.to_string(),
+                key=(
+                    DashboardState.cultivation_historical_plan_entry_version.to_string()
+                    + "-" + cell["crop"] + "-" + strain.to_string()
+                ),
+                on_blur=lambda input_value: DashboardState.change_cultivation_historical_plan_allocation(
+                    strain, input_value
+                ),
+                width="100%",
+                size="1",
+                text_align="center",
+            ),
+            rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
+        ),
+    )
+    value_content = rx.cond(
+        ~cell["available"],
+        rx.text("—", color="#9ca3af"),
+        rx.cond(
+            metric == "Clone Allocation",
+            allocation_content,
+            rx.cond(
+                (metric == "Scheduled") & (cell["scheduled_details"].length() > 0),
+                scheduled_content,
+                current_breakdown_content,
+            ),
+        ),
+    )
     return rx.table.cell(
         value_content,
         text_align="right",
@@ -12822,12 +14690,26 @@ def cultivation_clone_plan_value_cell(
             ),
         ),
         background_color=rx.cond(
-            cell["highlight"],
+            cell["editable_allocation"],
             "#f5f3ff",
-            rx.cond(is_current_pounds, current_background, "transparent"),
+            rx.cond(
+                cell["historical_allocation"],
+                "#faf5ff",
+                rx.cond(
+                    cell["highlight"],
+                    "#f5f3ff",
+                    rx.cond(is_current_pounds, current_background, "transparent"),
+                ),
+            ),
         ),
-        outline=rx.cond(cell["highlight"], "3px solid #8b5cf6", "none"),
-        outline_offset=rx.cond(cell["highlight"], "-3px", "0"),
+        outline=rx.cond(
+            cell["editable_allocation"] | cell["historical_editable"] | cell["highlight"],
+            "3px solid #8b5cf6",
+            "none",
+        ),
+        outline_offset=rx.cond(
+            cell["editable_allocation"] | cell["historical_editable"] | cell["highlight"], "-3px", "0"
+        ),
         min_width="102px",
         white_space="nowrap",
     )
@@ -12838,7 +14720,7 @@ def cultivation_clone_plan_matrix_row(row: rx.Var) -> rx.Component:
         rx.table.cell(
             row["strain"],
             font_weight="800",
-            min_width="160px",
+            min_width="200px",
             background="#ffffff",
             position="sticky",
             left="0",
@@ -12847,7 +14729,7 @@ def cultivation_clone_plan_matrix_row(row: rx.Var) -> rx.Component:
         rx.table.cell(
             row["metric"],
             font_weight="700",
-            min_width="145px",
+            min_width="170px",
             background=rx.match(
                 row["metric"],
                 ("Clone Allocation", "#ede9fe"),
@@ -12857,50 +14739,13 @@ def cultivation_clone_plan_matrix_row(row: rx.Var) -> rx.Component:
                 "#ffffff",
             ),
             position="sticky",
-            left="160px",
+            left="200px",
             z_index="2",
         ),
-        rx.cond(
-            row["metric"] == "Clone Allocation",
-            rx.fragment(
-                rx.table.cell(
-                    rx.input(
-                        type="number",
-                        min="0",
-                        max="7",
-                        step="0.1",
-                        default_value=row["allocation"].to_string(),
-                        key=(
-                            DashboardState.cultivation_clone_plan_entry_version.to_string()
-                            + "-"
-                            + row["strain"].to_string()
-                        ),
-                        on_blur=lambda value: DashboardState.change_cultivation_clone_plan_allocation(
-                            row["strain"], value
-                        ),
-                        disabled=~DashboardState.cultivation_clone_plan_editable,
-                        width="100%",
-                        size="1",
-                        text_align="center",
-                    ),
-                    min_width="102px",
-                    background="#f5f3ff",
-                    outline="3px solid #8b5cf6",
-                    outline_offset="-3px",
-                    class_name="qcc-current-clone-allocation",
-                ),
-                rx.foreach(
-                    row["values"][1:],
-                    lambda cell: cultivation_clone_plan_value_cell(
-                        cell, row["metric"], row["weekly_demand"]
-                    ),
-                ),
-            ),
-            rx.foreach(
-                row["values"],
-                lambda cell: cultivation_clone_plan_value_cell(
-                    cell, row["metric"], row["weekly_demand"]
-                ),
+        rx.foreach(
+            row["values"],
+            lambda cell: cultivation_clone_plan_value_cell(
+                cell, row["metric"], row["weekly_demand"], row["strain"]
             ),
         ),
         class_name="qcc-clone-plan-row",
@@ -12924,17 +14769,65 @@ def cultivation_clone_plan_period_header(period: rx.Var) -> rx.Component:
 
 def cultivation_clone_plan_page_period_header(period: rx.Var) -> rx.Component:
     return rx.box(
-        rx.vstack(
-            rx.text(period["crop"], weight="bold", color="#ffffff"),
-            rx.text(period["date_label"], size="1", color="#cbd5e1"),
-            spacing="0",
-            align="center",
+        rx.tooltip(
+            rx.vstack(
+                rx.text(period["crop"], weight="bold", color="#ffffff"),
+                rx.text(period["date_label"], size="1", color="#cbd5e1"),
+                rx.cond(
+                    period["is_historical"],
+                    rx.cond(
+                        DashboardState.cultivation_historical_plan_editing
+                        & (DashboardState.cultivation_historical_plan_crop == period["crop"]),
+                        rx.hstack(
+                            rx.button(
+                                "Save",
+                                on_click=DashboardState.save_cultivation_historical_plan,
+                                loading=DashboardState.cultivation_historical_plan_saving,
+                                size="1",
+                                color_scheme="green",
+                                height="20px",
+                            ),
+                            rx.icon_button(
+                                "x",
+                                on_click=DashboardState.cancel_cultivation_clone_plan_history_edit,
+                                size="1",
+                                variant="soft",
+                                color_scheme="gray",
+                                height="20px",
+                                width="20px",
+                            ),
+                            gap="1",
+                        ),
+                        rx.button(
+                            rx.icon("pencil", size=11),
+                            "Edit",
+                            on_click=DashboardState.edit_cultivation_historical_lookback(
+                                period["crop"]
+                            ),
+                            size="1",
+                            variant="solid",
+                            background="#e9d5ff",
+                            color="#4c1d95",
+                            border="1px solid #c4b5fd",
+                            _hover={"background": "#ddd6fe"},
+                            height="20px",
+                        ),
+                    ),
+                    rx.box(height="20px"),
+                ),
+                spacing="0",
+                align="center",
+            ),
+            content=period["harvest_date_full_label"],
         ),
         display="flex",
         align_items="center",
         justify_content="center",
+        width="102px",
         min_width="102px",
-        height="58px",
+        flex_shrink="0",
+        height="82px",
+        cursor="help",
         border_right="1px solid #64748b",
         class_name=rx.cond(
             period["is_current"],
@@ -13198,7 +15091,7 @@ def cultivation_clone_planning_panel() -> rx.Component:
                 ),
                 cultivation_new_strain_control(),
                 rx.callout(
-                    "Current Pounds excludes trim, retention, samples, quarantine, and unusable material. Scheduled pounds enter 30 days after harvest and are reduced as crop-matched actual inventory appears.",
+                    "Current Pounds excludes trim, retention, samples, quarantine, and unusable material. Scheduled pounds are expected 30 days after harvest, stop counting when crop-matched actual inventory appears, and expire 45 days after harvest. Click a Scheduled value to review Fresh Frozen or Creative Use reductions.",
                     icon="info",
                     color_scheme="blue",
                     width="100%",
@@ -13214,13 +15107,28 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     rx.box(
                         rx.heading("Rolling Clone Planner", size="4", color=DARK),
                         rx.text(
-                            "Enter 0.1–7.0 bench equivalents in the first allocation column. Negative projected balances remain visible in red.",
+                            "Enter 0.1–7.0 bench equivalents in the first allocation column. Projected physical inventory stops at zero.",
                             size="2",
                             color=MUTED,
                         ),
                     ),
                     rx.spacer(),
-                    rx.badge("14-DAY PERIODS", color_scheme="purple", size="2"),
+                    rx.hstack(
+                        rx.badge("14-DAY PERIODS", color_scheme="purple", size="2"),
+                        rx.select(
+                            [
+                                "No Historical Crops",
+                                "Last 4 Crops",
+                                "Last 8 Crops",
+                            ],
+                            value=DashboardState.cultivation_clone_plan_lookback,
+                            on_change=DashboardState.change_cultivation_clone_plan_lookback,
+                            width="180px",
+                            size="2",
+                        ),
+                        gap="2",
+                        align="center",
+                    ),
                     width="100%",
                     align="center",
                     wrap="wrap",
@@ -13228,7 +15136,7 @@ def cultivation_clone_planning_panel() -> rx.Component:
                 ),
                 rx.box(
                     rx.box(
-                        rx.grid(
+                        rx.flex(
                             rx.box(
                                 rx.text("Strain", weight="bold", color="#ffffff"),
                                 display="flex",
@@ -13236,6 +15144,9 @@ def cultivation_clone_planning_panel() -> rx.Component:
                                 padding="0 12px",
                                 border_right="1px solid #64748b",
                                 background="#111827",
+                                width="200px",
+                                min_width="200px",
+                                height="82px",
                             ),
                             rx.box(
                                 rx.text("Planning Row", weight="bold", color="#ffffff"),
@@ -13244,16 +15155,20 @@ def cultivation_clone_planning_panel() -> rx.Component:
                                 padding="0 12px",
                                 border_right="1px solid #64748b",
                                 background="#111827",
+                                width="170px",
+                                min_width="170px",
+                                height="82px",
                             ),
                             rx.foreach(
                                 DashboardState.cultivation_clone_plan_periods,
                                 cultivation_clone_plan_page_period_header,
                             ),
-                            columns="160px 145px repeat(13, 102px)",
-                            min_width="1631px",
+                            width="max-content",
+                            min_width="100%",
                             gap="0",
                         ),
-                        min_width="1631px",
+                        width="max-content",
+                        min_width="100%",
                         class_name="qcc-clone-plan-page-header",
                     ),
                     rx.table.root(
@@ -13265,7 +15180,8 @@ def cultivation_clone_planning_panel() -> rx.Component:
                         ),
                         variant="surface",
                         size="2",
-                        width="100%",
+                        width="max-content",
+                        min_width="100%",
                         class_name="qcc-clone-plan-table",
                     ),
                     width="100%",
@@ -13336,20 +15252,13 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     rx.box(
                         rx.heading("Planning History", size="4", color=DARK),
                         rx.text(
-                            "Current plans reload into the Rolling Clone Planner. Historical crops remain separately editable for lookback and corrections.",
+                            "Current plans reload into the Rolling Clone Planner. Historical allocations are edited directly in their lookback columns above.",
                             size="2",
                             color=MUTED,
                         ),
                     ),
                     rx.spacer(),
                     rx.hstack(
-                        rx.select(
-                            ["Last 4 Plans", "Last 8 Plans"],
-                            value=DashboardState.cultivation_clone_plan_lookback,
-                            on_change=DashboardState.change_cultivation_clone_plan_lookback,
-                            width="145px",
-                            size="2",
-                        ),
                         rx.button(
                             rx.icon("refresh_cw", size=16),
                             "Refresh",
@@ -13396,40 +15305,6 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     ),
                     rx.callout(
                         "No current plan has been approved yet. Approve the Rolling Clone Planner to create it.",
-                        icon="info",
-                        color_scheme="gray",
-                        width="100%",
-                    ),
-                ),
-                rx.heading("Historical Crops", size="3", color=DARK),
-                rx.cond(
-                    DashboardState.cultivation_clone_plan_lookback_rows.length() > 0,
-                    rx.box(
-                        rx.table.root(
-                            rx.table.header(
-                                rx.table.row(
-                                    rx.table.column_header_cell("Crop"),
-                                    rx.table.column_header_cell("Clone Cut"),
-                                    rx.table.column_header_cell("Bench Allocations"),
-                                    rx.table.column_header_cell("Status"),
-                                    rx.table.column_header_cell("Edit"),
-                                )
-                            ),
-                            rx.table.body(
-                                rx.foreach(
-                                    DashboardState.cultivation_clone_plan_lookback_rows,
-                                    cultivation_clone_plan_history_row,
-                                )
-                            ),
-                            variant="surface",
-                            size="2",
-                            width="100%",
-                        ),
-                        width="100%",
-                        overflow_x="auto",
-                    ),
-                    rx.callout(
-                        "No historical clone plans are available for this lookback.",
                         icon="info",
                         color_scheme="gray",
                         width="100%",
@@ -13553,6 +15428,7 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     default_value="historical-entry",
                     width="100%",
                     variant="surface",
+                    display="none",
                 ),
                 width="100%",
                 spacing="3",
@@ -13678,13 +15554,17 @@ def cultivation_clone_allocation_panel() -> rx.Component:
                 rx.flex(
                     rx.box(
                         rx.hstack(
-                            rx.heading("Saved Facility Clone Allocations", size="4", color=DARK),
-                            rx.badge("APPROVED PLANS", color_scheme="green"),
+                            rx.heading(
+                                DashboardState.cultivation_current_clone_plan_title,
+                                size="4",
+                                color=DARK,
+                            ),
+                            rx.badge("CURRENT APPROVED PLAN", color_scheme="green"),
                             gap="2",
                             align="center",
                         ),
                         rx.text(
-                            "Load the latest approved current plan, set its planting density, and prepare the room layout and clone-cut instructions.",
+                            "Load the current plan's saved room map, finalize its exact benches, and print the clone and dome instructions.",
                             size="2",
                             color=MUTED,
                         ),
@@ -13712,7 +15592,7 @@ def cultivation_clone_allocation_panel() -> rx.Component:
                                     rx.table.column_header_cell("Cycle / Crop"),
                                     rx.table.column_header_cell("Flower Room"),
                                     rx.table.column_header_cell("Flower Entry"),
-                                    rx.table.column_header_cell("Approved Bench Allocations"),
+                                    rx.table.column_header_cell("Saved Bench Allocations"),
                                     rx.table.column_header_cell("Status"),
                                     rx.table.column_header_cell("Load"),
                                 )
@@ -13730,7 +15610,7 @@ def cultivation_clone_allocation_panel() -> rx.Component:
                         overflow_x="auto",
                     ),
                     rx.callout(
-                        "No approved current plan is available. Approve F5.10 in the Rolling Clone Planner first.",
+                        "No approved current plan is available. Approve the Rolling Clone Planner first.",
                         icon="info",
                         color_scheme="gray",
                         width="100%",
@@ -13807,16 +15687,9 @@ def cultivation_clone_allocation_panel() -> rx.Component:
                     ),
                     rx.button(
                         rx.icon("printer", size=15),
-                        "Print Clone & Dome Plan",
-                        on_click=rx.call_script(
-                            "(() => {"
-                            "const c='qcc-print-clone-dome';"
-                            "const done=()=>document.body.classList.remove(c);"
-                            "document.body.classList.add(c);"
-                            "window.addEventListener('afterprint',done,{once:true});"
-                            "window.print();window.setTimeout(done,3000);"
-                            "})()"
-                        ),
+                        "Print and Save Clone Plan",
+                        on_click=DashboardState.save_and_print_cultivation_clone_plan,
+                        loading=DashboardState.cultivation_saving,
                         disabled=DashboardState.cultivation_strain_summary_rows.length() == 0,
                         background="#7c3aed",
                         color="white",
@@ -14520,6 +16393,330 @@ def cultivation_historical_yield_panel() -> rx.Component:
     )
 
 
+PLANT_ACTIVE_COLUMNS = [
+    "Tag", "Strain", "Phase", "Facility", "Location", "Plant Batch",
+    "Batch Date", "Phase Date", "Hold",
+]
+PLANT_LOCATION_COLUMNS = ["Facility", "Phase", "Location", "Plants", "Strains"]
+PLANTING_COLUMNS = [
+    "Plant Batch", "Strain", "Facility", "Location", "Available Plants",
+    "Tracked", "Packaged", "Destroyed", "Batch Date",
+]
+PLANT_HARVEST_COLUMNS = [
+    "Harvest Batch", "Strain", "Harvest Date", "Plants", "Wet Weight (lb)",
+    "Packaged Weight (lb)", "Remaining Weight (lb)", "Packages", "Fresh Frozen",
+]
+PLANT_RECONCILIATION_COLUMNS = [
+    "Crop", "Room", "Strain", "Harvest Date", "Crop Report Plants",
+    "Metrc Harvest Plants", "Variance", "Status",
+]
+
+
+def cultivation_metrc_plant_panel() -> rx.Component:
+    """Current Metrc plant operations with crop-report reconciliation."""
+    return rx.vstack(
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.hstack(
+                            rx.heading("Metrc Plant Data", size="5", color=DARK),
+                            rx.badge(
+                                "CURRENT SNAPSHOT",
+                                color_scheme="teal",
+                                variant="soft",
+                            ),
+                            gap="2",
+                            align="center",
+                        ),
+                        rx.text(
+                            "Operational plant positions from the four active Metrc exports. Crop reports remain the cultivation source of truth and are reconciled below.",
+                            color=MUTED,
+                            size="2",
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.vstack(
+                        rx.text("Snapshot", size="1", weight="bold", color=MUTED),
+                        rx.text(
+                            DashboardState.cultivation_plant_snapshot_label,
+                            weight="bold",
+                            color=DARK,
+                        ),
+                        spacing="0",
+                        align="end",
+                    ),
+                    width="100%",
+                    align="center",
+                    wrap="wrap",
+                    gap="3",
+                ),
+                rx.callout(
+                    "Upload Flowering, Vegetative, Plantings—Active, and Harvests together. Each upload replaces the operational view while preserving the previous snapshot in history.",
+                    icon="info",
+                    color_scheme="blue",
+                    width="100%",
+                ),
+                width="100%",
+                spacing="3",
+            ),
+            width="100%",
+        ),
+        rx.accordion.root(
+            rx.accordion.item(
+                value="plant-import",
+                header=rx.flex(
+                    rx.box(
+                        rx.text("Import Four Active Metrc Plant Exports", weight="bold"),
+                        rx.text(
+                            "The workbook type is validated by its headers and filename before publishing.",
+                            size="1",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.icon("upload", color=ACCENT),
+                    width="100%",
+                    align="center",
+                ),
+                content=rx.vstack(
+                    rx.upload(
+                        rx.vstack(
+                            rx.icon("files", size=30, color=ACCENT),
+                            rx.text(
+                                "Drop the four Metrc .xlsx files here or click to select",
+                                weight="bold",
+                            ),
+                            rx.text(
+                                "Harvests · Flowering · Vegetative · Plantings—Active",
+                                size="1",
+                                color=MUTED,
+                            ),
+                            rx.button("Choose Four Files", variant="outline"),
+                            spacing="2",
+                            align="center",
+                        ),
+                        id="cultivation_plant_upload",
+                        accept={
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"]
+                        },
+                        multiple=True,
+                        max_files=4,
+                        border=f"2px dashed {ACCENT}",
+                        border_radius="12px",
+                        padding="2rem",
+                        width="100%",
+                    ),
+                    rx.flex(
+                        rx.foreach(
+                            rx.selected_files("cultivation_plant_upload"), rx.badge
+                        ),
+                        gap="2",
+                        wrap="wrap",
+                        width="100%",
+                    ),
+                    rx.hstack(
+                        rx.button(
+                            "Import Plant Snapshot",
+                            on_click=DashboardState.import_cultivation_plant_files(
+                                rx.upload_files(upload_id="cultivation_plant_upload")
+                            ),
+                            loading=DashboardState.cultivation_plant_importing,
+                            background=ACCENT,
+                            color="white",
+                        ),
+                        rx.button(
+                            "Clear Selection",
+                            on_click=rx.clear_selected_files("cultivation_plant_upload"),
+                            variant="outline",
+                        ),
+                        gap="3",
+                    ),
+                    rx.cond(
+                        DashboardState.cultivation_plant_source_rows.length() > 0,
+                        readable_grid(
+                            DashboardState.cultivation_plant_source_rows,
+                            ["Export", "Filename"],
+                            "250px",
+                        ),
+                    ),
+                    width="100%",
+                    spacing="3",
+                ),
+            ),
+            type="single",
+            collapsible=True,
+            width="100%",
+            variant="soft",
+        ),
+        rx.cond(
+            DashboardState.cultivation_plant_error != "",
+            rx.callout(
+                DashboardState.cultivation_plant_error,
+                icon="triangle_alert",
+                color_scheme="red",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            DashboardState.cultivation_plant_message != "",
+            rx.callout(
+                DashboardState.cultivation_plant_message,
+                icon="circle_check",
+                color_scheme="green",
+                width="100%",
+            ),
+        ),
+        rx.grid(
+            metric_card(
+                "Flowering Plants",
+                DashboardState.cultivation_plant_kpis["flowering"],
+                "Individually tagged in Metrc flowering",
+            ),
+            metric_card(
+                "Vegetative Plants",
+                DashboardState.cultivation_plant_kpis["vegetative"],
+                "Tagged Veg and Mom population",
+            ),
+            metric_card(
+                "Active Plantings",
+                DashboardState.cultivation_plant_kpis["plantings"],
+                DashboardState.cultivation_plant_kpis["planting_plants"]
+                + " currently available plants",
+            ),
+            metric_card(
+                "Harvest Batches",
+                DashboardState.cultivation_plant_kpis["harvests"],
+                "Historical and active harvest batches",
+            ),
+            columns=rx.breakpoints(initial="1", sm="2", xl="4"),
+            gap="3",
+            width="100%",
+        ),
+        rx.card(
+            rx.flex(
+                rx.box(
+                    rx.text("Facility", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        DashboardState.cultivation_plant_facility_options,
+                        value=DashboardState.cultivation_plant_facility_filter,
+                        on_change=DashboardState.change_cultivation_plant_facility_filter,
+                        width="210px",
+                    ),
+                ),
+                rx.box(
+                    rx.text("Phase", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        ["All Phases", "Flowering", "Vegetative"],
+                        value=DashboardState.cultivation_plant_phase_filter,
+                        on_change=DashboardState.change_cultivation_plant_phase_filter,
+                        width="180px",
+                    ),
+                ),
+                rx.box(
+                    rx.text("Location", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        DashboardState.cultivation_plant_location_options,
+                        value=DashboardState.cultivation_plant_location_filter,
+                        on_change=DashboardState.change_cultivation_plant_location_filter,
+                        width="280px",
+                    ),
+                ),
+                rx.box(
+                    rx.text("Strain", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        DashboardState.cultivation_plant_strain_options,
+                        value=DashboardState.cultivation_plant_strain_filter,
+                        on_change=DashboardState.change_cultivation_plant_strain_filter,
+                        width="240px",
+                    ),
+                ),
+                rx.spacer(),
+                rx.badge(
+                    DashboardState.cultivation_active_plant_count,
+                    color_scheme="teal",
+                    size="2",
+                ),
+                width="100%",
+                align="end",
+                gap="3",
+                wrap="wrap",
+            ),
+            width="100%",
+        ),
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger("Active Plants", value="active_plants"),
+                rx.tabs.trigger("Location Summary", value="locations"),
+                rx.tabs.trigger("Active Plantings", value="plantings"),
+                rx.tabs.trigger("Harvests", value="harvests"),
+                rx.tabs.trigger("Crop Reconciliation", value="reconciliation"),
+                class_name="qcc-tabs",
+            ),
+            rx.tabs.content(
+                readable_grid(
+                    DashboardState.cultivation_active_plant_table_rows,
+                    PLANT_ACTIVE_COLUMNS,
+                    "650px",
+                ),
+                value="active_plants",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                readable_grid(
+                    DashboardState.cultivation_plant_location_summary_rows,
+                    PLANT_LOCATION_COLUMNS,
+                    "520px",
+                ),
+                value="locations",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                readable_grid(
+                    DashboardState.cultivation_active_planting_rows,
+                    PLANTING_COLUMNS,
+                    "600px",
+                ),
+                value="plantings",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                readable_grid(
+                    DashboardState.cultivation_plant_harvest_rows,
+                    PLANT_HARVEST_COLUMNS,
+                    "650px",
+                ),
+                value="harvests",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                rx.vstack(
+                    rx.callout(
+                        "Crop-report canopy at 0.75 plants per square foot is compared with the actual plant count recorded when Metrc harvest batches appear. A variance greater than two plants is flagged for review.",
+                        icon="scale",
+                        color_scheme="purple",
+                        width="100%",
+                    ),
+                    readable_grid(
+                        DashboardState.cultivation_plant_reconciliation_rows,
+                        PLANT_RECONCILIATION_COLUMNS,
+                        "600px",
+                    ),
+                    width="100%",
+                    spacing="3",
+                ),
+                value="reconciliation",
+                padding_top="1rem",
+            ),
+            value=DashboardState.cultivation_plant_view,
+            on_change=DashboardState.change_cultivation_plant_view,
+            width="100%",
+        ),
+        width="100%",
+        spacing="4",
+    )
+
+
 def cultivation_panel() -> rx.Component:
     return rx.vstack(
         rx.box(
@@ -14535,6 +16732,7 @@ def cultivation_panel() -> rx.Component:
                 rx.tabs.trigger("Room Layout & Clone Plan", value="clone_allocation"),
                 rx.tabs.trigger("Historical Yield", value="historical_yield"),
                 rx.tabs.trigger("Demand & Availability", value="demand_availability"),
+                rx.tabs.trigger("Metrc Plant Data", value="metrc_plants"),
                 rx.tabs.trigger("Planning Foundation", value="foundation"),
                 class_name="qcc-tabs",
             ),
@@ -14556,6 +16754,11 @@ def cultivation_panel() -> rx.Component:
             rx.tabs.content(
                 cultivation_demand_availability_panel(),
                 value="demand_availability",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                cultivation_metrc_plant_panel(),
+                value="metrc_plants",
                 padding_top="1rem",
             ),
             rx.tabs.content(
@@ -14639,7 +16842,7 @@ def protected_dashboard() -> rx.Component:
                     rx.tabs.trigger("Sales & Demand Planning", value="sales_demand"),
                     rx.tabs.trigger("Inventory", value="inventory"),
                     rx.tabs.trigger("Cultivation", value="cultivation"),
-                    rx.tabs.trigger("Quality Assurance", value="qa"),
+                    rx.tabs.trigger("Distribution Operations", value="qa"),
                     rx.cond(
                         DashboardState.is_administrator,
                         rx.tabs.trigger("Administration", value="administration"),
