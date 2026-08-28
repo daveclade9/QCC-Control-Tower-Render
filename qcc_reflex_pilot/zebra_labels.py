@@ -588,14 +588,12 @@ def _vertical_flower_zpl(context: dict[str, Any]) -> str:
     terpenes = list(a.get("top_terpenes", []))
     while len(terpenes) < 3:
         terpenes.append(("", None))
-    terp_line_1 = (
-        f"{_clean_text(terpenes[0][0], 22)}: {_pct(terpenes[0][1])}    "
-        f"{_clean_text(terpenes[1][0], 22)}: {_pct(terpenes[1][1])}"
-    )
-    terp_line_2 = (
-        f"{_clean_text(terpenes[2][0], 22)}: {_pct(terpenes[2][1])}    "
-        f"Other: {_pct(a.get('other_terpenes'))}"
-    )
+    terpene_fields = [
+        f"{_clean_text(terpenes[0][0], 22)}: {_pct(terpenes[0][1])}",
+        f"{_clean_text(terpenes[1][0], 22)}: {_pct(terpenes[1][1])}",
+        f"{_clean_text(terpenes[2][0], 22)}: {_pct(terpenes[2][1])}",
+        f"Other: {_pct(a.get('other_terpenes'))}",
+    ]
     perforation_guide = "\n".join(
         f"^FO80,{offset}^GB8,16,8,B,0^FS" for offset in range(8, 249, 24)
     )
@@ -609,8 +607,10 @@ def _vertical_flower_zpl(context: dict[str, Any]) -> str:
 ^FT184,248^A0B,17,14^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
 ^FO190,2^A0B,18,15^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
 ^FO191,2^A0B,18,15^FB250,1,0,C,0^FDTotal Terpenes: {_pct(a.get('total_terpenes'))}^FS
-^FT225,244^A0B,17,9^FD{terp_line_1[:58]}^FS
-^FT246,244^A0B,17,9^FD{terp_line_2[:58]}^FS
+^FT225,244^A0B,17,9^FD{terpene_fields[0]}^FS
+^FT225,126^A0B,17,9^FD{terpene_fields[1]}^FS
+^FT246,244^A0B,17,9^FD{terpene_fields[2]}^FS
+^FT246,126^A0B,17,9^FD{terpene_fields[3]}^FS
 ^FT269,238^A0B,17,9^FDHarvest Date: {context['harvest_date_short']}      Expiration Date: {context['expiration_date_short']}^FS
 ^FT290,250^A0B,17,7^FDPesticides: {context['pesticides']}  Chemotype: {context['chemotype']}^FS
 ^FT315,250^A0B,14,12^FDLot #: {_clean_text(context['lot_number'], 40)}^FS
@@ -618,7 +618,8 @@ def _vertical_flower_zpl(context: dict[str, Any]) -> str:
 ^FT357,206^A0B,14,12^FDPKG by: The QCC Group LLC^FS
 ^FT372,185^A0B,14,12^FDGrow Method: {context['grow_method']}^FS
 ^FT387,193^A0B,14,14^FDClass 1 - Cultivator^FS
-^BY1,3,22^FT412,254^BCB,,Y,N^FD{context['barcode_value']}^FS
+^BY1,3,22^FT412,254^BCB,,N,N^FD{context['barcode_value']}^FS
+^FO418,2^AAB,9,5^FB190,1,0,C,0^FD{context['barcode_value']}^FS
 ^FT437,212^A0B,14,14^FDLicense Number: C000313^FS
 ^FT451,212^A0B,14,12^FDNet WT: {context['net_weight']}  Serving Size: {context['serving_size']}^FS
 ^PQ{context['quantity']},0,1,Y
