@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import math
 import re
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -355,6 +356,54 @@ def label_analytes(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return values
 
 
+def chop_percent(value: Any, places: int = 2) -> float | None:
+    """Truncate a non-negative laboratory percentage without rounding it."""
+    number = _finite_number(value)
+    if number is None:
+        return None
+    factor = 10 ** max(int(places), 0)
+    return math.trunc(number * factor) / factor
+
+
+def adjusted_other_terpenes(total: Any, terpene_values: list[Any]) -> float | None:
+    """Subtract the three already-chopped terpenes from chopped total terpenes."""
+    chopped_total = chop_percent(total)
+    chopped_values = [chop_percent(value) for value in terpene_values]
+    if chopped_total is None or any(value is None for value in chopped_values):
+        return None
+    return round(
+        max(chopped_total - sum(float(value) for value in chopped_values), 0.0),
+        2,
+    )
+
+
+def apply_adjusted_coa(
+    analytes: dict[str, Any], adjusted_coa: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Apply verified high-precision COA entries to printable lab values."""
+    if not adjusted_coa:
+        return analytes
+    adjusted = dict(analytes)
+    total = _finite_number(adjusted_coa.get("total_terpenes"))
+    total_cbg = _finite_number(adjusted_coa.get("total_cbg"))
+    terpene_names = list(adjusted_coa.get("terpene_names", []))[:3]
+    terpene_values = list(adjusted_coa.get("terpene_values", []))[:3]
+    if total is None or total_cbg is None or len(terpene_names) != 3 or len(terpene_values) != 3:
+        return analytes
+    precise_values = [_finite_number(value) for value in terpene_values]
+    if any(value is None for value in precise_values):
+        return analytes
+    precise = [float(value) for value in precise_values if value is not None]
+    adjusted["total_terpenes"] = chop_percent(total)
+    adjusted["total_cbg"] = total_cbg
+    adjusted["top_terpenes"] = [
+        (str(name), chop_percent(value))
+        for name, value in zip(terpene_names, precise)
+    ]
+    adjusted["other_terpenes"] = adjusted_other_terpenes(total, precise)
+    return adjusted
+
+
 def _pct(value: Any) -> str:
     number = _finite_number(value)
     return f"{number:.2f}%" if number is not None else ""
@@ -368,6 +417,7 @@ def prepare_label_context(
     package: dict[str, Any], analyte_rows: list[dict[str, Any]],
     package_format: str, bulk_uid: str = "", harvest_date: str = "",
     lot_number: str = "", quantity: int = 1,
+    adjusted_coa: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Normalize and validate all data before any production ZPL is emitted."""
     errors: list[str] = []
@@ -392,7 +442,7 @@ def prepare_label_context(
     if not harvest:
         errors.append("The harvest date is missing or could not be recognized.")
     expiration = expiration_from_harvest(harvest) if harvest else None
-    analytes = label_analytes(analyte_rows)
+    analytes = apply_adjusted_coa(label_analytes(analyte_rows), adjusted_coa)
     required = {
         "Total Cannabinoids": analytes.get("total_cannabinoids"),
         "Total THC": analytes.get("total_thc"),

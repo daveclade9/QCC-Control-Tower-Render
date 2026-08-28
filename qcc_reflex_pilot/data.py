@@ -639,6 +639,23 @@ def _initialize_qa_database_once() -> None:
             """
         )
         connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS qa_adjusted_coas (
+                coa_key TEXT PRIMARY KEY,
+                package_tag TEXT NOT NULL,
+                packaged_license TEXT NOT NULL DEFAULT '',
+                test_date TEXT,
+                total_terpenes DOUBLE PRECISION NOT NULL,
+                total_cbg DOUBLE PRECISION NOT NULL,
+                terpene_names_json TEXT NOT NULL,
+                terpene_values_json TEXT NOT NULL,
+                suspect_flags_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL,
+                updated_by TEXT
+            )
+            """
+        )
+        connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_lab_package "
             "ON lab_result_records(package_tag)"
         )
@@ -653,6 +670,10 @@ def _initialize_qa_database_once() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_lab_test_name "
             "ON lab_result_records(test_name)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_adjusted_coa_package "
+            "ON qa_adjusted_coas(package_tag, packaged_license)"
         )
         now = datetime.now().astimezone().isoformat()
         connection.execute(
@@ -1355,6 +1376,105 @@ def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, 
         "result": "Result", "test_passed": "Passed",
     })
     return _qa_record_list(rows)
+
+
+def adjusted_coa_key(package_tag: str, packaged_license: str = "") -> str:
+    """Return the stable identifier used for one laboratory sample COA."""
+    identity = f"{str(packaged_license or '').strip()}|{str(package_tag or '').strip()}"
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def load_adjusted_coa(package_tag: str, packaged_license: str = "") -> dict[str, Any]:
+    """Load the operator-verified high-precision values for one lab sample."""
+    package_tag = str(package_tag or "").strip()
+    packaged_license = str(packaged_license or "").strip()
+    if not package_tag:
+        return {}
+    initialize_qa_database()
+    rows = safe_query_frame(
+        "SELECT * FROM qa_adjusted_coas WHERE coa_key = %s LIMIT 1",
+        (adjusted_coa_key(package_tag, packaged_license),),
+    )
+    if rows.empty and packaged_license:
+        rows = safe_query_frame(
+            "SELECT * FROM qa_adjusted_coas WHERE package_tag = %s "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (package_tag,),
+        )
+    if rows.empty:
+        return {}
+    record = rows.iloc[0].to_dict()
+    try:
+        record["terpene_names"] = json.loads(
+            str(record.get("terpene_names_json", "[]") or "[]")
+        )
+        record["terpene_values"] = json.loads(
+            str(record.get("terpene_values_json", "[]") or "[]")
+        )
+        record["suspect_flags"] = json.loads(
+            str(record.get("suspect_flags_json", "[]") or "[]")
+        )
+    except json.JSONDecodeError:
+        return {}
+    return record
+
+
+def save_adjusted_coa(
+    package_tag: str,
+    packaged_license: str,
+    test_date: str,
+    total_terpenes: float,
+    total_cbg: float,
+    terpene_names: list[str],
+    terpene_values: list[float],
+    suspect_flags: list[str],
+    updated_by: str,
+) -> dict[str, Any]:
+    """Upsert one auditable Adjusted COA and return its normalized values."""
+    initialize_qa_database()
+    package_tag = str(package_tag or "").strip()
+    packaged_license = str(packaged_license or "").strip()
+    now = datetime.now().astimezone().isoformat()
+    coa_key = adjusted_coa_key(package_tag, packaged_license)
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        connection.execute(
+            """
+            INSERT INTO qa_adjusted_coas (
+                coa_key, package_tag, packaged_license, test_date,
+                total_terpenes, total_cbg, terpene_names_json,
+                terpene_values_json, suspect_flags_json, updated_at, updated_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(coa_key) DO UPDATE SET
+                test_date = EXCLUDED.test_date,
+                total_terpenes = EXCLUDED.total_terpenes,
+                total_cbg = EXCLUDED.total_cbg,
+                terpene_names_json = EXCLUDED.terpene_names_json,
+                terpene_values_json = EXCLUDED.terpene_values_json,
+                suspect_flags_json = EXCLUDED.suspect_flags_json,
+                updated_at = EXCLUDED.updated_at,
+                updated_by = EXCLUDED.updated_by
+            """,
+            (
+                coa_key, package_tag, packaged_license, str(test_date or ""),
+                float(total_terpenes), float(total_cbg),
+                json.dumps(list(terpene_names)), json.dumps(list(terpene_values)),
+                json.dumps(list(suspect_flags)), now, str(updated_by or ""),
+            ),
+        )
+        connection.commit()
+    return {
+        "coa_key": coa_key,
+        "package_tag": package_tag,
+        "packaged_license": packaged_license,
+        "test_date": str(test_date or ""),
+        "total_terpenes": float(total_terpenes),
+        "total_cbg": float(total_cbg),
+        "terpene_names": list(terpene_names),
+        "terpene_values": [float(value) for value in terpene_values],
+        "suspect_flags": list(suspect_flags),
+        "updated_at": now,
+        "updated_by": str(updated_by or ""),
+    }
 
 
 def log_qa_label_download(
@@ -3280,6 +3400,16 @@ def build_shipment_exceptions(analysis: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+def build_shipment_exception_packages(analysis: pd.DataFrame) -> pd.DataFrame:
+    """Preserve package detail for open, rejected, and returned transfers."""
+    if analysis.empty:
+        return build_transfer_display(analysis)
+    exception_packages = analysis[
+        analysis["is_open_shipment"] | analysis["is_shipment_exception"]
+    ].copy()
+    return build_transfer_display(exception_packages)
+
+
 def build_transfer_display(analysis: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Manifest", "Invoice Number", "Created", "Received", "State",
@@ -3778,6 +3908,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
     retail_delivery_history = build_retail_delivery_history(analysis)
     retailer_locations = load_retailer_locations()
     exceptions = build_shipment_exceptions(analysis)
+    exception_packages = build_shipment_exception_packages(analysis)
     transfer_display = build_transfer_display(analysis)
     transfer_import_log = load_transfer_import_log()
     total_units = native_number(demand["shipped_units"].sum()) if not demand.empty else 0
@@ -3843,6 +3974,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         "retail_delivery_history": record_list(retail_delivery_history),
         "retailer_locations": retailer_locations,
         "exceptions": record_list(exceptions),
+        "exception_packages": record_list(exception_packages),
         "transfer_data": record_list(transfer_display.head(2000)),
         "transfer_import_log": record_list(transfer_import_log),
         "sales_ready": bool(sales_snapshot) and not analysis.empty,
@@ -3986,6 +4118,7 @@ def demo_dashboard_data() -> dict[str, Any]:
         "retail_delivery_history": [],
         "retailer_locations": _directory_retailer_location_rows(),
         "exceptions": [],
+        "exception_packages": [],
         "transfer_data": [],
         "transfer_import_log": [],
         "inventory_ready": False,

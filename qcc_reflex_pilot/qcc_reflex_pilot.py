@@ -29,10 +29,12 @@ from .data import (
     get_dashboard_data,
     get_sales_dashboard_data,
     import_lab_results_bytes,
+    load_adjusted_coa,
     load_qa_analytes,
     load_qa_module_data,
     load_production_module_data,
     log_qa_label_download,
+    save_adjusted_coa,
     potential_wip_for_sku,
     PRODUCTION_LINE_OPTIONS,
     PRODUCTION_PLAN_STATUSES,
@@ -63,6 +65,9 @@ from .zebra_labels import (
     default_package_format,
     extract_harvest_date,
     extract_metrc_tags,
+    label_analytes,
+    chop_percent,
+    adjusted_other_terpenes,
     prepare_label_context,
 )
 from .retailer_directory import (
@@ -410,6 +415,18 @@ class DashboardState(rx.State):
     qa_zebra_quantity: int = 1
     qa_zebra_message: str = ""
     qa_zebra_error: str = ""
+    qa_adjusted_coa_open: bool = False
+    qa_adjusted_coa_saving: bool = False
+    qa_adjusted_coa: dict[str, Any] = {}
+    qa_adjusted_total_terpenes: str = ""
+    qa_adjusted_total_cbg: str = ""
+    qa_adjusted_terpene_names: list[str] = ["", "", ""]
+    qa_adjusted_terpene_values: list[str] = ["", "", ""]
+    qa_adjusted_metrc_total_terpenes: str = ""
+    qa_adjusted_metrc_total_cbg: str = ""
+    qa_adjusted_metrc_terpene_values: list[str] = ["", "", ""]
+    qa_adjusted_coa_message: str = ""
+    qa_adjusted_coa_error: str = ""
     inventory_stage_filter: str = "All Production Stages"
     inventory_license_filter: str = "All Licenses"
     inventory_qa_filter: str = "All QA Statuses"
@@ -547,6 +564,12 @@ class DashboardState(rx.State):
     retail_delivery_history: list[dict[str, Any]] = []
     retailer_locations: list[dict[str, Any]] = []
     exceptions: list[dict[str, Any]] = []
+    exception_packages: list[dict[str, Any]] = []
+    shipment_exception_view: str = "Open Transfers"
+    shipment_exception_view_options: list[str] = [
+        "Open Transfers", "Rejected Transfers", "Returned Transfers"
+    ]
+    shipment_exception_show_manifest_summary: bool = False
     _transfer_data: list[dict[str, Any]] = []
     transfer_import_log: list[dict[str, Any]] = []
     cpg_inventory: list[dict[str, Any]] = []
@@ -961,6 +984,15 @@ class DashboardState(rx.State):
     @rx.event
     def change_qa_view(self, value: str):
         self.qa_view = value
+        if value not in {"customers", "retail", "transfers", "exceptions"}:
+            return
+        self.sales_demand_view = value
+        self.transfer_page = 1
+        # Release the navigation update before hydrating a potentially large
+        # transfer-backed distribution view.
+        yield
+        if value not in self.sales_loaded_views:
+            yield DashboardState.load_sales_background
 
     @rx.event
     def change_qa_cultivation_test_type(self, value: str):
@@ -993,6 +1025,26 @@ class DashboardState(rx.State):
     @rx.event
     def change_qa_preview_open(self, value: bool):
         self.qa_preview_open = value
+
+    @rx.event
+    def change_qa_adjusted_coa_open(self, value: bool):
+        self.qa_adjusted_coa_open = value
+
+    @rx.event
+    def open_qa_adjusted_coa(self):
+        if self.qa_selected_analytes_loading:
+            self.qa_zebra_error = "Wait for the laboratory analytes to finish loading."
+            return
+        if len(self.qa_adjusted_terpene_names) < 3 or not all(
+            self.qa_adjusted_terpene_names
+        ):
+            self.qa_zebra_error = (
+                "Three individual terpene results are required before an Adjusted COA can be entered."
+            )
+            return
+        self.qa_adjusted_coa_error = ""
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_open = True
 
     @rx.event
     def change_qa_label_operation_filter(self, value: str):
@@ -1156,6 +1208,8 @@ class DashboardState(rx.State):
             self.qa_selected_analytes = []
             self.qa_zebra_message = ""
             self.qa_zebra_error = ""
+            self.qa_adjusted_coa = {}
+            self.qa_adjusted_coa_open = False
             return
         self.qa_selected_package = dict(selected)
         self.qa_selected_package.setdefault("record_origin", "Lab Results / COA")
@@ -1238,6 +1292,17 @@ class DashboardState(rx.State):
         self.qa_zebra_quantity = 1
         self.qa_zebra_message = ""
         self.qa_zebra_error = ""
+        self.qa_adjusted_coa = {}
+        self.qa_adjusted_coa_open = False
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+        self.qa_adjusted_total_terpenes = ""
+        self.qa_adjusted_total_cbg = ""
+        self.qa_adjusted_terpene_names = ["", "", ""]
+        self.qa_adjusted_terpene_values = ["", "", ""]
+        self.qa_adjusted_metrc_total_terpenes = ""
+        self.qa_adjusted_metrc_total_cbg = ""
+        self.qa_adjusted_metrc_terpene_values = ["", "", ""]
 
     @rx.event
     def select_qa_package(self, package_tag: str, packaged_license: str):
@@ -1273,9 +1338,18 @@ class DashboardState(rx.State):
             rows = await rx.run_in_thread(
                 lambda: load_qa_analytes(package_tag, packaged_license)
             )
+            try:
+                adjusted_coa = await rx.run_in_thread(
+                    lambda: load_adjusted_coa(package_tag, packaged_license)
+                )
+            except Exception:
+                # An adjustment is optional; a temporary persistence outage must
+                # not hide the underlying Metrc analytes or block label review.
+                adjusted_coa = {}
             async with self:
                 if str(self.qa_selected_package.get("package_tag", "")) == package_tag:
                     self.qa_selected_analytes = rows
+                    self._initialize_adjusted_coa_inputs(rows, adjusted_coa)
                     self.qa_analyte_message = (
                         f"{len(rows):,} analyte result(s) loaded."
                         if rows else "No detailed analyte rows were found for this record."
@@ -1292,6 +1366,174 @@ class DashboardState(rx.State):
             async with self:
                 if str(self.qa_selected_package.get("package_tag", "")) == package_tag:
                     self.qa_selected_analytes_loading = False
+
+    @staticmethod
+    def _adjusted_number(value: Any) -> float | None:
+        text = str(value or "").strip().replace("%", "")
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+
+    def _initialize_adjusted_coa_inputs(
+        self, rows: list[dict[str, Any]], adjusted_coa: dict[str, Any]
+    ) -> None:
+        metrc = label_analytes(rows)
+        top = list(metrc.get("top_terpenes", []))[:3]
+        while len(top) < 3:
+            top.append(("", None))
+        self.qa_adjusted_terpene_names = [str(name or "") for name, _ in top]
+        self.qa_adjusted_metrc_terpene_values = [
+            "" if value is None else f"{float(value):.3f}" for _, value in top
+        ]
+        metrc_total = self._adjusted_number(metrc.get("total_terpenes"))
+        metrc_cbg = self._adjusted_number(metrc.get("total_cbg"))
+        self.qa_adjusted_metrc_total_terpenes = (
+            "" if metrc_total is None else f"{metrc_total:.3f}"
+        )
+        self.qa_adjusted_metrc_total_cbg = (
+            "" if metrc_cbg is None else f"{metrc_cbg:.2f}"
+        )
+        self.qa_adjusted_coa = dict(adjusted_coa or {})
+        if adjusted_coa:
+            saved_names = list(adjusted_coa.get("terpene_names", []))
+            saved_values = list(adjusted_coa.get("terpene_values", []))
+            saved_by_name = {
+                str(name): value for name, value in zip(saved_names, saved_values)
+            }
+            self.qa_adjusted_total_terpenes = f"{float(adjusted_coa['total_terpenes']):.3f}"
+            self.qa_adjusted_total_cbg = f"{float(adjusted_coa['total_cbg']):.2f}"
+            self.qa_adjusted_terpene_values = [
+                f"{float(saved_by_name[name]):.3f}" if name in saved_by_name else ""
+                for name in self.qa_adjusted_terpene_names
+            ]
+        else:
+            self.qa_adjusted_total_terpenes = ""
+            self.qa_adjusted_total_cbg = ""
+            self.qa_adjusted_terpene_values = ["", "", ""]
+
+    @rx.event
+    def change_qa_adjusted_total_terpenes(self, value: str):
+        self.qa_adjusted_total_terpenes = value
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+
+    @rx.event
+    def change_qa_adjusted_total_cbg(self, value: str):
+        self.qa_adjusted_total_cbg = value
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+
+    @rx.event
+    def change_qa_adjusted_terpene_1(self, value: str):
+        self.qa_adjusted_terpene_values[0] = value
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+
+    @rx.event
+    def change_qa_adjusted_terpene_2(self, value: str):
+        self.qa_adjusted_terpene_values[1] = value
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+
+    @rx.event
+    def change_qa_adjusted_terpene_3(self, value: str):
+        self.qa_adjusted_terpene_values[2] = value
+        self.qa_adjusted_coa_message = ""
+        self.qa_adjusted_coa_error = ""
+
+    def _adjusted_coa_payload(
+        self,
+    ) -> tuple[dict[str, Any], list[str], list[str]]:
+        total = self._adjusted_number(self.qa_adjusted_total_terpenes)
+        total_cbg = self._adjusted_number(self.qa_adjusted_total_cbg)
+        terpene_values = [
+            self._adjusted_number(value) for value in self.qa_adjusted_terpene_values
+        ]
+        errors: list[str] = []
+        if total is None:
+            errors.append("Enter Total Terpenes as a percentage.")
+        if total_cbg is None:
+            errors.append("Enter Total CBG exactly as shown on the COA.")
+        if any(value is None for value in terpene_values):
+            errors.append("Enter all three individual terpene percentages.")
+        numbers = [float(value) for value in terpene_values if value is not None]
+        if any(value < 0 for value in [total, total_cbg, *numbers] if value is not None):
+            errors.append("Adjusted COA percentages cannot be negative.")
+        if total is not None and total > 20:
+            errors.append("Total Terpenes is outside the supported percentage range.")
+        if total_cbg is not None and total_cbg > 20:
+            errors.append("Total CBG is outside the supported percentage range.")
+        if any(value > 20 for value in numbers):
+            errors.append("An individual terpene is outside the supported percentage range.")
+        if total is not None and len(numbers) == 3 and sum(numbers) > total + 0.0005:
+            errors.append("The three terpene values cannot exceed Total Terpenes.")
+
+        suspects: list[str] = []
+        metrc_total = self._adjusted_number(self.qa_adjusted_metrc_total_terpenes)
+        if total is not None and metrc_total is not None and abs(total - metrc_total) > 0.011:
+            suspects.append("Total Terpenes differs from Metrc by more than 0.01%.")
+        metrc_cbg = self._adjusted_number(self.qa_adjusted_metrc_total_cbg)
+        if total_cbg is not None and metrc_cbg is not None and abs(total_cbg - metrc_cbg) > 0.021:
+            suspects.append("Total CBG differs from the Metrc-derived value by more than 0.02%.")
+        for index, (name, value, metrc_text) in enumerate(zip(
+            self.qa_adjusted_terpene_names,
+            terpene_values,
+            self.qa_adjusted_metrc_terpene_values,
+        ), start=1):
+            metrc_value = self._adjusted_number(metrc_text)
+            if value is not None and metrc_value is not None and abs(value - metrc_value) > 0.011:
+                suspects.append(
+                    f"{name or f'Terpene {index}'} differs from Metrc by more than 0.01%."
+                )
+        payload = {
+            "total_terpenes": total,
+            "total_cbg": total_cbg,
+            "terpene_names": list(self.qa_adjusted_terpene_names),
+            "terpene_values": numbers,
+        }
+        return payload, errors, suspects
+
+    @rx.event
+    async def save_qa_adjusted_coa(self):
+        payload, errors, suspects = self._adjusted_coa_payload()
+        if errors:
+            self.qa_adjusted_coa_error = " ".join(errors)
+            self.qa_adjusted_coa_message = ""
+            return
+        if not self._require_active_session():
+            self.qa_adjusted_coa_error = "Your session expired. Sign in again to save this COA."
+            return
+        self.qa_adjusted_coa_saving = True
+        self.qa_adjusted_coa_error = ""
+        self.qa_adjusted_coa_message = ""
+        try:
+            package = self.qa_selected_package
+            saved = await rx.run_in_thread(
+                lambda: save_adjusted_coa(
+                    str(package.get("package_tag", "")),
+                    str(package.get("packaged_license", "")),
+                    str(package.get("test_date", "")),
+                    float(payload["total_terpenes"]),
+                    float(payload["total_cbg"]),
+                    list(payload["terpene_names"]),
+                    list(payload["terpene_values"]),
+                    suspects,
+                    self.auth_email or self.auth_name,
+                )
+            )
+            self.qa_adjusted_coa = saved
+            self.qa_adjusted_coa_message = (
+                "Adjusted COA saved. The Zebra preview and future labels now use these verified values."
+            )
+            self.qa_zebra_message = "Adjusted COA — verified values applied."
+        except Exception as error:
+            self.qa_adjusted_coa_error = f"The Adjusted COA could not be saved: {error}"
+        finally:
+            self.qa_adjusted_coa_saving = False
 
     @rx.event
     def select_native_template(self, value: str):
@@ -1924,6 +2166,77 @@ class DashboardState(rx.State):
     def qa_filtered_analyte_count(self) -> int:
         return len(self.qa_selected_analyte_rows)
 
+    @rx.var(cache=True)
+    def qa_adjusted_coa_status(self) -> str:
+        return (
+            "Adjusted COA — verified"
+            if self.qa_adjusted_coa
+            else "Metrc data — estimated"
+        )
+
+    @rx.var(cache=True)
+    def qa_adjusted_other_preview(self) -> str:
+        total = self._adjusted_number(self.qa_adjusted_total_terpenes)
+        values = [
+            self._adjusted_number(value) for value in self.qa_adjusted_terpene_values
+        ]
+        if total is None or any(value is None for value in values):
+            return "Enter all four terpene values"
+        precise = [float(value) for value in values if value is not None]
+        if sum(precise) > total + 0.0005:
+            return "Top-three values exceed Total Terpenes"
+        other = adjusted_other_terpenes(total, precise)
+        return "" if other is None else f"{other:.2f}%"
+
+    @rx.var(cache=True)
+    def qa_adjusted_coa_review_rows(self) -> list[dict[str, Any]]:
+        entries = [
+            (
+                "Total Terpenes",
+                self.qa_adjusted_metrc_total_terpenes,
+                self.qa_adjusted_total_terpenes,
+                0.011,
+            ),
+            *[
+                (
+                    self.qa_adjusted_terpene_names[index] or f"Terpene {index + 1}",
+                    self.qa_adjusted_metrc_terpene_values[index],
+                    self.qa_adjusted_terpene_values[index],
+                    0.011,
+                )
+                for index in range(3)
+            ],
+            (
+                "Total CBG",
+                self.qa_adjusted_metrc_total_cbg,
+                self.qa_adjusted_total_cbg,
+                0.021,
+            ),
+        ]
+        rows: list[dict[str, Any]] = []
+        for label, metrc_text, entered_text, tolerance in entries:
+            entered = self._adjusted_number(entered_text)
+            metrc = self._adjusted_number(metrc_text)
+            if entered is None:
+                status, color = "Required", "gray"
+            elif metrc is not None and abs(entered - metrc) > tolerance:
+                status, color = "Suspect", "orange"
+            else:
+                status, color = "Matches Metrc range", "teal"
+            rows.append({
+                "Field": label,
+                "Metrc": "—" if metrc is None else f"{metrc:.3f}%",
+                "Entered": "—" if entered is None else f"{entered:.3f}%",
+                "Status": status,
+                "Color": color,
+            })
+        return rows
+
+    @rx.var(cache=True)
+    def qa_adjusted_coa_has_suspect_values(self) -> bool:
+        _payload, _errors, suspects = self._adjusted_coa_payload()
+        return bool(suspects)
+
     def _qa_zebra_context(self) -> tuple[dict[str, Any], list[str]]:
         return prepare_label_context(
             self.qa_selected_package,
@@ -1933,6 +2246,7 @@ class DashboardState(rx.State):
             harvest_date=self.qa_zebra_harvest_date,
             lot_number=self.qa_zebra_lot_number,
             quantity=self.qa_zebra_quantity,
+            adjusted_coa=self.qa_adjusted_coa,
         )
 
     @rx.var(cache=True)
@@ -1953,6 +2267,19 @@ class DashboardState(rx.State):
             ["Harvest Date", str(context.get("harvest_date", ""))],
             ["Expiration Date", str(context.get("expiration_date", ""))],
             ["Lot", str(context.get("lot_number", ""))],
+            ["COA Values", self.qa_adjusted_coa_status],
+            ["Total Terpenes", (
+                "" if context.get("analytes", {}).get("total_terpenes") is None
+                else f"{context['analytes']['total_terpenes']:.2f}%"
+            )],
+            ["Total CBG", (
+                "" if context.get("analytes", {}).get("total_cbg") is None
+                else f"{context['analytes']['total_cbg']:.2f}%"
+            )],
+            ["Other Terpenes", (
+                "" if context.get("analytes", {}).get("other_terpenes") is None
+                else f"{context['analytes']['other_terpenes']:.2f}%"
+            )],
             ["Printer", self.qa_zebra_printer],
             ["Quantity", str(context.get("quantity", 1))],
         ]
@@ -2486,6 +2813,7 @@ class DashboardState(rx.State):
         )
         self.retailer_locations = payload.get("retailer_locations", [])
         self.exceptions = payload.get("exceptions", [])
+        self.exception_packages = payload.get("exception_packages", [])
         self._transfer_data = payload.get("transfer_data", [])
         self.transfer_import_log = payload.get("transfer_import_log", [])
         self.cpg_inventory = payload.get("cpg_inventory", [])
@@ -2734,6 +3062,7 @@ class DashboardState(rx.State):
         self.calendar = payload["calendar"]
         self.customers = payload.get("customers", [])
         self.exceptions = payload.get("exceptions", [])
+        self.exception_packages = payload.get("exception_packages", [])
         self._transfer_data = payload.get("transfer_data", [])
         self.transfer_import_log = payload.get("transfer_import_log", [])
         self.cpg_inventory = payload.get("cpg_inventory", [])
@@ -2761,6 +3090,7 @@ class DashboardState(rx.State):
             self.customers = []
             self.retail_delivery_history = []
             self.exceptions = []
+            self.exception_packages = []
             self._transfer_data = []
             self.transfer_import_log = []
             self.velocity_windows = {}
@@ -2771,23 +3101,29 @@ class DashboardState(rx.State):
         self.business_pulse = payload.get("business_pulse", [])
         self.velocity = payload.get("velocity", [])
 
-        if self.workspace_view != "sales_demand":
+        optional_view = self.sales_demand_view
+        if (
+            self.workspace_view == "qa"
+            and self.qa_view in {"customers", "retail", "transfers", "exceptions"}
+        ):
+            optional_view = self.qa_view
+        elif self.workspace_view != "sales_demand":
             return
-        if self.sales_demand_view in self.sales_loaded_views:
+        if optional_view in self.sales_loaded_views:
             return
-        if self.sales_demand_view == "overview":
+        if optional_view == "overview":
             self.monthly = payload.get("monthly", [])
             self.top_skus = payload.get("top_skus", [])
-        elif self.sales_demand_view == "stockouts":
+        elif optional_view == "stockouts":
             self.stockouts = payload.get("stockouts", [])
-        elif self.sales_demand_view in {"planning", "production"}:
+        elif optional_view in {"planning", "production"}:
             self.velocity_windows = payload.get(
                 "velocity_windows", {"All Time": self.velocity}
             )
             self.velocity = self.velocity_windows.get(
                 self.sku_velocity_period, payload.get("velocity", [])
             )
-            if self.sales_demand_view == "production":
+            if optional_view == "production":
                 self.saved_plans = payload.get("saved_plans", [])
                 self.saved_plan_cards = payload.get("saved_plan_cards", [])
                 self.production_templates = payload.get(
@@ -2795,21 +3131,22 @@ class DashboardState(rx.State):
                 )
                 self.calendar = payload.get("calendar", [])
                 self.production_module_loaded = True
-        elif self.sales_demand_view == "customers":
+        elif optional_view == "customers":
             self.customers = payload.get("customers", [])
-        elif self.sales_demand_view == "retail":
+        elif optional_view == "retail":
             self.retail_delivery_history = payload.get(
                 "retail_delivery_history", []
             )
             self.retailer_locations = payload.get("retailer_locations", [])
-        elif self.sales_demand_view == "exceptions":
+        elif optional_view == "exceptions":
             self.exceptions = payload.get("exceptions", [])
-        elif self.sales_demand_view == "transfers":
+            self.exception_packages = payload.get("exception_packages", [])
+        elif optional_view == "transfers":
             self._transfer_data = payload.get("transfer_data", [])
             self.transfer_import_log = payload.get("transfer_import_log", [])
 
         self.sales_loaded_views = [
-            *self.sales_loaded_views, self.sales_demand_view
+            *self.sales_loaded_views, optional_view
         ]
 
         available_plan_ids = {
@@ -4387,11 +4724,25 @@ class DashboardState(rx.State):
         yield DashboardState.load_sales_background
 
     @rx.event
+    def change_shipment_exception_view(self, value: str):
+        self.shipment_exception_view = value
+
+    @rx.event
+    def change_shipment_exception_summary_view(self, value: bool):
+        self.shipment_exception_show_manifest_summary = value
+
+    @rx.event
     def change_workspace_view(self, value: str):
         self.workspace_view = value
         if value == "qa":
             if not self.qa_loaded and not self.qa_loading:
                 yield DashboardState.load_qa_background(False)
+            if (
+                self.qa_view in {"customers", "retail", "transfers", "exceptions"}
+                and self.qa_view not in self.sales_loaded_views
+            ):
+                self.sales_demand_view = self.qa_view
+                yield DashboardState.load_sales_background
             return
         if value != "sales_demand":
             return
@@ -4873,7 +5224,70 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def filtered_exceptions(self) -> list[dict[str, Any]]:
-        return [row for row in self.exceptions if self._matches(row)]
+        package_keys = {
+            (str(row.get("Manifest", "")), str(row.get("State", "")))
+            for row in self.filtered_exception_packages
+        }
+        return [
+            row for row in self.exceptions
+            if (str(row.get("Manifest", "")), str(row.get("State", "")))
+            in package_keys
+        ]
+
+    @rx.var(cache=True)
+    def selected_exception_state(self) -> str:
+        return {
+            "Open Transfers": "Shipped",
+            "Rejected Transfers": "Rejected",
+            "Returned Transfers": "Returned",
+        }.get(self.shipment_exception_view, "Shipped")
+
+    @rx.var(cache=True)
+    def filtered_exception_packages(self) -> list[dict[str, Any]]:
+        return [
+            row for row in self.exception_packages
+            if str(row.get("State", "")) == self.selected_exception_state
+            and self._matches(row)
+        ]
+
+    @rx.var(cache=True)
+    def selected_exception_manifests_metric(self) -> str:
+        manifests = {
+            str(row.get("Manifest", ""))
+            for row in self.filtered_exception_packages
+            if str(row.get("Manifest", ""))
+        }
+        return f"{len(manifests):,}"
+
+    @rx.var(cache=True)
+    def selected_exception_packages_metric(self) -> str:
+        return f"{len(self.filtered_exception_packages):,}"
+
+    @rx.var(cache=True)
+    def selected_exception_value_metric(self) -> str:
+        value = sum(
+            float(row.get("Shipper Value", 0) or 0)
+            for row in self.filtered_exception_packages
+        )
+        return f"${value:,.2f}"
+
+    @rx.var(cache=True)
+    def shipment_exception_description(self) -> str:
+        if self.shipment_exception_view == "Rejected Transfers":
+            return (
+                "Rejected package lines are shown separately from returned "
+                "product. A manifest may also contain packages that were accepted."
+            )
+        if self.shipment_exception_view == "Returned Transfers":
+            return (
+                "Returned package lines are shown separately from outright "
+                "rejections. Review package detail before treating the full manifest "
+                "as a return."
+            )
+        return (
+            "Open transfers are still marked Shipped in Metrc and have not yet "
+            "been accepted, rejected, or returned."
+        )
 
     @rx.var(cache=True)
     def filtered_transfer_data(self) -> list[dict[str, Any]]:
@@ -6024,6 +6438,18 @@ class DashboardState(rx.State):
         ]
 
     @rx.var(cache=True)
+    def exception_package_rows(self) -> list[list[Any]]:
+        columns = [
+            "Manifest", "State", "Destination License", "Customer",
+            "Package Tag", "Metrc Item", "Brand", "Strain", "SKU Type",
+            "Shipped Units", "Shipper Value", "Created", "Received",
+        ]
+        return [
+            [row.get(column, "") for column in columns]
+            for row in self.filtered_exception_packages
+        ]
+
+    @rx.var(cache=True)
     def transfer_rows(self) -> list[list[Any]]:
         columns = [
             "Manifest", "Invoice Number", "Created", "Received", "State",
@@ -6133,6 +6559,16 @@ class DashboardState(rx.State):
         return rx.download(
             data=self._csv_bytes(self.filtered_exceptions),
             filename=f"qcc_reflex_shipment_exceptions_{date.today().isoformat()}.csv",
+        )
+
+    @rx.event
+    def download_exception_packages(self):
+        return rx.download(
+            data=self._csv_bytes(self.filtered_exception_packages),
+            filename=(
+                "qcc_reflex_shipment_exception_packages_"
+                f"{date.today().isoformat()}.csv"
+            ),
         )
 
     @rx.event
@@ -8520,27 +8956,88 @@ def retail_availability_panel() -> rx.Component:
 
 def exceptions_panel() -> rx.Component:
     return rx.vstack(
+        rx.flex(
+            rx.box(
+                rx.text("Exception view", size="1", color=MUTED, weight="bold"),
+                rx.select(
+                    DashboardState.shipment_exception_view_options,
+                    value=DashboardState.shipment_exception_view,
+                    on_change=DashboardState.change_shipment_exception_view,
+                    width="230px",
+                ),
+            ),
+            rx.spacer(),
+            rx.hstack(
+                rx.switch(
+                    checked=DashboardState.shipment_exception_show_manifest_summary,
+                    on_change=DashboardState.change_shipment_exception_summary_view,
+                ),
+                rx.text("Manifest summary", weight="bold"),
+            ),
+            rx.cond(
+                DashboardState.shipment_exception_show_manifest_summary,
+                rx.button(
+                    "Download Selected Manifest Summary",
+                    on_click=DashboardState.download_exceptions,
+                    variant="outline",
+                ),
+                rx.button(
+                    "Download Selected Package Detail",
+                    on_click=DashboardState.download_exception_packages,
+                    variant="outline",
+                ),
+            ),
+            align="end", gap="3", wrap="wrap", width="100%",
+        ),
+        rx.callout(
+            DashboardState.shipment_exception_description,
+            icon="info", color_scheme="blue", width="100%",
+        ),
         rx.grid(
-            metric_card("Open Manifests", DashboardState.open_manifests_metric, "Shipped, not accepted"),
-            metric_card("Rejected / Returned", DashboardState.exception_manifests_metric, "Exception manifests"),
-            metric_card("Exception Rows", DashboardState.exception_rows_metric, "Package rows"),
+            metric_card("Selected Manifests", DashboardState.selected_exception_manifests_metric, DashboardState.shipment_exception_view),
+            metric_card("Selected Package Rows", DashboardState.selected_exception_packages_metric, "Package-level outcomes"),
+            metric_card("Selected Shipper Value", DashboardState.selected_exception_value_metric, "Value recorded in Metrc"),
             columns=rx.breakpoints(initial="1", sm="3"),
             gap="4",
             width="100%",
         ),
-        rx.hstack(
-            rx.heading("Open, Rejected, and Returned Transfers", size="4"),
-            rx.spacer(),
-            rx.button("Download Exceptions CSV", on_click=DashboardState.download_exceptions, variant="outline"),
-            width="100%",
-        ),
-        data_grid(
-            DashboardState.exception_rows,
-            [
-                "Manifest", "State", "Destination License", "Customer",
-                "Created", "Received", "Packages", "Items", "Shipper Value",
-            ],
-            "560px",
+        rx.cond(
+            DashboardState.shipment_exception_show_manifest_summary,
+            rx.vstack(
+                rx.heading(
+                    DashboardState.shipment_exception_view + " — Manifest Summary",
+                    size="4",
+                ),
+                data_grid(
+                    DashboardState.exception_rows,
+                    [
+                        "Manifest", "State", "Destination License", "Customer",
+                        "Created", "Received", "Packages", "Items", "Shipper Value",
+                    ],
+                    "560px",
+                    class_name="qcc-exception-data-grid",
+                ),
+                width="100%",
+                spacing="3",
+            ),
+            rx.vstack(
+                rx.heading(
+                    DashboardState.shipment_exception_view + " — Package Detail",
+                    size="4",
+                ),
+                data_grid(
+                    DashboardState.exception_package_rows,
+                    [
+                        "Manifest", "State", "Destination License", "Customer",
+                        "Package\nTag", "Metrc\nItem", "Brand", "Strain", "SKU\nType",
+                        "Shipped\nUnits", "Shipper\nValue", "Created", "Received",
+                    ],
+                    "620px",
+                    class_name="qcc-exception-data-grid",
+                ),
+                width="100%",
+                spacing="3",
+            ),
         ),
         width="100%",
         spacing="4",
@@ -8569,6 +9066,7 @@ def transfer_data_panel() -> rx.Component:
                 "Updated Rows", "Created Min", "Created Max", "Imported At",
             ],
             "280px",
+            class_name="qcc-transfer-data-grid",
         ),
         rx.heading("Recent Transfer Records", size="3"),
         rx.flex(
@@ -8603,7 +9101,7 @@ def transfer_data_panel() -> rx.Component:
                 "Shipped\nUnits", "Shipper\nValue", "Demand\nRecord",
             ],
             "640px",
-            class_name="qcc-14px-data-grid",
+            class_name="qcc-transfer-data-grid",
         ),
         width="100%",
         spacing="4",
@@ -9049,7 +9547,7 @@ def sales_demand_workspace() -> rx.Component:
         rx.box(
             rx.heading("Sales & Demand Planning", size="6"),
             rx.text(
-                "Historical demand, stockouts, SKU coverage, production plans, customers, and transfers.",
+                "Historical demand, stockouts, SKU coverage, and production plans.",
                 color=MUTED,
             ),
             width="100%",
@@ -9060,10 +9558,6 @@ def sales_demand_workspace() -> rx.Component:
                 rx.tabs.trigger("Stockouts", value="stockouts"),
                 rx.tabs.trigger("SKU Planning & Coverage", value="planning"),
                 rx.tabs.trigger("Production Planning", value="production"),
-                rx.tabs.trigger("Customers", value="customers"),
-                rx.tabs.trigger("Retail Availability", value="retail"),
-                rx.tabs.trigger("Transfer Data", value="transfers"),
-                rx.tabs.trigger("Shipment Exceptions", value="exceptions"),
                 class_name="qcc-tabs",
                 width="100%",
             ),
@@ -9078,10 +9572,6 @@ def sales_demand_workspace() -> rx.Component:
                 ("stockouts", stockouts_panel()),
                 ("planning", sku_planning_panel()),
                 ("production", production_planning_panel()),
-                ("customers", customers_panel()),
-                ("retail", retail_availability_panel()),
-                ("transfers", transfer_data_panel()),
-                ("exceptions", exceptions_panel()),
                 overview_panel(),
             ),
             width="100%", padding_top="1.25rem",
@@ -9396,6 +9886,215 @@ def qa_analyte_category_badge(row: rx.Var) -> rx.Component:
     )
 
 
+def qa_adjusted_coa_review_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["Field"]),
+        rx.table.cell(row["Metrc"]),
+        rx.table.cell(row["Entered"]),
+        rx.table.cell(
+            rx.badge(row["Status"], color_scheme=row["Color"], variant="soft")
+        ),
+    )
+
+
+def qa_adjusted_terpene_input(
+    index: int, on_change: Any,
+) -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.flex(
+                rx.text(
+                    DashboardState.qa_adjusted_terpene_names[index],
+                    weight="bold",
+                    color=DARK,
+                ),
+                rx.spacer(),
+                rx.badge(
+                    "Metrc " + DashboardState.qa_adjusted_metrc_terpene_values[index] + "%",
+                    color_scheme="gray",
+                    variant="soft",
+                ),
+                width="100%",
+                align="center",
+            ),
+            rx.input(
+                type="number",
+                min="0",
+                max="20",
+                step="0.001",
+                value=DashboardState.qa_adjusted_terpene_values[index],
+                on_change=on_change,
+                placeholder="Enter the three-decimal COA percentage",
+                width="100%",
+            ),
+            width="100%",
+            spacing="2",
+        ),
+        width="100%",
+    )
+
+
+def qa_adjusted_coa_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Adjusted COA Values"),
+            rx.dialog.description(
+                "Enter the higher-precision values printed on the laboratory COA. "
+                "The app compares them with Metrc before saving them to this lab sample."
+            ),
+            rx.callout(
+                "Enter percentages as displayed—for example, 1.567 rather than 0.01567.",
+                icon="info",
+                color_scheme="blue",
+                width="100%",
+            ),
+            rx.grid(
+                rx.box(
+                    rx.flex(
+                        rx.text("Total Terpenes %", weight="bold"),
+                        rx.spacer(),
+                        rx.badge(
+                            "Metrc " + DashboardState.qa_adjusted_metrc_total_terpenes + "%",
+                            color_scheme="gray",
+                            variant="soft",
+                        ),
+                        width="100%",
+                    ),
+                    rx.input(
+                        type="number", min="0", max="20", step="0.001",
+                        value=DashboardState.qa_adjusted_total_terpenes,
+                        on_change=DashboardState.change_qa_adjusted_total_terpenes,
+                        placeholder="Example: 1.567",
+                        width="100%",
+                        margin_top="0.4rem",
+                    ),
+                ),
+                rx.box(
+                    rx.flex(
+                        rx.text("Total CBG %", weight="bold"),
+                        rx.spacer(),
+                        rx.badge(
+                            "Metrc-derived " + DashboardState.qa_adjusted_metrc_total_cbg + "%",
+                            color_scheme="gray",
+                            variant="soft",
+                        ),
+                        width="100%",
+                    ),
+                    rx.input(
+                        type="number", min="0", max="20", step="0.01",
+                        value=DashboardState.qa_adjusted_total_cbg,
+                        on_change=DashboardState.change_qa_adjusted_total_cbg,
+                        placeholder="Enter exactly as printed",
+                        width="100%",
+                        margin_top="0.4rem",
+                    ),
+                ),
+                columns=rx.breakpoints(initial="1", md="2"),
+                gap="3",
+                width="100%",
+            ),
+            rx.heading("Top three terpenes", size="3"),
+            rx.grid(
+                qa_adjusted_terpene_input(0, DashboardState.change_qa_adjusted_terpene_1),
+                qa_adjusted_terpene_input(1, DashboardState.change_qa_adjusted_terpene_2),
+                qa_adjusted_terpene_input(2, DashboardState.change_qa_adjusted_terpene_3),
+                columns=rx.breakpoints(initial="1", md="3"),
+                gap="3",
+                width="100%",
+            ),
+            rx.card(
+                rx.flex(
+                    rx.box(
+                        rx.text("Calculated Other", size="1", color=MUTED, weight="bold"),
+                        rx.text(
+                            DashboardState.qa_adjusted_other_preview,
+                            size="5",
+                            weight="bold",
+                            color=DARK,
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.text(
+                        "Total and each top terpene are chopped to two decimals first; the three chopped values are then subtracted from the chopped total.",
+                        size="1",
+                        color=MUTED,
+                        max_width="390px",
+                    ),
+                    width="100%",
+                    align="center",
+                    gap="3",
+                    wrap="wrap",
+                ),
+                width="100%",
+                border_top="4px solid #8b5cf6",
+            ),
+            rx.table.root(
+                rx.table.header(
+                    rx.table.row(*[
+                        rx.table.column_header_cell(column)
+                        for column in ["Field", "Metrc", "Entered COA", "Check"]
+                    ])
+                ),
+                rx.table.body(
+                    rx.foreach(
+                        DashboardState.qa_adjusted_coa_review_rows,
+                        qa_adjusted_coa_review_row,
+                    )
+                ),
+                size="1",
+                variant="surface",
+                width="100%",
+            ),
+            rx.cond(
+                DashboardState.qa_adjusted_coa_has_suspect_values,
+                rx.callout(
+                    "One or more entries differ materially from Metrc. Recheck the lab report before saving.",
+                    icon="triangle-alert",
+                    color_scheme="orange",
+                    width="100%",
+                ),
+            ),
+            rx.cond(
+                DashboardState.qa_adjusted_coa_message != "",
+                rx.callout(
+                    DashboardState.qa_adjusted_coa_message,
+                    icon="circle-check",
+                    color_scheme="teal",
+                    width="100%",
+                ),
+            ),
+            rx.cond(
+                DashboardState.qa_adjusted_coa_error != "",
+                rx.callout(
+                    DashboardState.qa_adjusted_coa_error,
+                    icon="triangle-alert",
+                    color_scheme="red",
+                    width="100%",
+                ),
+            ),
+            rx.flex(
+                rx.button(
+                    "Save Adjusted COA",
+                    on_click=DashboardState.save_qa_adjusted_coa,
+                    loading=DashboardState.qa_adjusted_coa_saving,
+                    background=ACCENT,
+                    color="white",
+                ),
+                rx.dialog.close(rx.button("Close", variant="outline")),
+                justify="end",
+                gap="3",
+                width="100%",
+            ),
+            max_width="980px",
+            width="calc(100vw - 32px)",
+            max_height="calc(100vh - 32px)",
+            overflow_y="auto",
+        ),
+        open=DashboardState.qa_adjusted_coa_open,
+        on_open_change=DashboardState.change_qa_adjusted_coa_open,
+    )
+
+
 def qa_zebra_label_card() -> rx.Component:
     return rx.card(
         rx.vstack(
@@ -9477,6 +10176,35 @@ def qa_zebra_label_card() -> rx.Component:
                 rx.foreach(DashboardState.qa_zebra_preview, qa_compliance_summary_item),
                 columns=rx.breakpoints(initial="1", sm="2", lg="3"),
                 gap="2", width="100%",
+            ),
+            rx.flex(
+                rx.cond(
+                    DashboardState.qa_adjusted_coa.length() > 0,
+                    rx.badge(
+                        DashboardState.qa_adjusted_coa_status,
+                        color_scheme="teal",
+                        size="3",
+                    ),
+                    rx.badge(
+                        DashboardState.qa_adjusted_coa_status,
+                        color_scheme="orange",
+                        size="3",
+                    ),
+                ),
+                rx.button(
+                    "Enter / Edit Adjusted COA",
+                    on_click=DashboardState.open_qa_adjusted_coa,
+                    variant="outline",
+                ),
+                rx.text(
+                    "Use the laboratory report to verify high-precision terpene and Total CBG values.",
+                    size="1",
+                    color=MUTED,
+                ),
+                align="center",
+                gap="3",
+                wrap="wrap",
+                width="100%",
             ),
             rx.cond(
                 DashboardState.qa_zebra_ready,
@@ -9571,6 +10299,7 @@ def qa_compliance_summary_dialog() -> rx.Component:
 def qa_label_panel() -> rx.Component:
     return rx.vstack(
         qa_compliance_summary_dialog(),
+        qa_adjusted_coa_dialog(),
         rx.heading("Compliance Label Search and Printing", size="5", color=DARK),
         rx.text(
             "Search a package tag or harvest, verify its compliance result, and download the approved printable summary.",
@@ -9846,9 +10575,9 @@ def qa_panel() -> rx.Component:
     return rx.vstack(
         rx.flex(
             rx.box(
-                rx.heading("Quality Assurance", size="6", color=DARK),
+                rx.heading("Distribution Operations", size="6", color=DARK),
                 rx.text(
-                    "Shared cultivation and manufacturing compliance performance, potency consistency, and label printing.",
+                    "Lab data, compliance label printing, customer activity, retail availability, and transfer operations.",
                     color=MUTED,
                 ),
             ),
@@ -9858,7 +10587,7 @@ def qa_panel() -> rx.Component:
                 color_scheme="teal", size="3",
             ),
             rx.button(
-                "Reconnect & Reload QA", on_click=DashboardState.refresh_qa,
+                "Reconnect & Reload Lab Data", on_click=DashboardState.refresh_qa,
                 variant="outline", loading=DashboardState.qa_loading,
             ),
             align="center", gap="3", wrap="wrap", width="100%",
@@ -9879,16 +10608,20 @@ def qa_panel() -> rx.Component:
         ),
         qa_import_panel(),
         rx.text(
-            "The global Brand and Strain filters above apply to both operational QA views.",
+            "The global Brand and Strain filters above apply to lab and distribution views where relevant.",
             size="1", color=MUTED,
         ),
         rx.tabs.root(
             rx.tabs.list(
-                rx.tabs.trigger("Cultivation", value="cultivation"),
-                rx.tabs.trigger("Manufacturing", value="manufacturing"),
+                rx.tabs.trigger("Cultivation Lab Data", value="cultivation"),
+                rx.tabs.trigger("Manufacturing Lab Data", value="manufacturing"),
                 rx.tabs.trigger(
                     "Compliance Label Search & Printing", value="labels"
                 ),
+                rx.tabs.trigger("Customers", value="customers"),
+                rx.tabs.trigger("Retail Availability", value="retail"),
+                rx.tabs.trigger("Shipment Exceptions", value="exceptions"),
+                rx.tabs.trigger("Transfer Data", value="transfers"),
                 class_name="qcc-tabs",
                 width="100%",
             ),
@@ -9928,6 +10661,10 @@ def qa_panel() -> rx.Component:
                     DashboardState.qa_manufacturing_detail,
                 )),
                 ("labels", qa_label_panel()),
+                ("customers", customers_panel()),
+                ("retail", retail_availability_panel()),
+                ("exceptions", exceptions_panel()),
+                ("transfers", transfer_data_panel()),
                 qa_operation_panel(
                     "Cultivation",
                     DashboardState.qa_cultivation_test_type,
@@ -10316,7 +11053,7 @@ def protected_dashboard() -> rx.Component:
                     rx.tabs.trigger("Executive Dashboard", value="executive"),
                     rx.tabs.trigger("Sales & Demand Planning", value="sales_demand"),
                     rx.tabs.trigger("Inventory", value="inventory"),
-                    rx.tabs.trigger("Quality Assurance", value="qa"),
+                    rx.tabs.trigger("Distribution Operations", value="qa"),
                     rx.cond(
                         DashboardState.is_administrator,
                         rx.tabs.trigger("Administration", value="administration"),

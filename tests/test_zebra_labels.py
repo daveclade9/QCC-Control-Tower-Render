@@ -484,6 +484,30 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertIn("^PR4,4", zpl)
         self.assertIn("~SD15", zpl)
 
+    def test_adjusted_coa_chops_entries_before_calculating_other(self):
+        adjusted_coa = {
+            "total_terpenes": 2.889,
+            "total_cbg": 2.02,
+            "terpene_names": ["Limonene", "Linalool", "Alpha-Pinene"],
+            "terpene_values": [1.107, 0.497, 0.463],
+        }
+        context, errors = prepare_label_context(
+            self.package(), DIAMOND_ANALYTES, "3.5g Flower",
+            adjusted_coa=adjusted_coa,
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(context["analytes"]["total_terpenes"], 2.88)
+        self.assertEqual(context["analytes"]["total_cbg"], 2.02)
+        self.assertEqual(
+            context["analytes"]["top_terpenes"],
+            [("Limonene", 1.10), ("Linalool", 0.49), ("Alpha-Pinene", 0.46)],
+        )
+        self.assertEqual(context["analytes"]["other_terpenes"], 0.83)
+        zpl = build_zpl(context, errors)
+        self.assertIn("Total Terpenes: 2.88%", zpl)
+        self.assertIn("Total CBG: 2.02%", zpl)
+        self.assertIn("Other: 0.83%", zpl)
+
     def test_lab_sample_tag_cannot_be_used_as_printed_uid(self):
         context, errors = prepare_label_context(
             self.package(source_package_labels=""),
