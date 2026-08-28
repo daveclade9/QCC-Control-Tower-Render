@@ -581,6 +581,86 @@ def prior_clone_planning_periods(
     return periods
 
 
+def cultivation_crop_harvest_dates() -> dict[str, str]:
+    """Return the crop-report/calendar harvest schedule used by plant views.
+
+    Crop-report dates take precedence where detailed reports have already been
+    bundled.  The established two-week cultivation-calendar cadence fills the
+    nearby historical and future crops so active Metrc plants can be assigned a
+    harvest date without relying on Metrc's Hold field.
+    """
+    schedule = {
+        str(row.get("crop", "")): str(row.get("harvest_date", ""))
+        for row in [
+            *prior_clone_planning_periods(20),
+            *clone_planning_periods(20),
+        ]
+        if row.get("crop") and row.get("harvest_date")
+    }
+    for row in UPCOMING_CROP_ALLOCATIONS:
+        crop = str(row.get("crop", ""))
+        harvest_date = str(row.get("harvest_date", ""))
+        if crop and harvest_date:
+            schedule[crop] = harvest_date
+    return schedule
+
+
+def active_plant_harvest_date(row: dict[str, Any]) -> str:
+    """Find an active plant's harvest date from its crop or flower room.
+
+    Exact crop codes embedded in the plant batch/location win.  When Metrc does
+    not carry a crop code, a flowering plant is matched to the room calendar by
+    choosing the scheduled harvest closest to its phase-date + standard flower
+    time.  Vegetative and propagation records without an assigned crop remain
+    explicitly unscheduled.
+    """
+    schedule = cultivation_crop_harvest_dates()
+    descriptors = " ".join(
+        str(row.get(field, "") or "")
+        for field in ("plant_batch", "location", "sublocation")
+    )
+    crop_match = re.search(r"\bF([1-5])[.](\d+)\b", descriptors, re.I)
+    if crop_match:
+        return schedule.get(
+            f"F{crop_match.group(1)}.{crop_match.group(2)}", "Not Scheduled"
+        )
+    if str(row.get("phase", "")).casefold() != "flowering":
+        return "Not Scheduled"
+    # The QCC cultivation calendar covers the Main Cultivation F1-F5 rooms.
+    # 1A has its own room numbering and must not inherit an unrelated F-room
+    # date merely because, for example, its location is named 1A Flower-2.
+    if str(row.get("facility", "")) == "1A Building":
+        return "Not Scheduled"
+    location = str(row.get("location", "") or "")
+    # Main locations such as ``Cultivation 5 - F4`` use the trailing F-number
+    # as the flower-room schedule.  The leading cultivation-area number is not
+    # the room number, so it must never win that match.
+    room_match = re.search(r"(?:^|[-\s])F([1-5])\b", location, re.I)
+    if not room_match:
+        room_match = re.search(r"flower\s*room\s*[-#:]?\s*([1-5])\b", location, re.I)
+    phase_date = str(row.get("phase_date", "") or "")
+    if not room_match or not phase_date:
+        return "Not Scheduled"
+    try:
+        expected = date.fromisoformat(phase_date) + timedelta(days=STANDARD_FLOWER_DAYS)
+    except ValueError:
+        return "Not Scheduled"
+    room_number = int(room_match.group(1))
+    candidates: list[tuple[int, str]] = []
+    for crop, harvest_date in schedule.items():
+        if not crop.startswith(f"F{room_number}."):
+            continue
+        try:
+            scheduled = date.fromisoformat(harvest_date)
+        except ValueError:
+            continue
+        candidates.append((abs((scheduled - expected).days), harvest_date))
+    if not candidates:
+        return "Not Scheduled"
+    distance, harvest_date = min(candidates)
+    return harvest_date if distance <= 21 else "Not Scheduled"
+
+
 def clone_plan_edit_window(
     clone_cut_date: str,
     today: date | None = None,

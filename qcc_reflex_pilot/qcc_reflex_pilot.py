@@ -98,6 +98,7 @@ from .cultivation import (
     HISTORICAL_CLONE_ALLOCATIONS,
     SCHEDULED_SUPPLY_EXPIRY_DAYS,
     UPCOMING_CROP_ALLOCATIONS,
+    active_plant_harvest_date,
     bench_plant_capacity,
     approved_clone_plan_for_crop,
     cultivation_timeline,
@@ -669,7 +670,7 @@ class DashboardState(rx.State):
     cultivation_demand_brand_filter: str = "All Brands"
     cultivation_demand_strain_filter: str = "All Strains"
     cultivation_demand_sku_filter: str = "All Compared SKUs"
-    cultivation_demand_rows_per_page: str = "25"
+    cultivation_demand_rows_per_page: str = "10"
     cultivation_clone_strain_scope: str = "Clade9 Strains"
     cultivation_new_strain_name: str = ""
     cultivation_provisional_strains: list[str] = ["Hood Candy", "Jelly Cake"]
@@ -714,6 +715,7 @@ class DashboardState(rx.State):
     cultivation_plant_location_filter: str = "All Locations"
     cultivation_plant_strain_filter: str = "All Strains"
     cultivation_plant_view: str = "active_plants"
+    cultivation_plant_rows_per_page: str = "10"
     cultivation_flower_room: str = "Flower Room 1"
     cultivation_cycle_name: str = ""
     cultivation_flower_entry_date: str = (
@@ -5119,6 +5121,12 @@ class DashboardState(rx.State):
     def change_cultivation_plant_strain_filter(self, value: str):
         self.cultivation_plant_strain_filter = value
 
+    @rx.event
+    def change_cultivation_plant_rows_per_page(self, value: str):
+        self.cultivation_plant_rows_per_page = (
+            value if value in {"10", "25", "50", "100"} else "10"
+        )
+
     def _cultivation_active_plant_rows(self) -> list[dict[str, Any]]:
         rows = [
             *self._cultivation_plant_snapshot.get("flowering", []),
@@ -5149,6 +5157,42 @@ class DashboardState(rx.State):
             result.append(row)
         return result
 
+    def _cultivation_filtered_plantings(self) -> list[dict[str, Any]]:
+        if self.cultivation_plant_phase_filter != "All Phases":
+            return []
+        result = []
+        for row in self._cultivation_plant_snapshot.get("plantings", []):
+            if self.cultivation_plant_facility_filter != "All Facilities" and row.get("facility") != self.cultivation_plant_facility_filter:
+                continue
+            if self.cultivation_plant_location_filter != "All Locations" and row.get("location") != self.cultivation_plant_location_filter:
+                continue
+            if self.cultivation_plant_strain_filter != "All Strains" and row.get("strain") != self.cultivation_plant_strain_filter:
+                continue
+            result.append(row)
+        return result
+
+    def _cultivation_filtered_harvests(self) -> list[dict[str, Any]]:
+        if self.cultivation_plant_phase_filter != "All Phases":
+            return []
+        result = []
+        for row in self._cultivation_plant_snapshot.get("harvests", []):
+            if self.cultivation_plant_facility_filter != "All Facilities" and row.get("facility") != self.cultivation_plant_facility_filter:
+                continue
+            if self.cultivation_plant_location_filter != "All Locations" and row.get("location") != self.cultivation_plant_location_filter:
+                continue
+            if self.cultivation_plant_strain_filter != "All Strains" and row.get("strain") != self.cultivation_plant_strain_filter:
+                continue
+            result.append(row)
+        return result
+
+    @staticmethod
+    def _is_mother_plant(row: dict[str, Any]) -> bool:
+        descriptor = " ".join(
+            str(row.get(field, "") or "")
+            for field in ("location", "sublocation", "plant_batch")
+        ).casefold()
+        return "mother" in descriptor or re.search(r"\bmom(?:s)?\b", descriptor) is not None
+
     @rx.var(cache=True)
     def cultivation_plant_snapshot_label(self) -> str:
         _ = self.cultivation_plant_snapshot_revision
@@ -5161,7 +5205,7 @@ class DashboardState(rx.State):
         labels = {
             "flowering": "Flowering Plants",
             "vegetative": "Vegetative Plants",
-            "plantings": "Active Plantings",
+            "plantings": "Propagation",
             "harvests": "Harvests",
         }
         files = dict(self._cultivation_plant_snapshot.get("source_files") or {})
@@ -5173,13 +5217,33 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def cultivation_plant_kpis(self) -> dict[str, str]:
         _ = self.cultivation_plant_snapshot_revision
-        summary = dict(self._cultivation_plant_snapshot.get("summary") or {})
+        active = self._cultivation_active_plant_rows()
+        plantings = self._cultivation_filtered_plantings()
+        harvests = self._cultivation_filtered_harvests()
+        flowering = [row for row in active if row.get("phase") == "Flowering"]
+        vegetative = [row for row in active if row.get("phase") == "Vegetative"]
+        mothers = [row for row in vegetative if self._is_mother_plant(row)]
+        clones = sum(
+            int(row.get("plants", 0) or 0)
+            for row in plantings
+            if "clone" in str(row.get("type", "") or "").casefold()
+        )
+        strains = {
+            str(row.get("strain", ""))
+            for row in [*active, *plantings]
+            if row.get("strain")
+        }
+        unfinished = sum(
+            1 for row in harvests
+            if float(row.get("remaining_weight_lb", 0) or 0) > 0
+        )
         return {
-            "flowering": f"{int(summary.get('flowering_plants', 0) or 0):,}",
-            "vegetative": f"{int(summary.get('vegetative_plants', 0) or 0):,}",
-            "plantings": f"{int(summary.get('active_plantings', 0) or 0):,}",
-            "planting_plants": f"{int(summary.get('planting_plants', 0) or 0):,}",
-            "harvests": f"{int(summary.get('harvest_batches', 0) or 0):,}",
+            "flowering": f"{len(flowering):,}",
+            "vegetative": f"{len(vegetative):,}",
+            "clones": f"{clones:,}",
+            "mothers": f"{len(mothers):,}",
+            "strains": f"{len(strains):,}",
+            "unfinished_harvests": f"{unfinished:,}",
         }
 
     @rx.var(cache=True)
@@ -5243,7 +5307,7 @@ class DashboardState(rx.State):
                 row.get("plant_batch", ""),
                 row.get("plant_batch_date", ""),
                 row.get("phase_date", ""),
-                "Yes" if row.get("hold") else "No",
+                active_plant_harvest_date(row),
             ]
             for row in rows[:2000]
         ]
@@ -5272,13 +5336,9 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def cultivation_active_planting_rows(self) -> list[list[Any]]:
         _ = self.cultivation_plant_snapshot_revision
-        rows = self._cultivation_plant_snapshot.get("plantings", [])
+        rows = self._cultivation_filtered_plantings()
         filtered: list[dict[str, Any]] = []
         for row in rows:
-            if self.cultivation_plant_facility_filter != "All Facilities" and row.get("facility") != self.cultivation_plant_facility_filter:
-                continue
-            if self.cultivation_plant_strain_filter != "All Strains" and row.get("strain") != self.cultivation_plant_strain_filter:
-                continue
             filtered.append({
                 "Plant Batch": row.get("plant_batch", ""),
                 "Strain": row.get("strain", ""),
@@ -5303,11 +5363,7 @@ class DashboardState(rx.State):
     def cultivation_plant_harvest_rows(self) -> list[list[Any]]:
         _ = self.cultivation_plant_snapshot_revision
         rows = []
-        for row in self._cultivation_plant_snapshot.get("harvests", []):
-            if self.cultivation_plant_facility_filter != "All Facilities" and row.get("facility") != self.cultivation_plant_facility_filter:
-                continue
-            if self.cultivation_plant_strain_filter != "All Strains" and row.get("strain") != self.cultivation_plant_strain_filter:
-                continue
+        for row in self._cultivation_filtered_harvests():
             rows.append({
                 "Harvest Batch": row.get("harvest_batch", ""),
                 "Strain": row.get("strain", ""),
@@ -5350,7 +5406,7 @@ class DashboardState(rx.State):
     @rx.event
     def change_cultivation_history_rows_per_page(self, value: str):
         self.cultivation_history_rows_per_page = (
-            value if value in {"10", "25", "50"} else "10"
+            value if value in {"10", "25", "50", "100"} else "10"
         )
 
     @rx.event
@@ -5373,8 +5429,12 @@ class DashboardState(rx.State):
     @rx.event
     def change_cultivation_demand_rows_per_page(self, value: str):
         self.cultivation_demand_rows_per_page = (
-            value if value in {"25", "50", "100"} else "25"
+            value if value in {"10", "25", "50", "100"} else "10"
         )
+
+    @rx.var(cache=True)
+    def cultivation_plant_page_size(self) -> int:
+        return int(self.cultivation_plant_rows_per_page)
 
     @rx.event
     def change_cultivation_clone_plan_lookback(self, value: str):
@@ -9544,7 +9604,7 @@ def cultivation_history_data_grid(
         rx.flex(
             rx.text("Rows", size="1", weight="bold", color=MUTED),
             rx.select(
-                ["10", "25", "50"],
+                ["10", "25", "50", "100"],
                 value=DashboardState.cultivation_history_rows_per_page,
                 on_change=DashboardState.change_cultivation_history_rows_per_page,
                 width="74px",
@@ -9555,6 +9615,42 @@ def cultivation_history_data_grid(
             gap="2",
         ),
         class_name="qcc-historical-grid-with-footer-control",
+        align="start",
+        spacing="2",
+        width="100%",
+    )
+
+
+def cultivation_plant_data_grid(
+    data: rx.Var,
+    columns: list[str],
+    height: str,
+    minimum_width: int = 1100,
+) -> rx.Component:
+    """Metrc cultivation grid with the standard cultivation row selector."""
+    return rx.vstack(
+        data_grid(
+            data,
+            columns,
+            height=height,
+            show_search=True,
+            class_name="qcc-cultivation-plant-grid",
+            column_width=165,
+            minimum_width=minimum_width,
+            page_size=DashboardState.cultivation_plant_page_size,
+        ),
+        rx.flex(
+            rx.text("Rows", size="1", weight="bold", color=MUTED),
+            rx.select(
+                ["10", "25", "50", "100"],
+                value=DashboardState.cultivation_plant_rows_per_page,
+                on_change=DashboardState.change_cultivation_plant_rows_per_page,
+                width="82px",
+                size="1",
+            ),
+            align="center",
+            gap="2",
+        ),
         align="start",
         spacing="2",
         width="100%",
@@ -16088,7 +16184,7 @@ def cultivation_demand_availability_panel() -> rx.Component:
                     rx.flex(
                         rx.text("Rows", size="1", weight="bold", color=MUTED),
                         rx.select(
-                            ["25", "50", "100"],
+                            ["10", "25", "50", "100"],
                             value=DashboardState.cultivation_demand_rows_per_page,
                             on_change=DashboardState.change_cultivation_demand_rows_per_page,
                             width="82px",
@@ -16130,7 +16226,7 @@ def cultivation_demand_availability_panel() -> rx.Component:
                         class_name="qcc-cultivation-demand-weekly-grid",
                         column_width=210,
                         minimum_width=900,
-                        page_size=25,
+                        page_size=DashboardState.cultivation_demand_page_size,
                     ),
                 ),
                 width="100%",
@@ -16415,7 +16511,7 @@ def cultivation_historical_yield_panel() -> rx.Component:
 
 PLANT_ACTIVE_COLUMNS = [
     "Tag", "Strain", "Phase", "Facility", "Location", "Plant Batch",
-    "Batch Date", "Phase Date", "Hold",
+    "Batch Date", "Phase Date", "Harvest Date",
 ]
 PLANT_LOCATION_COLUMNS = ["Facility", "Phase", "Location", "Plants", "Strains"]
 PLANTING_COLUMNS = [
@@ -16594,22 +16690,31 @@ def cultivation_metrc_plant_panel() -> rx.Component:
                 "Individually tagged in Metrc flowering",
             ),
             metric_card(
-                "Vegetative Plants",
+                "Veg Plants",
                 DashboardState.cultivation_plant_kpis["vegetative"],
-                "Tagged Veg and Mom population",
+                "All individually tagged vegetative plants",
             ),
             metric_card(
-                "Active Plantings",
-                DashboardState.cultivation_plant_kpis["plantings"],
-                DashboardState.cultivation_plant_kpis["planting_plants"]
-                + " currently available plants",
+                "Clones",
+                DashboardState.cultivation_plant_kpis["clones"],
+                "Available clones in Propagation",
             ),
             metric_card(
-                "Harvest Batches",
-                DashboardState.cultivation_plant_kpis["harvests"],
-                "Historical and active harvest batches",
+                "Moms",
+                DashboardState.cultivation_plant_kpis["mothers"],
+                "Tagged plants in Mom locations",
             ),
-            columns=rx.breakpoints(initial="1", sm="2", xl="4"),
+            metric_card(
+                "Strains",
+                DashboardState.cultivation_plant_kpis["strains"],
+                "Distinct strains matching the filters",
+            ),
+            metric_card(
+                "Unfinished Harvest Batches",
+                DashboardState.cultivation_plant_kpis["unfinished_harvests"],
+                "Harvest batches with remaining weight",
+            ),
+            columns=rx.breakpoints(initial="1", sm="2", xl="3"),
             gap="3",
             width="100%",
         ),
@@ -16668,43 +16773,47 @@ def cultivation_metrc_plant_panel() -> rx.Component:
             rx.tabs.list(
                 rx.tabs.trigger("Active Plants", value="active_plants"),
                 rx.tabs.trigger("Location Summary", value="locations"),
-                rx.tabs.trigger("Active Plantings", value="plantings"),
+                rx.tabs.trigger("Propagation", value="plantings"),
                 rx.tabs.trigger("Harvests", value="harvests"),
                 rx.tabs.trigger("Crop Reconciliation", value="reconciliation"),
                 class_name="qcc-tabs",
             ),
             rx.tabs.content(
-                readable_grid(
+                cultivation_plant_data_grid(
                     DashboardState.cultivation_active_plant_table_rows,
                     PLANT_ACTIVE_COLUMNS,
                     "650px",
+                    minimum_width=1750,
                 ),
                 value="active_plants",
                 padding_top="1rem",
             ),
             rx.tabs.content(
-                readable_grid(
+                cultivation_plant_data_grid(
                     DashboardState.cultivation_plant_location_summary_rows,
                     PLANT_LOCATION_COLUMNS,
                     "520px",
+                    minimum_width=900,
                 ),
                 value="locations",
                 padding_top="1rem",
             ),
             rx.tabs.content(
-                readable_grid(
+                cultivation_plant_data_grid(
                     DashboardState.cultivation_active_planting_rows,
                     PLANTING_COLUMNS,
                     "600px",
+                    minimum_width=1500,
                 ),
                 value="plantings",
                 padding_top="1rem",
             ),
             rx.tabs.content(
-                readable_grid(
+                cultivation_plant_data_grid(
                     DashboardState.cultivation_plant_harvest_rows,
                     PLANT_HARVEST_COLUMNS,
                     "650px",
+                    minimum_width=1600,
                 ),
                 value="harvests",
                 padding_top="1rem",
@@ -16717,10 +16826,11 @@ def cultivation_metrc_plant_panel() -> rx.Component:
                         color_scheme="purple",
                         width="100%",
                     ),
-                    readable_grid(
+                    cultivation_plant_data_grid(
                         DashboardState.cultivation_plant_reconciliation_rows,
                         PLANT_RECONCILIATION_COLUMNS,
                         "600px",
+                        minimum_width=1400,
                     ),
                     width="100%",
                     spacing="3",

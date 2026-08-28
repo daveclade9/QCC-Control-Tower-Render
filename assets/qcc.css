@@ -55,6 +55,26 @@ body {
   max-height: 48px !important;
 }
 
+/* Compact Metrc cultivation rows keep full 24-character plant tags visible. */
+.qcc-cultivation-plant-grid .gridjs-th {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.qcc-cultivation-plant-grid .gridjs-td {
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: nowrap;
+  padding: 8px 10px;
+}
+
+.qcc-cultivation-plant-grid .gridjs-th:first-child,
+.qcc-cultivation-plant-grid .gridjs-td:first-child {
+  width: 255px !important;
+  min-width: 255px !important;
+  max-width: 255px !important;
+}
+
 .qcc-inventory-grid .gridjs-tbody .gridjs-tr {
   height: 48px !important;
   max-height: 48px !important;
