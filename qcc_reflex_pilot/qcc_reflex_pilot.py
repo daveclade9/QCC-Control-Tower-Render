@@ -37,6 +37,7 @@ from .data import (
     load_clone_plans,
     load_fresh_frozen_adjustments,
     load_latest_metrc_plant_snapshot,
+    load_package_lineage,
     save_clone_plan,
     save_creative_use_adjustment,
     save_fresh_frozen_adjustment,
@@ -779,6 +780,19 @@ class DashboardState(rx.State):
         "Open Transfers", "Rejected Transfers", "Returned Transfers"
     ]
     shipment_exception_show_manifest_summary: bool = False
+    package_lineage_draft: str = ""
+    package_lineage_query: str = ""
+    package_lineage_loading: bool = False
+    package_lineage_message: str = (
+        "Search a Metrc package tag or manifest to reconstruct its stored history."
+    )
+    package_lineage_error: str = ""
+    package_lineage_packages: str = "0"
+    package_lineage_sources: str = "0"
+    package_lineage_snapshots: str = "0"
+    package_lineage_transfers: str = "0"
+    package_lineage_records: list[dict[str, Any]] = []
+    package_lineage_timeline: list[dict[str, Any]] = []
     _transfer_data: list[dict[str, Any]] = []
     transfer_import_log: list[dict[str, Any]] = []
     cpg_inventory: list[dict[str, Any]] = []
@@ -4979,6 +4993,55 @@ class DashboardState(rx.State):
     @rx.event
     def change_shipment_exception_summary_view(self, value: bool):
         self.shipment_exception_show_manifest_summary = value
+
+    @rx.event
+    def change_package_lineage_draft(self, value: str):
+        self.package_lineage_draft = value
+
+    @rx.event
+    def clear_package_lineage(self):
+        self.package_lineage_draft = ""
+        self.package_lineage_query = ""
+        self.package_lineage_message = (
+            "Search a Metrc package tag or manifest to reconstruct its stored history."
+        )
+        self.package_lineage_error = ""
+        self.package_lineage_packages = "0"
+        self.package_lineage_sources = "0"
+        self.package_lineage_snapshots = "0"
+        self.package_lineage_transfers = "0"
+        self.package_lineage_records = []
+        self.package_lineage_timeline = []
+
+    @rx.event
+    def find_package_lineage(self):
+        target = self.package_lineage_draft.strip()
+        if not target:
+            self.package_lineage_error = "Enter a Metrc package tag or manifest number."
+            return
+        self.package_lineage_loading = True
+        self.package_lineage_error = ""
+        self.package_lineage_query = target
+        self.package_lineage_message = "Searching preserved package history…"
+        yield
+        try:
+            payload = load_package_lineage(target)
+            self.package_lineage_message = str(payload.get("message", ""))
+            self.package_lineage_packages = f"{int(payload.get('package_count', 0)):,}"
+            self.package_lineage_sources = f"{int(payload.get('source_count', 0)):,}"
+            self.package_lineage_snapshots = f"{int(payload.get('snapshot_count', 0)):,}"
+            self.package_lineage_transfers = f"{int(payload.get('transfer_count', 0)):,}"
+            self.package_lineage_records = list(payload.get("lineage", []))
+            self.package_lineage_timeline = list(payload.get("timeline", []))
+        except Exception as error:
+            self.package_lineage_error = (
+                "Historical package lineage could not be searched: " + str(error)
+            )
+            self.package_lineage_message = "No lineage results are currently displayed."
+            self.package_lineage_records = []
+            self.package_lineage_timeline = []
+        finally:
+            self.package_lineage_loading = False
 
     @rx.event
     def change_workspace_view(self, value: str):
@@ -9273,6 +9336,29 @@ class DashboardState(rx.State):
         ]
 
     @rx.var(cache=True)
+    def package_lineage_rows(self) -> list[list[Any]]:
+        columns = [
+            "Relationship", "Package Tag", "Item", "Strain",
+            "Source Harvest", "Production Batch", "First Seen",
+            "Last Seen", "Snapshots",
+        ]
+        return [
+            [row.get(column, "") for column in columns]
+            for row in self.package_lineage_records
+        ]
+
+    @rx.var(cache=True)
+    def package_lineage_timeline_rows(self) -> list[list[Any]]:
+        columns = [
+            "Date", "Event", "Package Tag", "Manifest",
+            "Customer / Location", "Status", "Quantity", "Unit", "Item",
+        ]
+        return [
+            [row.get(column, "") for column in columns]
+            for row in self.package_lineage_timeline
+        ]
+
+    @rx.var(cache=True)
     def transfer_rows(self) -> list[list[Any]]:
         columns = [
             "Manifest", "Invoice Number", "Created", "Received", "State",
@@ -12139,6 +12225,145 @@ def transfer_data_panel() -> rx.Component:
     )
 
 
+def package_lineage_panel() -> rx.Component:
+    """Customer-service lookup across preserved package and transfer history."""
+    return rx.vstack(
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.heading("Historical Package Lineage", size="5"),
+                        rx.text(
+                            "Trace a package from stored inventory evidence through its source packages, harvest information, manifests, customers, and outcomes.",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.badge(
+                        "CUSTOMER SERVICE",
+                        color_scheme="purple",
+                        variant="soft",
+                        size="2",
+                    ),
+                    align="start", gap="3", wrap="wrap", width="100%",
+                ),
+                rx.flex(
+                    rx.input(
+                        placeholder="Metrc package tag or manifest number",
+                        value=DashboardState.package_lineage_draft,
+                        on_change=DashboardState.change_package_lineage_draft,
+                        width="min(100%, 560px)",
+                        size="3",
+                    ),
+                    rx.button(
+                        "Trace History",
+                        on_click=DashboardState.find_package_lineage,
+                        loading=DashboardState.package_lineage_loading,
+                        size="3",
+                    ),
+                    rx.button(
+                        "Clear",
+                        on_click=DashboardState.clear_package_lineage,
+                        variant="outline",
+                        size="3",
+                    ),
+                    align="center", gap="3", wrap="wrap", width="100%",
+                ),
+                rx.callout(
+                    DashboardState.package_lineage_message,
+                    icon="route",
+                    color_scheme="blue",
+                    width="100%",
+                ),
+                rx.cond(
+                    DashboardState.package_lineage_error != "",
+                    rx.callout(
+                        DashboardState.package_lineage_error,
+                        icon="triangle_alert",
+                        color_scheme="red",
+                        width="100%",
+                    ),
+                ),
+                width="100%", spacing="4",
+            ),
+            width="100%",
+            border_top="4px solid #7c3aed",
+        ),
+        rx.grid(
+            metric_card(
+                "Packages", DashboardState.package_lineage_packages,
+                "Package tags included by this search",
+            ),
+            metric_card(
+                "Source Packages", DashboardState.package_lineage_sources,
+                "Parent package tags preserved in snapshots",
+            ),
+            metric_card(
+                "Snapshot Observations", DashboardState.package_lineage_snapshots,
+                "Historical appearances of searched packages",
+            ),
+            metric_card(
+                "Transfer Records", DashboardState.package_lineage_transfers,
+                "Outbound, rejected, or returned package records",
+            ),
+            columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+            gap="4", width="100%",
+        ),
+        rx.cond(
+            DashboardState.package_lineage_rows.length() > 0,
+            rx.vstack(
+                rx.heading("Package and Source Lineage", size="4"),
+                data_grid(
+                    DashboardState.package_lineage_rows,
+                    [
+                        "Relationship", "Package\nTag", "Metrc\nItem", "Strain",
+                        "Source\nHarvest", "Production\nBatch", "First\nSeen",
+                        "Last\nSeen", "Snapshots",
+                    ],
+                    "380px",
+                    show_search=False,
+                    class_name="qcc-package-lineage-grid",
+                    column_width=190,
+                    minimum_width=1500,
+                    page_size=25,
+                ),
+                width="100%", spacing="3",
+            ),
+        ),
+        rx.cond(
+            DashboardState.package_lineage_timeline_rows.length() > 0,
+            rx.vstack(
+                rx.heading("Package History Timeline", size="4"),
+                rx.text(
+                    "Inventory observations and transfer outcomes are combined newest-first. Repeated snapshot rows show that the package remained present on that business date.",
+                    color=MUTED,
+                ),
+                data_grid(
+                    DashboardState.package_lineage_timeline_rows,
+                    [
+                        "Date", "Event", "Package\nTag", "Manifest",
+                        "Customer /\nLocation", "Status", "Quantity", "Unit",
+                        "Metrc\nItem",
+                    ],
+                    "600px",
+                    class_name="qcc-package-lineage-grid",
+                    column_width=180,
+                    minimum_width=1550,
+                    page_size=25,
+                ),
+                width="100%", spacing="3",
+            ),
+        ),
+        rx.callout(
+            "This first version uses preserved QCC snapshots and transfer records. When the Metrc API is connected, missing package, source-harvest, adjustment, inactive, and transferred-package events can be appended to the same history.",
+            icon="database",
+            color_scheme="purple",
+            width="100%",
+        ),
+        width="100%", spacing="4",
+    )
+
+
 def inventory_filters() -> rx.Component:
     return rx.card(
         rx.vstack(
@@ -13602,6 +13827,7 @@ def qa_panel() -> rx.Component:
                 rx.tabs.trigger("Customers", value="customers"),
                 rx.tabs.trigger("Retail Availability", value="retail"),
                 rx.tabs.trigger("Shipment Exceptions", value="exceptions"),
+                rx.tabs.trigger("Package Lineage", value="lineage"),
                 rx.tabs.trigger("Transfer Data", value="transfers"),
                 class_name="qcc-tabs",
                 width="100%",
@@ -13645,6 +13871,7 @@ def qa_panel() -> rx.Component:
                 ("customers", customers_panel()),
                 ("retail", retail_availability_panel()),
                 ("exceptions", exceptions_panel()),
+                ("lineage", package_lineage_panel()),
                 ("transfers", transfer_data_panel()),
                 qa_operation_panel(
                     "Cultivation",

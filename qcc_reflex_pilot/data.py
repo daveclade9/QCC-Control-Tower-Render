@@ -1534,6 +1534,189 @@ def load_transfer_import_log() -> pd.DataFrame:
     )
 
 
+def _lineage_date(value: Any) -> str:
+    """Format a database timestamp as a customer-service date."""
+    parsed = pd.to_datetime(value, errors="coerce")
+    return parsed.strftime("%Y-%m-%d") if pd.notna(parsed) else "—"
+
+
+def _lineage_number(value: Any) -> str:
+    number = pd.to_numeric(value, errors="coerce")
+    if pd.isna(number):
+        return "—"
+    return f"{float(number):,.2f}".rstrip("0").rstrip(".")
+
+
+def load_package_lineage(search_text: str) -> dict[str, Any]:
+    """Trace one package tag or manifest through snapshots and transfers.
+
+    The lookup is deliberately on demand.  Normal dashboard hydration continues
+    to load only the current inventory snapshot, while Customer Service can
+    search every preserved snapshot without sending that history to the browser.
+    The returned shape is also compatible with future Metrc package-event rows.
+    """
+    target = str(search_text or "").strip()
+    if not target:
+        raise ValueError("Enter a Metrc package tag or manifest number.")
+
+    transfer_history = query_frame(
+        "SELECT manifest, invoice_number, origin_license, origin_facility, "
+        "destination_license, destination_facility, transfer_type, created_at, "
+        "received_at, package_tag, state, item, item_category, "
+        "shipper_dollar_amount, actual_shipped, actual_shipped_uom, "
+        "actual_received, actual_received_uom "
+        "FROM transfer_records WHERE COALESCE(voided, 0) = 0 "
+        "AND (package_tag = %s OR manifest = %s) "
+        "ORDER BY created_at, manifest, package_tag",
+        (target, target),
+    )
+    transfer_tags = (
+        transfer_history.get("package_tag", pd.Series(dtype=str))
+        .fillna("").astype(str).str.strip()
+    )
+    package_tags = list(dict.fromkeys(tag for tag in transfer_tags if tag))
+    if not package_tags:
+        package_tags = [target]
+    elif target.startswith("1A") and target not in package_tags:
+        package_tags.insert(0, target)
+
+    source_patterns = [f"%{tag}%" for tag in package_tags]
+    observations = query_frame(
+        "SELECT p.package_tag, p.source_packages, p.source_harvest, "
+        "p.production_batch_number, p.source_production_batch, p.item, "
+        "p.brand, p.strain, p.quantity, p.unit, p.location, p.qa_status, "
+        "p.production_stage, p.expiration_date, p.source_license_number, "
+        "s.business_date, s.published_at "
+        "FROM inventory_snapshot_packages p "
+        "JOIN inventory_snapshots s ON s.snapshot_id = p.snapshot_id "
+        "WHERE p.package_tag = ANY(%s) OR p.source_packages ILIKE ANY(%s) "
+        "ORDER BY s.published_at, p.package_tag LIMIT 1500",
+        (package_tags, source_patterns),
+    )
+
+    source_tags: list[str] = []
+    if not observations.empty:
+        exact = observations[observations["package_tag"].isin(package_tags)]
+        for value in exact.get("source_packages", pd.Series(dtype=str)):
+            for tag in extract_metrc_tags(value):
+                if tag not in source_tags and tag not in package_tags:
+                    source_tags.append(tag)
+
+    source_observations = pd.DataFrame()
+    if source_tags:
+        source_observations = query_frame(
+            "SELECT p.package_tag, p.source_packages, p.source_harvest, "
+            "p.production_batch_number, p.source_production_batch, p.item, "
+            "p.brand, p.strain, p.quantity, p.unit, p.location, p.qa_status, "
+            "p.production_stage, p.expiration_date, p.source_license_number, "
+            "s.business_date, s.published_at "
+            "FROM inventory_snapshot_packages p "
+            "JOIN inventory_snapshots s ON s.snapshot_id = p.snapshot_id "
+            "WHERE p.package_tag = ANY(%s) "
+            "ORDER BY s.published_at, p.package_tag LIMIT 1000",
+            (source_tags,),
+        )
+
+    lineage_rows: list[dict[str, Any]] = []
+    combined_tags = [*package_tags, *source_tags]
+    for tag in combined_tags:
+        frames = []
+        if not observations.empty:
+            frames.append(observations[observations["package_tag"] == tag])
+        if not source_observations.empty:
+            frames.append(source_observations[source_observations["package_tag"] == tag])
+        tag_rows = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        latest = tag_rows.iloc[-1] if not tag_rows.empty else {}
+        lineage_rows.append({
+            "Relationship": "Searched Package" if tag in package_tags else "Source Package",
+            "Package Tag": tag,
+            "Item": str(latest.get("item", "") or "—"),
+            "Strain": str(latest.get("strain", "") or "—"),
+            "Source Harvest": str(latest.get("source_harvest", "") or "—"),
+            "Production Batch": str(
+                latest.get("source_production_batch", "")
+                or latest.get("production_batch_number", "") or "—"
+            ),
+            "First Seen": _lineage_date(tag_rows["business_date"].min()) if not tag_rows.empty else "—",
+            "Last Seen": _lineage_date(tag_rows["business_date"].max()) if not tag_rows.empty else "—",
+            "Snapshots": str(len(tag_rows)),
+        })
+
+    timeline_rows: list[dict[str, Any]] = []
+    if not observations.empty:
+        observed = observations.copy()
+        observed["business_date"] = pd.to_datetime(
+            observed["business_date"], errors="coerce"
+        )
+        observed = observed.sort_values("published_at").drop_duplicates(
+            ["business_date", "package_tag"], keep="last"
+        )
+        for _, row in observed.iterrows():
+            relationship = (
+                "Inventory snapshot" if row["package_tag"] in package_tags
+                else "Descendant package observed"
+            )
+            timeline_rows.append({
+                "Date": _lineage_date(row.get("business_date")),
+                "Event": relationship,
+                "Package Tag": str(row.get("package_tag", "")),
+                "Manifest": "—",
+                "Customer / Location": str(row.get("location", "") or "—"),
+                "Status": str(row.get("qa_status", "") or row.get("production_stage", "") or "—"),
+                "Quantity": _lineage_number(row.get("quantity")),
+                "Unit": str(row.get("unit", "") or "—"),
+                "Item": str(row.get("item", "") or "—"),
+            })
+    for _, row in transfer_history.iterrows():
+        timeline_rows.append({
+            "Date": _lineage_date(row.get("created_at")),
+            "Event": "Transfer package outcome",
+            "Package Tag": str(row.get("package_tag", "") or "—"),
+            "Manifest": str(row.get("manifest", "") or "—"),
+            "Customer / Location": str(row.get("destination_facility", "") or "—"),
+            "Status": str(row.get("state", "") or "—"),
+            "Quantity": _lineage_number(row.get("actual_shipped")),
+            "Unit": str(row.get("actual_shipped_uom", "") or "—"),
+            "Item": str(row.get("item", "") or "—"),
+        })
+    timeline_rows.sort(key=lambda row: row["Date"], reverse=True)
+
+    exact_observation_count = 0
+    if not observations.empty:
+        exact_observation_count = int(
+            observations["package_tag"].isin(package_tags).sum()
+        )
+    found = bool(exact_observation_count or len(transfer_history))
+    if not found:
+        message = (
+            "No stored snapshot or transfer record contains this value. "
+            "A Metrc API package lookup will be the next source when connected."
+        )
+    elif exact_observation_count == 0:
+        message = (
+            "Transfer history was found, but these packages were never captured "
+            "in a published inventory snapshot. Source genealogy is not yet available."
+        )
+    elif not source_tags:
+        message = (
+            "Package history was found, but no source package tag was preserved "
+            "on its stored snapshot records."
+        )
+    else:
+        message = "Historical inventory, source-package, and transfer evidence was found."
+
+    return {
+        "found": found,
+        "message": message,
+        "package_count": len(package_tags),
+        "source_count": len(source_tags),
+        "snapshot_count": exact_observation_count,
+        "transfer_count": len(transfer_history),
+        "lineage": lineage_rows,
+        "timeline": timeline_rows,
+    }
+
+
 def load_latest_inventory_skus() -> tuple[dict[str, Any], pd.DataFrame]:
     snapshots = safe_query_frame(
         "SELECT snapshot_id, business_date, published_at, published_by, "
