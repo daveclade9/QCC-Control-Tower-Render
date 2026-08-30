@@ -28,6 +28,7 @@ from .data import (
     delete_reflex_production_plans,
     demo_dashboard_data,
     get_dashboard_data,
+    get_distribution_operations_data,
     get_sales_dashboard_data,
     import_lab_results_bytes,
     load_adjusted_coa,
@@ -144,7 +145,7 @@ from .historical_yield import (
 from .plant_data import parse_metrc_plant_exports, plant_crop_reconciliation
 
 
-PILOT_VERSION = "0.9.6.12-cultivation"
+PILOT_VERSION = "0.9.6.13-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -641,6 +642,15 @@ class DashboardState(rx.State):
     inventory_page_size: int = 10
     transfer_page: int = 1
     transfer_page_size: int = 50
+    transfer_server_total: int = 0
+    exception_page: int = 1
+    exception_page_size: int = 50
+    exception_server_total: int = 0
+    exception_server_manifests: int = 0
+    exception_server_value: float = 0.0
+    distribution_loading: bool = False
+    distribution_error: str = ""
+    distribution_request_revision: int = 0
     sku_planning_page: int = 1
     sku_planning_page_size: int = 10
     sku_planning_sort: str = "Avg Weekly Units - High to Low"
@@ -1079,21 +1089,33 @@ class DashboardState(rx.State):
         self.brand_filter = value
         self.sku_planning_page = 1
         self.inventory_page = 1
+        self.transfer_page = 1
+        self.exception_page = 1
         self._sync_qa_consistency_filters()
+        if self.workspace_view == "qa" and self.qa_view in {"transfers", "exceptions"}:
+            yield DashboardState.load_distribution_operations_background
 
     @rx.event
     def change_strain_filter(self, value: str):
         self.strain_filter = value
         self.sku_planning_page = 1
         self.inventory_page = 1
+        self.transfer_page = 1
+        self.exception_page = 1
         self._sync_qa_consistency_filters()
+        if self.workspace_view == "qa" and self.qa_view in {"transfers", "exceptions"}:
+            yield DashboardState.load_distribution_operations_background
 
     @rx.event
     def change_sku_filter(self, value: str):
         self.sku_filter = value
         self.sku_planning_page = 1
         self.inventory_page = 1
+        self.transfer_page = 1
+        self.exception_page = 1
         self._sync_qa_consistency_filters()
+        if self.workspace_view == "qa" and self.qa_view in {"transfers", "exceptions"}:
+            yield DashboardState.load_distribution_operations_background
 
     @rx.event
     def change_search_text(self, value: str):
@@ -1102,6 +1124,9 @@ class DashboardState(rx.State):
         self.sku_planning_page = 1
         self.inventory_page = 1
         self.transfer_page = 1
+        self.exception_page = 1
+        if self.workspace_view == "qa" and self.qa_view in {"transfers", "exceptions"}:
+            yield DashboardState.load_distribution_operations_background
 
     @rx.event
     def change_retail_timeframe(self, value: str):
@@ -1211,9 +1236,13 @@ class DashboardState(rx.State):
             return
         self.sales_demand_view = value
         self.transfer_page = 1
+        self.exception_page = 1
         # Release the navigation update before hydrating a potentially large
         # transfer-backed distribution view.
         yield
+        if value in {"transfers", "exceptions"}:
+            yield DashboardState.load_distribution_operations_background
+            return
         if value not in self.sales_loaded_views:
             yield DashboardState.load_sales_background
 
@@ -3219,6 +3248,85 @@ class DashboardState(rx.State):
             async with self:
                 self.sales_background_loading = False
 
+    @rx.event(background=True)
+    async def load_distribution_operations_background(self):
+        """Load only the active Distribution Operations view and page."""
+        async with self:
+            self.distribution_request_revision += 1
+            request_revision = self.distribution_request_revision
+            self.distribution_loading = True
+            self.distribution_error = ""
+            view = self.qa_view
+            exception_state = self.selected_exception_state
+            page = (
+                self.exception_page if view == "exceptions"
+                else self.transfer_page
+            )
+            page_size = (
+                self.exception_page_size if view == "exceptions"
+                else self.transfer_page_size
+            )
+            brand_filter = self.brand_filter
+            strain_filter = self.strain_filter
+            sku_filter = self.sku_filter
+            search_text = self.search_text
+        try:
+            payload = await rx.run_in_thread(
+                lambda: get_distribution_operations_data(
+                    view,
+                    exception_state=exception_state,
+                    page=page,
+                    page_size=page_size,
+                    brand_filter=brand_filter,
+                    strain_filter=strain_filter,
+                    sku_filter=sku_filter,
+                    search_text=search_text,
+                )
+            )
+            async with self:
+                if request_revision != self.distribution_request_revision:
+                    return
+                if view == "exceptions":
+                    self.exceptions = payload.get("exceptions", [])
+                    self.exception_packages = payload.get(
+                        "exception_packages", []
+                    )
+                    self.exception_server_total = int(
+                        payload.get("exception_total", 0) or 0
+                    )
+                    self.exception_server_manifests = int(
+                        payload.get("exception_manifests", 0) or 0
+                    )
+                    self.exception_server_value = float(
+                        payload.get("exception_value", 0) or 0
+                    )
+                    self.exception_page = int(
+                        payload.get("exception_page", page) or page
+                    )
+                elif view == "transfers":
+                    self._transfer_data = payload.get("transfer_data", [])
+                    self.transfer_server_total = int(
+                        payload.get("transfer_total", 0) or 0
+                    )
+                    self.transfer_page = int(
+                        payload.get("transfer_page", page) or page
+                    )
+                    self.transfer_import_log = payload.get(
+                        "transfer_import_log", []
+                    )
+                if view not in self.sales_loaded_views:
+                    self.sales_loaded_views = [*self.sales_loaded_views, view]
+        except Exception as error:
+            async with self:
+                if request_revision == self.distribution_request_revision:
+                    self.distribution_error = (
+                        "Distribution data could not be loaded: " + str(error)
+                    )
+        finally:
+            async with self:
+                if request_revision == self.distribution_request_revision:
+                    self.distribution_loading = False
+
     @rx.event
     def refresh(self):
         if not self._require_active_session():
@@ -4989,6 +5097,9 @@ class DashboardState(rx.State):
     @rx.event
     def change_shipment_exception_view(self, value: str):
         self.shipment_exception_view = value
+        self.exception_page = 1
+        yield
+        yield DashboardState.load_distribution_operations_background
 
     @rx.event
     def change_shipment_exception_summary_view(self, value: bool):
@@ -5055,8 +5166,11 @@ class DashboardState(rx.State):
         if value == "qa":
             if not self.qa_loaded and not self.qa_loading:
                 yield DashboardState.load_qa_background(False)
+            if self.qa_view in {"transfers", "exceptions"}:
+                yield DashboardState.load_distribution_operations_background
+                return
             if (
-                self.qa_view in {"customers", "retail", "transfers", "exceptions"}
+                self.qa_view in {"customers", "retail"}
                 and self.qa_view not in self.sales_loaded_views
             ):
                 self.sales_demand_view = self.qa_view
@@ -5072,14 +5186,6 @@ class DashboardState(rx.State):
         if self.sales_demand_view in self.sales_loaded_views:
             return
         yield DashboardState.load_sales_background
-
-    @rx.event
-    def change_shipment_exception_view(self, value: str):
-        self.shipment_exception_view = value
-
-    @rx.event
-    def change_shipment_exception_summary_view(self, value: bool):
-        self.shipment_exception_show_manifest_summary = value
 
     @rx.event
     def change_cultivation_view(self, value: str):
@@ -8085,15 +8191,7 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def filtered_exceptions(self) -> list[dict[str, Any]]:
-        package_keys = {
-            (str(row.get("Manifest", "")), str(row.get("State", "")))
-            for row in self.filtered_exception_packages
-        }
-        return [
-            row for row in self.exceptions
-            if (str(row.get("Manifest", "")), str(row.get("State", "")))
-            in package_keys
-        ]
+        return [row for row in self.exceptions if self._matches(row)]
 
     @rx.var(cache=True)
     def selected_exception_state(self) -> str:
@@ -8113,24 +8211,48 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def selected_exception_manifests_metric(self) -> str:
-        manifests = {
-            str(row.get("Manifest", ""))
-            for row in self.filtered_exception_packages
-            if str(row.get("Manifest", ""))
-        }
-        return f"{len(manifests):,}"
+        return f"{self.exception_server_manifests:,}"
 
     @rx.var(cache=True)
     def selected_exception_packages_metric(self) -> str:
-        return f"{len(self.filtered_exception_packages):,}"
+        return f"{self.exception_server_total:,}"
 
     @rx.var(cache=True)
     def selected_exception_value_metric(self) -> str:
-        value = sum(
-            float(row.get("Shipper Value", 0) or 0)
-            for row in self.filtered_exception_packages
+        return f"${self.exception_server_value:,.2f}"
+
+    @rx.var(cache=True)
+    def exception_total_pages(self) -> int:
+        return max(
+            (self.exception_server_total + self.exception_page_size - 1)
+            // self.exception_page_size,
+            1,
         )
-        return f"${value:,.2f}"
+
+    @rx.var(cache=True)
+    def exception_page_label(self) -> str:
+        count = self.exception_server_total
+        if count == 0:
+            return "No matching package rows"
+        page = min(max(self.exception_page, 1), self.exception_total_pages)
+        start = (page - 1) * self.exception_page_size + 1
+        end = min(page * self.exception_page_size, count)
+        return (
+            f"Rows {start:,}-{end:,} of {count:,} · "
+            f"Page {page:,} of {self.exception_total_pages:,}"
+        )
+
+    @rx.event
+    def previous_exception_page(self):
+        self.exception_page = max(self.exception_page - 1, 1)
+        yield DashboardState.load_distribution_operations_background
+
+    @rx.event
+    def next_exception_page(self):
+        self.exception_page = min(
+            self.exception_page + 1, self.exception_total_pages
+        )
+        yield DashboardState.load_distribution_operations_background
 
     @rx.var(cache=True)
     def shipment_exception_description(self) -> str:
@@ -9373,18 +9495,16 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def transfer_total_pages(self) -> int:
-        count = len(self.filtered_transfer_data)
+        count = self.transfer_server_total
         return max((count + self.transfer_page_size - 1) // self.transfer_page_size, 1)
 
     @rx.var(cache=True)
     def transfer_page_data(self) -> list[dict[str, Any]]:
-        page = min(max(self.transfer_page, 1), self.transfer_total_pages)
-        start = (page - 1) * self.transfer_page_size
-        return self.filtered_transfer_data[start:start + self.transfer_page_size]
+        return self.filtered_transfer_data
 
     @rx.var(cache=True)
     def transfer_page_label(self) -> str:
-        count = len(self.filtered_transfer_data)
+        count = self.transfer_server_total
         if count == 0:
             return "No matching transfer rows"
         page = min(max(self.transfer_page, 1), self.transfer_total_pages)
@@ -9395,12 +9515,14 @@ class DashboardState(rx.State):
     @rx.event
     def previous_transfer_page(self):
         self.transfer_page = max(self.transfer_page - 1, 1)
+        yield DashboardState.load_distribution_operations_background
 
     @rx.event
     def next_transfer_page(self):
         self.transfer_page = min(
             self.transfer_page + 1, self.transfer_total_pages
         )
+        yield DashboardState.load_distribution_operations_background
 
     @rx.var(cache=True)
     def import_log_rows(self) -> list[list[Any]]:
@@ -10133,6 +10255,7 @@ def filters() -> rx.Component:
                         placeholder="Customer, plan, manifest or status",
                         value=DashboardState.search_text,
                         on_change=DashboardState.change_search_text,
+                        debounce_timeout=450,
                         width="310px",
                     ),
                 ),
@@ -12073,6 +12196,15 @@ def retail_availability_panel() -> rx.Component:
 
 def exceptions_panel() -> rx.Component:
     return rx.vstack(
+        rx.cond(
+            DashboardState.distribution_error != "",
+            rx.callout(
+                DashboardState.distribution_error,
+                icon="triangle_alert",
+                color_scheme="red",
+                width="100%",
+            ),
+        ),
         rx.flex(
             rx.box(
                 rx.text("Exception view", size="1", color=MUTED, weight="bold"),
@@ -12133,6 +12265,8 @@ def exceptions_panel() -> rx.Component:
                     ],
                     "560px",
                     class_name="qcc-exception-data-grid",
+                    column_width=190,
+                    minimum_width=1710,
                 ),
                 width="100%",
                 spacing="3",
@@ -12142,15 +12276,43 @@ def exceptions_panel() -> rx.Component:
                     DashboardState.shipment_exception_view + " — Package Detail",
                     size="4",
                 ),
+                rx.flex(
+                    rx.button(
+                        "Previous 50",
+                        on_click=DashboardState.previous_exception_page,
+                        disabled=DashboardState.exception_page <= 1,
+                        loading=DashboardState.distribution_loading,
+                        variant="outline",
+                    ),
+                    rx.badge(
+                        DashboardState.exception_page_label,
+                        color_scheme="teal",
+                        size="3",
+                    ),
+                    rx.button(
+                        "Next 50",
+                        on_click=DashboardState.next_exception_page,
+                        disabled=(
+                            DashboardState.exception_page
+                            >= DashboardState.exception_total_pages
+                        ),
+                        loading=DashboardState.distribution_loading,
+                        variant="outline",
+                    ),
+                    gap="3", align="center", wrap="wrap", width="100%",
+                ),
                 data_grid(
                     DashboardState.exception_package_rows,
                     [
                         "Manifest", "State", "Destination License", "Customer",
-                        "Package\nTag", "Metrc\nItem", "Brand", "Strain", "SKU\nType",
-                        "Shipped\nUnits", "Shipper\nValue", "Created", "Received",
+                        "Package Tag", "Metrc Item", "Brand", "Strain", "SKU Type",
+                        "Shipped Units", "Shipper Value", "Created", "Received",
                     ],
                     "620px",
                     class_name="qcc-exception-data-grid",
+                    column_width=190,
+                    minimum_width=2470,
+                    page_size=50,
                 ),
                 width="100%",
                 spacing="3",
@@ -12163,6 +12325,15 @@ def exceptions_panel() -> rx.Component:
 
 def transfer_data_panel() -> rx.Component:
     return rx.vstack(
+        rx.cond(
+            DashboardState.distribution_error != "",
+            rx.callout(
+                DashboardState.distribution_error,
+                icon="triangle_alert",
+                color_scheme="red",
+                width="100%",
+            ),
+        ),
         rx.hstack(
             rx.heading("Stored Transfer Data", size="4"),
             rx.badge(DashboardState.transfer_rows_metric + " stored rows", size="3"),
@@ -12171,8 +12342,9 @@ def transfer_data_panel() -> rx.Component:
             width="100%",
         ),
         rx.text(
-            "For browser performance, the interactive table contains the 2,000 "
-            "most recent rows. Supabase remains the complete system of record.",
+            "Transfer records are filtered and paged on the server, so the "
+            "browser receives only the 50 rows currently displayed. Supabase "
+            "remains the complete system of record.",
             color=MUTED,
         ),
         rx.heading("Import History", size="3"),
@@ -12191,6 +12363,7 @@ def transfer_data_panel() -> rx.Component:
                 "Previous 50",
                 on_click=DashboardState.previous_transfer_page,
                 disabled=DashboardState.transfer_page <= 1,
+                loading=DashboardState.distribution_loading,
                 variant="outline",
             ),
             rx.badge(
@@ -12205,6 +12378,7 @@ def transfer_data_panel() -> rx.Component:
                     DashboardState.transfer_page
                     >= DashboardState.transfer_total_pages
                 ),
+                loading=DashboardState.distribution_loading,
                 variant="outline",
             ),
             gap="3", align="center", wrap="wrap", width="100%",
@@ -12212,13 +12386,16 @@ def transfer_data_panel() -> rx.Component:
         data_grid(
             DashboardState.transfer_rows,
             [
-                "Manifest", "Invoice\nNumber", "Created", "Received", "State",
-                "Destination\nLicense", "Customer", "Package\nTag",
-                "Metrc\nItem", "Brand", "Strain", "SKU\nType",
-                "Shipped\nUnits", "Shipper\nValue", "Demand\nRecord",
+                "Manifest", "Invoice Number", "Created", "Received", "State",
+                "Destination License", "Customer", "Package Tag",
+                "Metrc Item", "Brand", "Strain", "SKU Type",
+                "Shipped Units", "Shipper Value", "Demand Record",
             ],
             "640px",
             class_name="qcc-transfer-data-grid",
+            column_width=190,
+            minimum_width=2850,
+            page_size=50,
         ),
         width="100%",
         spacing="4",

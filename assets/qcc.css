@@ -293,20 +293,25 @@ body {
   font-size: 14px;
   line-height: 1.15;
   vertical-align: middle;
-  height: 64px;
-  padding: 12px 38px 12px 12px !important;
-  overflow: hidden;
+  height: 76px;
+  min-height: 76px;
+  padding: 12px 34px 12px 12px !important;
+  overflow: visible;
   background: #111111 !important;
 }
 
 .qcc-transfer-data-grid .gridjs-th-content {
   display: block;
   float: none;
+  position: relative;
+  z-index: 2;
   width: 100%;
-  white-space: pre-line;
+  max-width: none;
+  white-space: normal;
   word-break: normal;
-  overflow-wrap: normal;
-  overflow: visible;
+  overflow-wrap: break-word;
+  overflow: visible !important;
+  text-overflow: clip;
   line-height: 1.15;
   color: #ffffff !important;
   background: transparent !important;
@@ -320,6 +325,13 @@ body {
   margin: 0;
   transform: translateY(-50%);
   background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  width: 18px;
+  min-width: 18px;
+  height: 22px;
+  padding: 0;
+  z-index: 3;
 }
 
 .qcc-transfer-data-grid .gridjs-td {
@@ -332,20 +344,25 @@ body {
   font-size: 14px;
   line-height: 1.15;
   vertical-align: middle;
-  height: 64px;
-  padding: 12px 38px 12px 12px !important;
-  overflow: hidden;
+  height: 76px;
+  min-height: 76px;
+  padding: 12px 34px 12px 12px !important;
+  overflow: visible;
   background: #111 !important;
 }
 
 .qcc-exception-data-grid .gridjs-th-content {
   display: block;
   float: none;
+  position: relative;
+  z-index: 2;
   width: 100%;
-  white-space: pre-line;
+  max-width: none;
+  white-space: normal;
   word-break: normal;
-  overflow-wrap: normal;
-  overflow: visible;
+  overflow-wrap: break-word;
+  overflow: visible !important;
+  text-overflow: clip;
   line-height: 1.15;
   color: #fff !important;
   background: transparent !important;
@@ -359,6 +376,13 @@ body {
   margin: 0;
   transform: translateY(-50%);
   background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  width: 18px;
+  min-width: 18px;
+  height: 22px;
+  padding: 0;
+  z-index: 3;
 }
 
 .qcc-exception-data-grid .gridjs-th:nth-child(3),

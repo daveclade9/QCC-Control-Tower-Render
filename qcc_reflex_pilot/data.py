@@ -52,6 +52,13 @@ _DASHBOARD_CACHE: dict[str, Any] = {"loaded_at": 0.0, "payload": None}
 _DASHBOARD_CACHE_LOCK = threading.Lock()
 _SALES_DASHBOARD_CACHE: dict[str, Any] = {"loaded_at": 0.0, "payload": None}
 _SALES_DASHBOARD_CACHE_LOCK = threading.Lock()
+_DISTRIBUTION_CACHE: dict[str, Any] = {
+    "loaded_at": 0.0,
+    "transfers": None,
+    "exceptions": None,
+    "exception_packages": None,
+}
+_DISTRIBUTION_CACHE_LOCK = threading.Lock()
 _OPERATIONAL_CONTEXT: dict[str, Any] = {"loaded_at": 0.0, "payload": None}
 _OPERATIONAL_CONTEXT_LOCK = threading.Lock()
 _OPERATIONAL_BUILD_LOCK = threading.Lock()
@@ -97,6 +104,13 @@ def _invalidate_dashboard_caches() -> None:
         with lock:
             cache["loaded_at"] = 0.0
             cache["payload"] = None
+    with _DISTRIBUTION_CACHE_LOCK:
+        _DISTRIBUTION_CACHE.update({
+            "loaded_at": 0.0,
+            "transfers": None,
+            "exceptions": None,
+            "exception_packages": None,
+        })
 
 
 def _remove_deleted_plans_from_caches(plan_ids: list[str]) -> None:
@@ -4695,6 +4709,16 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
     exceptions = build_shipment_exceptions(analysis)
     exception_packages = build_shipment_exception_packages(analysis)
     transfer_display = build_transfer_display(analysis)
+    # Keep the complete derived transfer views on the server. Distribution
+    # tabs request only their selected state and visible page, rather than
+    # serializing thousands of rows into every browser session.
+    with _DISTRIBUTION_CACHE_LOCK:
+        _DISTRIBUTION_CACHE.update({
+            "loaded_at": time.monotonic(),
+            "transfers": transfer_display,
+            "exceptions": exceptions,
+            "exception_packages": exception_packages,
+        })
     transfer_import_log = load_transfer_import_log()
     total_units = native_number(demand["shipped_units"].sum()) if not demand.empty else 0
     total_value = native_number(demand["shipper_dollar_amount"].sum()) if not demand.empty else 0
@@ -4824,6 +4848,123 @@ def get_sales_dashboard_data(force_refresh: bool = False) -> dict[str, Any]:
         _SALES_DASHBOARD_CACHE["payload"] = payload
         _SALES_DASHBOARD_CACHE["loaded_at"] = time.monotonic()
         return payload
+
+
+def get_distribution_operations_data(
+    view: str,
+    *,
+    exception_state: str = "Shipped",
+    page: int = 1,
+    page_size: int = 50,
+    brand_filter: str = "All Brands",
+    strain_filter: str = "All Strains",
+    sku_filter: str = "All SKU Types",
+    search_text: str = "",
+) -> dict[str, Any]:
+    """Return only the selected Distribution Operations records.
+
+    The complete, analyzed transfer history stays in a shared server cache.
+    Each browser receives just one transfer page or one exception state, which
+    materially reduces tab-switch latency and websocket payload size.
+    """
+    sales_payload = get_sales_dashboard_data()
+    with _DISTRIBUTION_CACHE_LOCK:
+        transfers = _DISTRIBUTION_CACHE.get("transfers")
+        exceptions = _DISTRIBUTION_CACHE.get("exceptions")
+        exception_packages = _DISTRIBUTION_CACHE.get("exception_packages")
+        transfers = (
+            transfers.copy()
+            if isinstance(transfers, pd.DataFrame)
+            else pd.DataFrame(sales_payload.get("transfer_data", []))
+        )
+        exceptions = (
+            exceptions.copy()
+            if isinstance(exceptions, pd.DataFrame)
+            else pd.DataFrame(sales_payload.get("exceptions", []))
+        )
+        exception_packages = (
+            exception_packages.copy()
+            if isinstance(exception_packages, pd.DataFrame)
+            else pd.DataFrame(sales_payload.get("exception_packages", []))
+        )
+
+    def filtered(frame: pd.DataFrame) -> pd.DataFrame:
+        if frame.empty:
+            return frame
+        result = frame
+        if brand_filter != "All Brands" and "Brand" in result:
+            result = result[result["Brand"].astype(str).eq(brand_filter)]
+        if strain_filter != "All Strains" and "Strain" in result:
+            needle = strain_filter.strip().lower()
+            result = result[
+                result["Strain"].astype(str).str.lower().str.contains(
+                    re.escape(needle), na=False
+                )
+            ]
+        if sku_filter != "All SKU Types" and "SKU Type" in result:
+            result = result[result["SKU Type"].astype(str).apply(
+                lambda value: sku_filter in {
+                    part.strip() for part in value.split(",")
+                }
+            )]
+        search = search_text.strip().lower()
+        if search:
+            searchable = result.fillna("").astype(str).agg(" ".join, axis=1)
+            result = result[
+                searchable.str.lower().str.contains(re.escape(search), na=False)
+            ]
+        return result
+
+    if view == "exceptions":
+        if not exception_packages.empty and "State" in exception_packages:
+            exception_packages = exception_packages[
+                exception_packages["State"].astype(str).eq(exception_state)
+            ]
+        exception_packages = filtered(exception_packages)
+        package_records = record_list(exception_packages)
+        keys = {
+            (str(row.get("Manifest", "")), str(row.get("State", "")))
+            for row in package_records
+        }
+        if not exceptions.empty:
+            exceptions = exceptions[exceptions.apply(
+                lambda row: (
+                    str(row.get("Manifest", "")),
+                    str(row.get("State", "")),
+                ) in keys,
+                axis=1,
+            )]
+        total = len(exception_packages)
+        safe_size = max(int(page_size or 50), 1)
+        total_pages = max((total + safe_size - 1) // safe_size, 1)
+        safe_page = min(max(int(page or 1), 1), total_pages)
+        start = (safe_page - 1) * safe_size
+        return {
+            "exceptions": record_list(exceptions),
+            "exception_packages": record_list(
+                exception_packages.iloc[start:start + safe_size]
+            ),
+            "exception_total": total,
+            "exception_manifests": len({manifest for manifest, _ in keys}),
+            "exception_value": round(sum(
+                float(row.get("Shipper Value", 0) or 0)
+                for row in package_records
+            ), 2),
+            "exception_page": safe_page,
+        }
+
+    transfers = filtered(transfers)
+    total = len(transfers)
+    safe_size = max(int(page_size or 50), 1)
+    total_pages = max((total + safe_size - 1) // safe_size, 1)
+    safe_page = min(max(int(page or 1), 1), total_pages)
+    start = (safe_page - 1) * safe_size
+    return {
+        "transfer_data": record_list(transfers.iloc[start:start + safe_size]),
+        "transfer_total": total,
+        "transfer_page": safe_page,
+        "transfer_import_log": sales_payload.get("transfer_import_log", []),
+    }
 
 
 def demo_dashboard_data() -> dict[str, Any]:
