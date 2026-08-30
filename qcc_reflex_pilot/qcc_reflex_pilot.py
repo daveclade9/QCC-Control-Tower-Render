@@ -640,11 +640,18 @@ class DashboardState(rx.State):
     inventory_view_name: str = "cpg"
     inventory_page: int = 1
     inventory_page_size: int = 10
+    executive_action_rows_per_page: str = "10"
+    top_sku_rows_per_page: str = "10"
+    stockout_rows_per_page: str = "10"
+    customer_rows_per_page: str = "10"
+    transfer_import_rows_per_page: str = "10"
+    transfer_rows_per_page: str = "10"
+    exception_rows_per_page: str = "10"
     transfer_page: int = 1
-    transfer_page_size: int = 50
+    transfer_page_size: int = 10
     transfer_server_total: int = 0
     exception_page: int = 1
-    exception_page_size: int = 50
+    exception_page_size: int = 10
     exception_server_total: int = 0
     exception_server_manifests: int = 0
     exception_server_value: float = 0.0
@@ -1127,6 +1134,44 @@ class DashboardState(rx.State):
         self.exception_page = 1
         if self.workspace_view == "qa" and self.qa_view in {"transfers", "exceptions"}:
             yield DashboardState.load_distribution_operations_background
+
+    @staticmethod
+    def _validated_table_row_limit(value: str) -> str:
+        return value if value in {"10", "25", "50"} else "10"
+
+    @rx.event
+    def change_executive_action_rows_per_page(self, value: str):
+        self.executive_action_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def change_top_sku_rows_per_page(self, value: str):
+        self.top_sku_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def change_stockout_rows_per_page(self, value: str):
+        self.stockout_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def change_customer_rows_per_page(self, value: str):
+        self.customer_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def change_transfer_import_rows_per_page(self, value: str):
+        self.transfer_import_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def change_transfer_rows_per_page(self, value: str):
+        self.transfer_rows_per_page = self._validated_table_row_limit(value)
+        self.transfer_page_size = int(self.transfer_rows_per_page)
+        self.transfer_page = 1
+        yield DashboardState.load_distribution_operations_background
+
+    @rx.event
+    def change_exception_rows_per_page(self, value: str):
+        self.exception_rows_per_page = self._validated_table_row_limit(value)
+        self.exception_page_size = int(self.exception_rows_per_page)
+        self.exception_page = 1
+        yield DashboardState.load_distribution_operations_background
 
     @rx.event
     def change_retail_timeframe(self, value: str):
@@ -9372,6 +9417,26 @@ class DashboardState(rx.State):
         ] for row in self.filtered_top_skus]
 
     @rx.var(cache=True)
+    def executive_action_page_size(self) -> int:
+        return int(self.executive_action_rows_per_page)
+
+    @rx.var(cache=True)
+    def top_sku_page_size(self) -> int:
+        return int(self.top_sku_rows_per_page)
+
+    @rx.var(cache=True)
+    def stockout_page_size(self) -> int:
+        return int(self.stockout_rows_per_page)
+
+    @rx.var(cache=True)
+    def customer_page_size(self) -> int:
+        return int(self.customer_rows_per_page)
+
+    @rx.var(cache=True)
+    def transfer_import_page_size(self) -> int:
+        return int(self.transfer_import_rows_per_page)
+
+    @rx.var(cache=True)
     def velocity_rows(self) -> list[list[Any]]:
         return [[
             str(row.get("Brand", "") or ""), str(row.get("Strain", "") or ""),
@@ -10393,13 +10458,16 @@ def executive_dashboard_panel() -> rx.Component:
             ),
             align="center", gap="3", wrap="wrap", width="100%",
         ),
-        data_grid(
+        limited_data_grid(
             DashboardState.executive_action_rows,
             [
                 "Brand", "Strain", "SKU Type", "Current Units",
                 "Avg Weekly Units", "Weeks of Supply", "Demand Status",
             ],
-            "520px",
+            DashboardState.executive_action_rows_per_page,
+            DashboardState.change_executive_action_rows_per_page,
+            DashboardState.executive_action_page_size,
+            height="520px",
         ),
         width="100%", spacing="5",
     )
@@ -10449,10 +10517,13 @@ def overview_panel() -> rx.Component:
             width="100%",
         ),
         rx.heading("Top Historical SKUs", size="4"),
-        data_grid(
+        limited_data_grid(
             DashboardState.top_sku_rows,
             ["Brand", "Strain", "SKU Type", "Units", "Value", "Customers"],
-            "420px",
+            DashboardState.top_sku_rows_per_page,
+            DashboardState.change_top_sku_rows_per_page,
+            DashboardState.top_sku_page_size,
+            height="420px",
         ),
         spacing="5",
         width="100%",
@@ -10500,7 +10571,7 @@ def stockouts_panel() -> rx.Component:
             ),
             width="100%", border_left=f"5px solid {ACCENT}",
         ),
-        data_grid(
+        limited_data_grid(
             DashboardState.stockout_rows,
             [
                 "Brand", "Strain", "SKU\nType", "Avg\nWeekly\nUnits",
@@ -10508,6 +10579,9 @@ def stockouts_panel() -> rx.Component:
                 "Last\nShipped", "Lifecycle\nStatus",
                 "Recommended\nAction",
             ],
+            DashboardState.stockout_rows_per_page,
+            DashboardState.change_stockout_rows_per_page,
+            DashboardState.stockout_page_size,
             class_name="qcc-14px-data-grid",
         ),
         spacing="4",
@@ -11931,7 +12005,7 @@ def customers_panel() -> rx.Component:
             rx.button("Download Customer History CSV", on_click=DashboardState.download_customers, variant="outline"),
             width="100%",
         ),
-        data_grid(
+        limited_data_grid(
             DashboardState.customer_rows,
             [
                 "Destination\nLicense", "Customer", "Units\nShipped",
@@ -11939,7 +12013,10 @@ def customers_panel() -> rx.Component:
                 "First\nShipment", "Last\nShipment", "Median\nReceipt\nHours",
                 "Average\nManifest\nValue",
             ],
-            "600px",
+            DashboardState.customer_rows_per_page,
+            DashboardState.change_customer_rows_per_page,
+            DashboardState.customer_page_size,
+            height="600px",
             class_name="qcc-14px-data-grid",
         ),
         width="100%",
@@ -12257,13 +12334,16 @@ def exceptions_panel() -> rx.Component:
                     DashboardState.shipment_exception_view + " — Manifest Summary",
                     size="4",
                 ),
-                data_grid(
+                limited_data_grid(
                     DashboardState.exception_rows,
                     [
                         "Manifest", "State", "Destination License", "Customer",
                         "Created", "Received", "Packages", "Items", "Shipper Value",
                     ],
-                    "560px",
+                    DashboardState.exception_rows_per_page,
+                    DashboardState.change_exception_rows_per_page,
+                    DashboardState.exception_page_size,
+                    height="560px",
                     class_name="qcc-exception-data-grid",
                     column_width=190,
                     minimum_width=1710,
@@ -12278,7 +12358,7 @@ def exceptions_panel() -> rx.Component:
                 ),
                 rx.flex(
                     rx.button(
-                        "Previous 50",
+                        "Previous",
                         on_click=DashboardState.previous_exception_page,
                         disabled=DashboardState.exception_page <= 1,
                         loading=DashboardState.distribution_loading,
@@ -12290,7 +12370,7 @@ def exceptions_panel() -> rx.Component:
                         size="3",
                     ),
                     rx.button(
-                        "Next 50",
+                        "Next",
                         on_click=DashboardState.next_exception_page,
                         disabled=(
                             DashboardState.exception_page
@@ -12301,18 +12381,20 @@ def exceptions_panel() -> rx.Component:
                     ),
                     gap="3", align="center", wrap="wrap", width="100%",
                 ),
-                data_grid(
+                limited_data_grid(
                     DashboardState.exception_package_rows,
                     [
                         "Manifest", "State", "Destination License", "Customer",
                         "Package Tag", "Metrc Item", "Brand", "Strain", "SKU Type",
                         "Shipped Units", "Shipper Value", "Created", "Received",
                     ],
-                    "620px",
+                    DashboardState.exception_rows_per_page,
+                    DashboardState.change_exception_rows_per_page,
+                    DashboardState.exception_page_size,
+                    height="620px",
                     class_name="qcc-exception-data-grid",
                     column_width=190,
                     minimum_width=2470,
-                    page_size=50,
                 ),
                 width="100%",
                 spacing="3",
@@ -12343,24 +12425,27 @@ def transfer_data_panel() -> rx.Component:
         ),
         rx.text(
             "Transfer records are filtered and paged on the server, so the "
-            "browser receives only the 50 rows currently displayed. Supabase "
+            "browser receives only the rows currently displayed. Supabase "
             "remains the complete system of record.",
             color=MUTED,
         ),
         rx.heading("Import History", size="3"),
-        data_grid(
+        limited_data_grid(
             DashboardState.import_log_rows,
             [
                 "Filename", "Source Rows", "Stored Rows", "Inserted Rows",
                 "Updated Rows", "Created Min", "Created Max", "Imported At",
             ],
-            "280px",
+            DashboardState.transfer_import_rows_per_page,
+            DashboardState.change_transfer_import_rows_per_page,
+            DashboardState.transfer_import_page_size,
+            height="280px",
             class_name="qcc-transfer-data-grid",
         ),
         rx.heading("Recent Transfer Records", size="3"),
         rx.flex(
             rx.button(
-                "Previous 50",
+                "Previous",
                 on_click=DashboardState.previous_transfer_page,
                 disabled=DashboardState.transfer_page <= 1,
                 loading=DashboardState.distribution_loading,
@@ -12372,7 +12457,7 @@ def transfer_data_panel() -> rx.Component:
                 size="3",
             ),
             rx.button(
-                "Next 50",
+                "Next",
                 on_click=DashboardState.next_transfer_page,
                 disabled=(
                     DashboardState.transfer_page
@@ -12383,7 +12468,7 @@ def transfer_data_panel() -> rx.Component:
             ),
             gap="3", align="center", wrap="wrap", width="100%",
         ),
-        data_grid(
+        limited_data_grid(
             DashboardState.transfer_rows,
             [
                 "Manifest", "Invoice Number", "Created", "Received", "State",
@@ -12391,14 +12476,66 @@ def transfer_data_panel() -> rx.Component:
                 "Metrc Item", "Brand", "Strain", "SKU Type",
                 "Shipped Units", "Shipper Value", "Demand Record",
             ],
-            "640px",
+            DashboardState.transfer_rows_per_page,
+            DashboardState.change_transfer_rows_per_page,
+            DashboardState.transfer_page_size,
+            height="640px",
             class_name="qcc-transfer-data-grid",
             column_width=190,
             minimum_width=2850,
-            page_size=50,
         ),
         width="100%",
         spacing="4",
+    )
+
+
+def table_row_limit_control(
+    value: rx.Var,
+    on_change: Any,
+) -> rx.Component:
+    """Compact 10/25/50 row selector shared by operational tables."""
+    return rx.flex(
+        rx.text("Rows", size="1", weight="bold", color=MUTED),
+        rx.select(
+            ["10", "25", "50"],
+            value=value,
+            on_change=on_change,
+            width="76px",
+            size="1",
+        ),
+        align="center",
+        gap="2",
+        width="100%",
+    )
+
+
+def limited_data_grid(
+    data: rx.Var,
+    columns: list[str],
+    rows_value: rx.Var,
+    rows_change: Any,
+    page_size: rx.Var,
+    height: str = "480px",
+    show_search: bool = True,
+    class_name: str = "",
+    column_width: int = 165,
+    minimum_width: int = 900,
+) -> rx.Component:
+    """Grid.js table with a consistent row-limit control below it."""
+    return rx.vstack(
+        data_grid(
+            data,
+            columns,
+            height=height,
+            show_search=show_search,
+            class_name=class_name,
+            column_width=column_width,
+            minimum_width=minimum_width,
+            page_size=page_size,
+        ),
+        table_row_limit_control(rows_value, rows_change),
+        width="100%",
+        spacing="2",
     )
 
 
