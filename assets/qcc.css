@@ -309,6 +309,23 @@ body {
   hyphens: none !important;
 }
 
+/* Give the action-oriented stockout column enough room to display its full
+   header and useful recommendation text without an ellipsis. */
+.qcc-stockout-grid .gridjs-th:last-child,
+.qcc-stockout-grid .gridjs-td:last-child {
+  width: 260px !important;
+  min-width: 260px !important;
+}
+
+.qcc-stockout-grid .gridjs-th-content {
+  max-width: none !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  white-space: normal !important;
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+}
+
 /* Transfer tables contain long operational field names. Keep the header
    readable and reserve space for Grid.js sort controls without shrinking or
    clipping the title. */

@@ -509,6 +509,12 @@ class DashboardState(rx.State):
     qa_analyte_count: int = 0
     qa_cultivation_test_type: str = "All Test Types"
     qa_manufacturing_test_type: str = "All Test Types"
+    qa_cultivation_pass_rows_per_page: str = "10"
+    qa_cultivation_potency_rows_per_page: str = "10"
+    qa_cultivation_detail_rows_per_page: str = "10"
+    qa_manufacturing_pass_rows_per_page: str = "10"
+    qa_manufacturing_potency_rows_per_page: str = "10"
+    qa_manufacturing_detail_rows_per_page: str = "10"
     qa_cultivation_consistency_strain: str = ""
     qa_manufacturing_consistency_strain: str = ""
     qa_lookup_draft: str = ""
@@ -1312,6 +1318,30 @@ class DashboardState(rx.State):
         self.qa_manufacturing_consistency_strain = value
 
     @rx.event
+    def change_qa_cultivation_pass_rows_per_page(self, value: str):
+        self.qa_cultivation_pass_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def change_qa_cultivation_potency_rows_per_page(self, value: str):
+        self.qa_cultivation_potency_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def change_qa_cultivation_detail_rows_per_page(self, value: str):
+        self.qa_cultivation_detail_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def change_qa_manufacturing_pass_rows_per_page(self, value: str):
+        self.qa_manufacturing_pass_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def change_qa_manufacturing_potency_rows_per_page(self, value: str):
+        self.qa_manufacturing_potency_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def change_qa_manufacturing_detail_rows_per_page(self, value: str):
+        self.qa_manufacturing_detail_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
     def change_qa_lookup_search(self, value: str):
         # Typing must not evaluate or render matching database rows. The draft
         # is submitted only when Find and Preview is pressed.
@@ -2085,6 +2115,30 @@ class DashboardState(rx.State):
                 "Test Type", "Status", "Total THC", "Total Terpenes",
             ],
         )
+
+    @rx.var(cache=True)
+    def qa_cultivation_pass_page_size(self) -> int:
+        return int(self.qa_cultivation_pass_rows_per_page)
+
+    @rx.var(cache=True)
+    def qa_cultivation_potency_page_size(self) -> int:
+        return int(self.qa_cultivation_potency_rows_per_page)
+
+    @rx.var(cache=True)
+    def qa_cultivation_detail_page_size(self) -> int:
+        return int(self.qa_cultivation_detail_rows_per_page)
+
+    @rx.var(cache=True)
+    def qa_manufacturing_pass_page_size(self) -> int:
+        return int(self.qa_manufacturing_pass_rows_per_page)
+
+    @rx.var(cache=True)
+    def qa_manufacturing_potency_page_size(self) -> int:
+        return int(self.qa_manufacturing_potency_rows_per_page)
+
+    @rx.var(cache=True)
+    def qa_manufacturing_detail_page_size(self) -> int:
+        return int(self.qa_manufacturing_detail_rows_per_page)
 
     @rx.var(cache=True)
     def qa_cultivation_metrics(self) -> list[dict[str, str]]:
@@ -10578,12 +10632,14 @@ def stockouts_panel() -> rx.Component:
                 "Brand", "Strain", "SKU\nType", "Avg\nWeekly\nUnits",
                 "Current\nUnits", "Weeks\nof\nSupply", "Demand\nStatus",
                 "Last\nShipped", "Lifecycle\nStatus",
-                "Recommended Action",
+                "Recommended Actions",
             ],
             DashboardState.stockout_rows_per_page,
             DashboardState.change_stockout_rows_per_page,
             DashboardState.stockout_page_size,
-            class_name="qcc-14px-data-grid",
+            class_name="qcc-14px-data-grid qcc-stockout-grid",
+            column_width=200,
+            minimum_width=2000,
         ),
         spacing="4",
         width="100%",
@@ -13196,6 +13252,15 @@ def qa_operation_panel(
     consistency_handler: Any,
     chart_rows: rx.Var,
     detail_rows: rx.Var,
+    pass_rows_value: rx.Var,
+    pass_rows_handler: Any,
+    pass_page_size: rx.Var,
+    potency_rows_value: rx.Var,
+    potency_rows_handler: Any,
+    potency_page_size: rx.Var,
+    detail_rows_value: rx.Var,
+    detail_rows_handler: Any,
+    detail_page_size: rx.Var,
 ) -> rx.Component:
     return rx.vstack(
         rx.card(
@@ -13247,7 +13312,15 @@ def qa_operation_panel(
         rx.heading("Pass Success by Strain", size="4", color=DARK),
         rx.cond(
             pass_rows.length() > 0,
-            readable_grid(pass_rows, QA_PASS_COLUMNS, "430px"),
+            limited_data_grid(
+                pass_rows,
+                QA_PASS_COLUMNS,
+                pass_rows_value,
+                pass_rows_handler,
+                pass_page_size,
+                height="430px",
+                class_name="qcc-14px-data-grid",
+            ),
             rx.callout(
                 "No completed QA batches match the active global and compliance filters.",
                 icon="circle_help", width="100%",
@@ -13308,13 +13381,33 @@ def qa_operation_panel(
         rx.heading("Average and Range by Strain", size="4", color=DARK),
         rx.cond(
             potency_rows.length() > 0,
-            readable_grid(potency_rows, QA_POTENCY_COLUMNS, "500px"),
+            limited_data_grid(
+                potency_rows,
+                QA_POTENCY_COLUMNS,
+                potency_rows_value,
+                potency_rows_handler,
+                potency_page_size,
+                height="500px",
+                class_name="qcc-14px-data-grid",
+                column_width=180,
+                minimum_width=1620,
+            ),
             rx.callout("No potency ranges are available.", icon="circle_help"),
         ),
         rx.heading("Matching Package Records", size="4", color=DARK),
         rx.cond(
             detail_rows.length() > 0,
-            readable_grid(detail_rows, QA_DETAIL_COLUMNS, "560px"),
+            limited_data_grid(
+                detail_rows,
+                QA_DETAIL_COLUMNS,
+                detail_rows_value,
+                detail_rows_handler,
+                detail_page_size,
+                height="560px",
+                class_name="qcc-14px-data-grid",
+                column_width=190,
+                minimum_width=1710,
+            ),
             rx.callout(
                 "No package records match the active Brand, Strain, SKU Type, and compliance filters.",
                 icon="circle_help",
@@ -14171,6 +14264,15 @@ def qa_panel() -> rx.Component:
                     DashboardState.change_qa_cultivation_consistency_strain,
                     DashboardState.qa_cultivation_chart,
                     DashboardState.qa_cultivation_detail,
+                    DashboardState.qa_cultivation_pass_rows_per_page,
+                    DashboardState.change_qa_cultivation_pass_rows_per_page,
+                    DashboardState.qa_cultivation_pass_page_size,
+                    DashboardState.qa_cultivation_potency_rows_per_page,
+                    DashboardState.change_qa_cultivation_potency_rows_per_page,
+                    DashboardState.qa_cultivation_potency_page_size,
+                    DashboardState.qa_cultivation_detail_rows_per_page,
+                    DashboardState.change_qa_cultivation_detail_rows_per_page,
+                    DashboardState.qa_cultivation_detail_page_size,
                 )),
                 ("manufacturing", qa_operation_panel(
                     "Manufacturing",
@@ -14185,6 +14287,15 @@ def qa_panel() -> rx.Component:
                     DashboardState.change_qa_manufacturing_consistency_strain,
                     DashboardState.qa_manufacturing_chart,
                     DashboardState.qa_manufacturing_detail,
+                    DashboardState.qa_manufacturing_pass_rows_per_page,
+                    DashboardState.change_qa_manufacturing_pass_rows_per_page,
+                    DashboardState.qa_manufacturing_pass_page_size,
+                    DashboardState.qa_manufacturing_potency_rows_per_page,
+                    DashboardState.change_qa_manufacturing_potency_rows_per_page,
+                    DashboardState.qa_manufacturing_potency_page_size,
+                    DashboardState.qa_manufacturing_detail_rows_per_page,
+                    DashboardState.change_qa_manufacturing_detail_rows_per_page,
+                    DashboardState.qa_manufacturing_detail_page_size,
                 )),
                 ("labels", qa_label_panel()),
                 ("customers", customers_panel()),
@@ -14205,6 +14316,15 @@ def qa_panel() -> rx.Component:
                     DashboardState.change_qa_cultivation_consistency_strain,
                     DashboardState.qa_cultivation_chart,
                     DashboardState.qa_cultivation_detail,
+                    DashboardState.qa_cultivation_pass_rows_per_page,
+                    DashboardState.change_qa_cultivation_pass_rows_per_page,
+                    DashboardState.qa_cultivation_pass_page_size,
+                    DashboardState.qa_cultivation_potency_rows_per_page,
+                    DashboardState.change_qa_cultivation_potency_rows_per_page,
+                    DashboardState.qa_cultivation_potency_page_size,
+                    DashboardState.qa_cultivation_detail_rows_per_page,
+                    DashboardState.change_qa_cultivation_detail_rows_per_page,
+                    DashboardState.qa_cultivation_detail_page_size,
                 ),
             ),
             width="100%", padding_top="1rem", padding_bottom="6rem",
