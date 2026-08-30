@@ -10578,7 +10578,7 @@ def stockouts_panel() -> rx.Component:
                 "Brand", "Strain", "SKU\nType", "Avg\nWeekly\nUnits",
                 "Current\nUnits", "Weeks\nof\nSupply", "Demand\nStatus",
                 "Last\nShipped", "Lifecycle\nStatus",
-                "Recommended\nAction",
+                "Recommended Action",
             ],
             DashboardState.stockout_rows_per_page,
             DashboardState.change_stockout_rows_per_page,

@@ -302,12 +302,19 @@ body {
   overflow-wrap: anywhere;
 }
 
+.qcc-fixed-column-grid .gridjs-th-content {
+  white-space: normal !important;
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+  hyphens: none !important;
+}
+
 /* Transfer tables contain long operational field names. Keep the header
    readable and reserve space for Grid.js sort controls without shrinking or
    clipping the title. */
 .qcc-transfer-data-grid .gridjs-th {
   position: relative;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.15;
   vertical-align: middle;
   height: 76px;
@@ -352,8 +359,8 @@ body {
 }
 
 .qcc-transfer-data-grid .gridjs-td {
-  font-size: 15px;
-  line-height: 1.3;
+  font-size: 14px;
+  line-height: 1.25;
 }
 
 .qcc-exception-data-grid .gridjs-th {
