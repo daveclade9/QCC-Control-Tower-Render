@@ -143,9 +143,10 @@ from .historical_yield import (
     historical_strain_table_data,
 )
 from .plant_data import parse_metrc_plant_exports, plant_crop_reconciliation
+from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 
 
-PILOT_VERSION = "0.9.6.13-staging"
+PILOT_VERSION = "0.9.6.14-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -13183,7 +13184,7 @@ def sales_demand_workspace() -> rx.Component:
         rx.box(
             rx.heading("Sales & Demand Planning", size="6"),
             rx.text(
-                "Historical demand, stockouts, SKU coverage, and production plans.",
+                "Historical demand, stockouts, SKU coverage, production plans, and the buyer menu.",
                 color=MUTED,
             ),
             width="100%",
@@ -13194,6 +13195,7 @@ def sales_demand_workspace() -> rx.Component:
                 rx.tabs.trigger("Stockouts", value="stockouts"),
                 rx.tabs.trigger("SKU Planning & Coverage", value="planning"),
                 rx.tabs.trigger("Production Planning", value="production"),
+                rx.tabs.trigger("Buyer Menu Admin", value="buyer_menu"),
                 class_name="qcc-tabs",
                 width="100%",
             ),
@@ -13208,6 +13210,7 @@ def sales_demand_workspace() -> rx.Component:
                 ("stockouts", stockouts_panel()),
                 ("planning", sku_planning_panel()),
                 ("production", production_planning_panel()),
+                ("buyer_menu", sales_menu_admin_panel()),
                 overview_panel(),
             ),
             width="100%", padding_top="1.25rem",
@@ -17880,4 +17883,10 @@ app.add_page(
     auth_callback_page,
     route="/auth/callback",
     title="QCC Control Tower - Secure Sign In",
+)
+app.add_page(
+    buyer_menu_page,
+    route="/menu",
+    title="QCC New Jersey Wholesale Menu",
+    on_load=BuyerMenuState.load_public_menu,
 )

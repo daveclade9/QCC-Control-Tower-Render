@@ -1193,3 +1193,324 @@ body {
     break-inside: avoid;
   }
 }
+
+/* QCC buyer menu */
+.qcc-public-menu {
+  --menu-ink: #171512;
+  --menu-muted: #756d62;
+  --menu-gold: #c7a55b;
+  --menu-cream: #f5f1e8;
+  color: var(--menu-ink);
+  background:
+    radial-gradient(circle at 14% 8%, rgba(199, 165, 91, 0.13), transparent 28rem),
+    linear-gradient(180deg, #faf8f3 0%, #f1ece2 100%);
+  font-family: Inter, "Helvetica Neue", Arial, sans-serif;
+}
+
+.qcc-menu-access-page {
+  background:
+    linear-gradient(135deg, rgba(10, 10, 9, 0.96), rgba(31, 28, 24, 0.94)),
+    radial-gradient(circle at 15% 10%, #c7a55b, transparent 42%);
+}
+
+.qcc-menu-access-card {
+  background: rgba(255, 253, 248, 0.98);
+  border: 1px solid rgba(199, 165, 91, 0.52);
+  border-radius: 22px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+}
+
+.qcc-menu-access-qcc-logo {
+  width: 112px;
+  height: auto;
+  object-fit: contain;
+}
+
+.qcc-menu-clade9-logo {
+  width: 220px;
+  height: auto;
+  max-height: 90px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
+.qcc-menu-brand-navigation {
+  flex-wrap: nowrap !important;
+  padding: 1.25rem clamp(0.75rem, 3vw, 2rem);
+  border: 1px solid rgba(117, 109, 98, 0.2);
+  border-radius: 16px;
+  background: rgba(255, 253, 248, 0.9);
+  box-shadow: 0 10px 28px rgba(23, 21, 18, 0.07);
+}
+
+.qcc-menu-brand-nav-link {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 0.65rem;
+  border-radius: 12px;
+  transition: background 150ms ease, transform 150ms ease;
+  cursor: pointer;
+}
+
+.qcc-menu-brand-nav-link:hover {
+  background: rgba(199, 165, 91, 0.12);
+  transform: translateY(-2px);
+}
+
+.qcc-menu-brand-nav-logo {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.qcc-menu-brand-nav-craft-kings {
+  height: 64px;
+}
+
+.qcc-menu-brand-nav-locals {
+  height: 82px;
+}
+
+.qcc-menu-brand-instruction {
+  color: #171512;
+  letter-spacing: -0.015em;
+  margin-top: 0.25rem;
+}
+
+.qcc-menu-brand-logo {
+  width: auto;
+  max-width: 220px;
+  height: 58px;
+  object-fit: contain;
+  filter: grayscale(100%);
+  opacity: 0.82;
+}
+
+.qcc-menu-brand-logo-square {
+  height: 74px;
+}
+
+.qcc-menu-brand-section {
+  padding: clamp(1.2rem, 3vw, 2.2rem);
+  border: 1px solid rgba(117, 109, 98, 0.18);
+  border-radius: 20px;
+  background: rgba(255, 253, 248, 0.6);
+  box-shadow: 0 12px 35px rgba(23, 21, 18, 0.05);
+  scroll-margin-top: 6.5rem;
+}
+
+.qcc-menu-brand-heading {
+  min-height: 105px;
+  padding-bottom: 1.4rem;
+  border-bottom: 2px solid rgba(199, 165, 91, 0.55);
+}
+
+.qcc-menu-section-logo {
+  display: block;
+  width: auto;
+  object-fit: contain;
+}
+
+.qcc-menu-craft-kings-logo {
+  max-width: min(520px, 88vw);
+  height: 90px;
+}
+
+.qcc-menu-locals-logo {
+  width: 160px;
+  height: 150px;
+}
+
+.qcc-menu-royal-wordmark {
+  color: #171512;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2rem, 4vw, 3.5rem) !important;
+  font-weight: 600;
+  letter-spacing: 0.17em;
+  text-align: center;
+}
+
+.qcc-menu-category-heading {
+  padding-left: 1rem;
+  border-left: 4px solid var(--menu-gold);
+}
+
+.qcc-menu-access-input input {
+  text-align: center;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.qcc-menu-primary-button {
+  color: #fff !important;
+  background: linear-gradient(135deg, #171512, #34302a) !important;
+  border: 1px solid #171512 !important;
+  box-shadow: 0 8px 24px rgba(23, 21, 18, 0.2);
+}
+
+.qcc-menu-primary-button:hover {
+  background: linear-gradient(135deg, #2a261f, #171512) !important;
+  transform: translateY(-1px);
+}
+
+.qcc-menu-header {
+  padding: 0.3rem 0;
+  border-bottom: 1px solid rgba(117, 109, 98, 0.22);
+}
+
+.qcc-menu-hero {
+  padding: clamp(2.4rem, 7vw, 6.5rem);
+  border-radius: 22px;
+  color: #fff;
+  background:
+    linear-gradient(100deg, rgba(8, 8, 7, 0.98), rgba(27, 25, 21, 0.9)),
+    radial-gradient(circle at 84% 20%, rgba(199, 165, 91, 0.58), transparent 40%);
+  box-shadow: 0 18px 55px rgba(23, 21, 18, 0.18);
+}
+
+.qcc-menu-hero h1,
+.qcc-menu-hero h2,
+.qcc-menu-hero h3 {
+  color: #fff;
+  letter-spacing: -0.035em;
+}
+
+.qcc-menu-filter-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 0.9rem;
+  background: rgba(250, 248, 243, 0.94);
+  border: 1px solid rgba(117, 109, 98, 0.2);
+  border-radius: 14px;
+  backdrop-filter: blur(12px);
+}
+
+.qcc-menu-product-list {
+  min-width: 900px;
+  table-layout: fixed;
+  overflow: hidden;
+  border: 1px solid rgba(117, 109, 98, 0.24);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.qcc-menu-size-group {
+  padding: 0.9rem;
+  border: 2px solid rgba(199, 165, 91, 0.48);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 7px 20px rgba(23, 21, 18, 0.05);
+}
+
+.qcc-menu-size-label {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 0.15rem 0.7rem;
+}
+
+.qcc-menu-size-label [data-accent-color] {
+  min-width: 64px;
+  justify-content: center;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.qcc-menu-product-list thead {
+  color: #fff;
+  background: #171512;
+}
+
+.qcc-menu-product-list th {
+  height: 48px;
+  padding: 0.7rem 0.85rem;
+  color: #fff !important;
+  font-size: 0.73rem;
+  font-weight: 800;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+  white-space: normal;
+  border-right: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.qcc-menu-product-list th:first-child { width: 34%; }
+.qcc-menu-product-list th:nth-child(2) { width: 17%; }
+.qcc-menu-product-list th:nth-child(3) { width: 11%; }
+.qcc-menu-product-list th:nth-child(4) { width: 11%; }
+.qcc-menu-product-list th:nth-child(5) { width: 14%; }
+.qcc-menu-product-list th:nth-child(6) { width: 13%; }
+
+.qcc-menu-product-list td {
+  padding: 0.85rem;
+  vertical-align: middle;
+  border-right: 1px solid rgba(117, 109, 98, 0.14);
+}
+
+.qcc-menu-product-list-row {
+  transition: background 120ms ease;
+}
+
+.qcc-menu-product-list-row:hover {
+  background: rgba(199, 165, 91, 0.09);
+}
+
+.qcc-menu-product-name-cell {
+  border-left: 3px solid transparent;
+}
+
+.qcc-menu-product-list-row:hover .qcc-menu-product-name-cell {
+  border-left-color: var(--menu-gold);
+}
+
+.qcc-menu-eyebrow {
+  color: var(--menu-muted);
+  font-size: 0.67rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.qcc-menu-cart {
+  position: sticky;
+  top: 5.2rem;
+  border: 1px solid rgba(199, 165, 91, 0.5) !important;
+  border-top: 5px solid var(--menu-gold) !important;
+  background: rgba(255, 253, 248, 0.98) !important;
+  box-shadow: 0 14px 42px rgba(23, 21, 18, 0.13) !important;
+}
+
+.qcc-menu-footer {
+  padding: 1.3rem 0 2rem;
+  border-top: 1px solid rgba(117, 109, 98, 0.24);
+}
+
+.qcc-menu-qcc-logo {
+  width: 28px;
+  height: 36px;
+  object-fit: cover;
+  object-position: center;
+}
+
+@media (max-width: 80rem) {
+  .qcc-menu-cart { position: static; }
+}
+
+@media (max-width: 40rem) {
+  .qcc-menu-hero { padding: 2.2rem 1.25rem; }
+  .qcc-menu-access-card { padding: 2rem 1.25rem !important; }
+  .qcc-menu-clade9-logo { width: 145px; }
+  .qcc-menu-brand-logo { max-width: 165px; height: 46px; }
+  .qcc-menu-brand-section { padding: 1rem; }
+  .qcc-menu-craft-kings-logo { height: 58px; }
+  .qcc-menu-locals-logo { width: 120px; height: 112px; }
+  .qcc-menu-brand-navigation { gap: 0.35rem !important; padding: 0.65rem; }
+  .qcc-menu-brand-nav-link { padding: 0.35rem; }
+  .qcc-menu-brand-nav-craft-kings { height: 38px; }
+  .qcc-menu-brand-nav-locals { height: 52px; }
+  .qcc-menu-size-group { padding: 0.55rem; }
+}
