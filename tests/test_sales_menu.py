@@ -8,6 +8,7 @@ from qcc_reflex_pilot.sales_menu import (
     _package_size_sort,
     authenticate_menu_customer,
     load_customer_menu_products,
+    match_menu_inventory,
     sales_menu_seed_products,
     send_order_email,
 )
@@ -66,6 +67,38 @@ class SalesMenuTests(unittest.TestCase):
             sent, message = send_order_email({}, "New order")
         self.assertFalse(sent)
         self.assertIn("not configured", message)
+
+    def test_flower_inventory_converts_units_to_full_cases(self):
+        product = next(
+            row for row in self.products
+            if row["brand"] == "Clade9"
+            and row["package_size"] == "3.5g"
+            and row["strain"] == "Diamond Bar"
+        )
+        matched = match_menu_inventory([product], [{
+            "brand": "Clade9", "strain": "Diamond Bar",
+            "sku_type": "3.5g Flower", "on_hand_units": 175,
+        }])[0]
+        self.assertEqual(matched["match_status"], "Matched")
+        self.assertEqual(matched["metrc_on_hand_units"], 175)
+        self.assertEqual(
+            matched["metrc_case_equivalent"], 175 // product["units_per_case"]
+        )
+
+    def test_ambiguous_inventory_match_requires_review(self):
+        product = next(
+            row for row in self.products
+            if row["brand"] == "Clade9"
+            and row["category"] == "Pre-Rolls"
+            and row["package_size"] == "1g"
+            and row["strain"] == "J1"
+            and "non infused" in row["product_type"].lower()
+        )
+        matched = match_menu_inventory([product], [
+            {"brand": "Clade9", "strain": "J1", "sku_type": "1g Pre-Roll A", "on_hand_units": 10},
+            {"brand": "Clade9", "strain": "J1", "sku_type": "1g Pre-Roll B", "on_hand_units": 20},
+        ])[0]
+        self.assertEqual(matched["match_status"], "Multiple Metrc SKU matches")
 
 
 if __name__ == "__main__":

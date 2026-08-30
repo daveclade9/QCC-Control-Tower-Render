@@ -1749,6 +1749,30 @@ def load_latest_inventory_skus() -> tuple[dict[str, Any], pd.DataFrame]:
     return snapshot, rows
 
 
+def load_current_metrc_customers() -> pd.DataFrame:
+    """Load the current retailer directory from stored Metrc transfers.
+
+    This intentionally uses a compact database aggregate instead of hydrating
+    the full Sales/Distribution analysis.  It is suitable for synchronizing
+    buyer-menu accounts and can later be replaced by the Metrc API without
+    changing the menu-facing contract.
+    """
+    return safe_query_frame(
+        "SELECT BTRIM(COALESCE(destination_license, '')) AS license_number, "
+        "MAX(BTRIM(COALESCE(destination_facility, ''))) AS store_name, "
+        "MIN(created_at) AS first_shipment, MAX(created_at) AS last_shipment, "
+        "COUNT(DISTINCT manifest) AS manifest_count "
+        "FROM transfer_records WHERE origin_facility = %s "
+        "AND COALESCE(voided, 0) = 0 "
+        "AND COALESCE(destination_facility_type, '') ILIKE '%%Retailer%%' "
+        "AND BTRIM(COALESCE(destination_license, '')) <> '' "
+        "GROUP BY BTRIM(COALESCE(destination_license, '')) "
+        "ORDER BY MAX(created_at) DESC",
+        ("The QCC Group LLC",),
+        statement_timeout_seconds=45,
+    )
+
+
 def load_latest_inventory_packages(snapshot_id: str) -> pd.DataFrame:
     """Load the classified package rows published by Streamlit 81.4+."""
     if not snapshot_id:

@@ -23,7 +23,11 @@ except ImportError:  # pragma: no cover - demo mode remains usable without it.
     psycopg = None
 
 from .auth import validate_app_session
-from .data import database_url
+from .data import (
+    database_url,
+    load_current_metrc_customers,
+    load_latest_inventory_skus,
+)
 
 
 MENU_BRANDS = [
@@ -177,6 +181,98 @@ def _access_code_hash(access_code: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def _inventory_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+
+def _menu_inventory_family(product: dict[str, Any]) -> str:
+    category = _inventory_key(product.get("category"))
+    if category == "flower":
+        return "flower"
+    if category == "prerolls":
+        return "preroll"
+    if category in {"vapecartridges", "disposables"}:
+        return "vape"
+    if category == "concentrates":
+        return "concentrate"
+    if category == "edibles":
+        return "edible"
+    return category
+
+
+def match_menu_inventory(
+    products: list[dict[str, Any]], inventory_rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Match menu rows to the latest Metrc SKU summary conservatively.
+
+    Brand, strain, package size, and product family must agree.  Additional
+    product-type tokens break ties for infused pre-rolls and concentrates.  An
+    ambiguous row is left for manual review instead of publishing a bad count.
+    """
+    results: list[dict[str, Any]] = []
+    brand_aliases = {
+        "meltxclade9": {"meltxclade9", "meltclade9"},
+        "royalsmalls": {"royalsmalls", "craftkingsroyalsmalls"},
+    }
+    for product in products:
+        product_brand = _inventory_key(product.get("brand"))
+        accepted_brands = brand_aliases.get(product_brand, {product_brand})
+        strain = _inventory_key(product.get("strain"))
+        size = _inventory_key(product.get("package_size"))
+        family = _menu_inventory_family(product)
+        type_tokens = {
+            token for token in re.findall(r"[a-z0-9]+", str(product.get("product_type", "")).casefold())
+            if token not in {"single", "pack", "mylar", "jars", "non", "infused"}
+        }
+        candidates: list[tuple[int, dict[str, Any]]] = []
+        for row in inventory_rows:
+            row_brand = _inventory_key(row.get("brand"))
+            row_strain = _inventory_key(row.get("strain"))
+            sku_key = _inventory_key(row.get("sku_type"))
+            if row_brand not in accepted_brands or row_strain != strain:
+                continue
+            if size and size not in sku_key:
+                continue
+            family_match = (
+                (family == "flower" and "flower" in sku_key)
+                or (family == "preroll" and "preroll" in sku_key)
+                or (family == "vape" and any(word in sku_key for word in ("vape", "cartridge", "disposable")))
+                or (family == "concentrate" and any(word in sku_key for word in ("concentrate", "rosin", "badder", "diamond")))
+                or (family == "edible" and any(word in sku_key for word in ("edible", "gumm")))
+            )
+            if not family_match:
+                continue
+            score = 10
+            score += sum(1 for token in type_tokens if _inventory_key(token) in sku_key)
+            candidates.append((score, row))
+        if not candidates:
+            results.append({
+                "product_id": product["product_id"], "metrc_on_hand_units": 0,
+                "metrc_case_equivalent": 0, "match_status": "No Metrc SKU match",
+                "match_detail": "Use a manual override until the SKU mapping is available.",
+            })
+            continue
+        best_score = max(score for score, _ in candidates)
+        best = [row for score, row in candidates if score == best_score]
+        sku_names = {_inventory_key(row.get("sku_type")) for row in best}
+        if len(sku_names) > 1:
+            results.append({
+                "product_id": product["product_id"], "metrc_on_hand_units": 0,
+                "metrc_case_equivalent": 0, "match_status": "Multiple Metrc SKU matches",
+                "match_detail": ", ".join(sorted({str(row.get("sku_type", "")) for row in best})),
+            })
+            continue
+        units = int(round(sum(float(row.get("on_hand_units", 0) or 0) for row in best)))
+        units_per_case = max(int(product.get("units_per_case", 0) or 0), 1)
+        results.append({
+            "product_id": product["product_id"], "metrc_on_hand_units": max(units, 0),
+            "metrc_case_equivalent": max(units, 0) // units_per_case,
+            "match_status": "Matched",
+            "match_detail": ", ".join(sorted({str(row.get("sku_type", "")) for row in best})),
+        })
+    return results
+
+
 def _records(cursor: Any) -> list[dict[str, Any]]:
     if not cursor.description:
         return []
@@ -199,6 +295,12 @@ def _ensure_sales_menu_schema(cursor: Any) -> None:
             unit_price NUMERIC(12, 2) NOT NULL,
             units_per_case INTEGER NOT NULL,
             available_cases INTEGER NOT NULL DEFAULT 0,
+            metrc_on_hand_units INTEGER,
+            metrc_case_equivalent INTEGER,
+            manual_override_cases INTEGER,
+            inventory_match_status TEXT NOT NULL DEFAULT 'Not synced',
+            inventory_match_detail TEXT NOT NULL DEFAULT '',
+            inventory_synced_at TIMESTAMPTZ,
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             notes TEXT NOT NULL DEFAULT '',
             sort_order INTEGER NOT NULL DEFAULT 0,
@@ -219,12 +321,31 @@ def _ensure_sales_menu_schema(cursor: Any) -> None:
             assigned_salesperson TEXT NOT NULL DEFAULT '',
             minimum_order_cases INTEGER NOT NULL DEFAULT 0,
             allowed_brands JSONB NOT NULL DEFAULT '[]'::jsonb,
-            access_code_hash TEXT NOT NULL UNIQUE,
-            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            access_code_hash TEXT UNIQUE,
+            source_system TEXT NOT NULL DEFAULT 'Manual',
+            metrc_synced_at TIMESTAMPTZ,
+            last_shipment TIMESTAMPTZ,
+            is_active BOOLEAN NOT NULL DEFAULT FALSE,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """
+    )
+    cursor.execute(
+        "ALTER TABLE qcc_sales_menu_products "
+        "ADD COLUMN IF NOT EXISTS metrc_on_hand_units INTEGER, "
+        "ADD COLUMN IF NOT EXISTS metrc_case_equivalent INTEGER, "
+        "ADD COLUMN IF NOT EXISTS manual_override_cases INTEGER, "
+        "ADD COLUMN IF NOT EXISTS inventory_match_status TEXT NOT NULL DEFAULT 'Not synced', "
+        "ADD COLUMN IF NOT EXISTS inventory_match_detail TEXT NOT NULL DEFAULT '', "
+        "ADD COLUMN IF NOT EXISTS inventory_synced_at TIMESTAMPTZ"
+    )
+    cursor.execute(
+        "ALTER TABLE qcc_sales_menu_customers "
+        "ALTER COLUMN access_code_hash DROP NOT NULL, "
+        "ADD COLUMN IF NOT EXISTS source_system TEXT NOT NULL DEFAULT 'Manual', "
+        "ADD COLUMN IF NOT EXISTS metrc_synced_at TIMESTAMPTZ, "
+        "ADD COLUMN IF NOT EXISTS last_shipment TIMESTAMPTZ"
     )
     cursor.execute(
         """
@@ -667,9 +788,22 @@ def submit_menu_order(
 
 def load_menu_admin_data() -> dict[str, Any]:
     if not ensure_sales_menu_schema():
+        products = sales_menu_seed_products()
+        for product in products:
+            product.update({
+                "held_cases": 0,
+                "available_to_order": int(product.get("available_cases", 0) or 0),
+                "metrc_on_hand_units": 0,
+                "metrc_case_equivalent": 0,
+                "manual_override_cases": None,
+                "manual_override_display": "",
+                "inventory_match_status": "Preview mode",
+                "inventory_match_detail": "Connect Supabase to load Metrc inventory.",
+                "inventory_source": "Metrc snapshot",
+            })
         return {
             "database_ready": False,
-            "products": sales_menu_seed_products(),
+            "products": products,
             "customers": [],
             "orders": [],
         }
@@ -679,6 +813,9 @@ def load_menu_admin_data() -> dict[str, Any]:
                 "SELECT p.product_id, p.brand, p.category, p.package_size, "
                 "p.product_type, p.strain, p.thc_display, p.terpene_display, "
                 "p.unit_price, p.units_per_case, p.available_cases, p.is_active, "
+                "p.metrc_on_hand_units, p.metrc_case_equivalent, "
+                "p.manual_override_cases, p.inventory_match_status, "
+                "p.inventory_match_detail, p.inventory_synced_at, "
                 "p.notes, p.sort_order, COALESCE((SELECT SUM(oi.case_count) "
                 "FROM qcc_sales_menu_order_items oi JOIN qcc_sales_menu_orders o "
                 "ON o.order_id = oi.order_id WHERE oi.product_id = p.product_id "
@@ -690,7 +827,9 @@ def load_menu_admin_data() -> dict[str, Any]:
             cursor.execute(
                 "SELECT customer_id, buyer_name, store_name, license_number, email, "
                 "payment_terms, assigned_salesperson, minimum_order_cases, "
-                "allowed_brands, is_active, created_at FROM qcc_sales_menu_customers "
+                "allowed_brands, is_active, source_system, metrc_synced_at, "
+                "last_shipment, (access_code_hash IS NOT NULL) AS has_access_code, "
+                "created_at FROM qcc_sales_menu_customers "
                 "ORDER BY store_name, buyer_name"
             )
             customers = _records(cursor)
@@ -708,6 +847,16 @@ def load_menu_admin_data() -> dict[str, Any]:
     for product in products:
         product["unit_price"] = float(product.get("unit_price", 0) or 0)
         product["available_cases"] = int(product.get("available_cases", 0) or 0)
+        product["metrc_on_hand_units"] = int(product.get("metrc_on_hand_units", 0) or 0)
+        product["metrc_case_equivalent"] = int(product.get("metrc_case_equivalent", 0) or 0)
+        product["manual_override_display"] = (
+            "" if product.get("manual_override_cases") is None
+            else str(int(product.get("manual_override_cases", 0) or 0))
+        )
+        product["inventory_source"] = (
+            "Manual override" if product.get("manual_override_cases") is not None
+            else "Metrc snapshot"
+        )
         product["held_cases"] = int(product.get("held_cases", 0) or 0)
         product["available_to_order"] = max(
             product["available_cases"] - product["held_cases"], 0
@@ -734,9 +883,122 @@ def update_menu_availability(
             for product_id, cases in case_counts.items():
                 cursor.execute(
                     "UPDATE qcc_sales_menu_products SET available_cases = %s, "
+                    "manual_override_cases = %s, "
                     "updated_by = %s, updated_at = NOW() WHERE product_id = %s",
-                    (max(int(cases), 0), updated_by, product_id),
+                    (max(int(cases), 0), max(int(cases), 0), updated_by, product_id),
                 )
+        connection.commit()
+
+
+def refresh_menu_inventory_from_metrc(*, updated_by: str) -> dict[str, Any]:
+    """Publish full-case menu quantities from the latest inventory snapshot."""
+    ensure_sales_menu_schema()
+    snapshot, frame = load_latest_inventory_skus()
+    if not snapshot:
+        raise ValueError("No published Metrc inventory snapshot is available.")
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT product_id, brand, category, package_size, product_type, "
+                "strain, units_per_case FROM qcc_sales_menu_products"
+            )
+            products = _records(cursor)
+            matches = match_menu_inventory(products, frame.to_dict("records"))
+            for match in matches:
+                cursor.execute(
+                    "UPDATE qcc_sales_menu_products SET metrc_on_hand_units = %s, "
+                    "metrc_case_equivalent = %s, inventory_match_status = %s, "
+                    "inventory_match_detail = %s, inventory_synced_at = NOW(), "
+                    "available_cases = CASE WHEN manual_override_cases IS NULL "
+                    "THEN %s ELSE manual_override_cases END, updated_by = %s, "
+                    "updated_at = NOW() WHERE product_id = %s",
+                    (
+                        match["metrc_on_hand_units"], match["metrc_case_equivalent"],
+                        match["match_status"], match["match_detail"],
+                        match["metrc_case_equivalent"], updated_by, match["product_id"],
+                    ),
+                )
+        connection.commit()
+    return {
+        "snapshot_date": str(snapshot.get("business_date") or snapshot.get("published_at") or ""),
+        "matched": sum(1 for row in matches if row["match_status"] == "Matched"),
+        "review": sum(1 for row in matches if row["match_status"] != "Matched"),
+    }
+
+
+def clear_menu_inventory_override(product_id: str, *, updated_by: str) -> None:
+    ensure_sales_menu_schema()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE qcc_sales_menu_products SET manual_override_cases = NULL, "
+                "available_cases = COALESCE(metrc_case_equivalent, 0), "
+                "updated_by = %s, updated_at = NOW() WHERE product_id = %s",
+                (updated_by, product_id),
+            )
+        connection.commit()
+
+
+def sync_menu_customers_from_metrc() -> int:
+    """Upsert transfer-derived Metrc retailers as inactive buyer accounts."""
+    ensure_sales_menu_schema()
+    frame = load_current_metrc_customers()
+    rows = frame.to_dict("records")
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            for row in rows:
+                license_number = str(row.get("license_number", "") or "").strip()
+                if not license_number:
+                    continue
+                customer_id = "METRC-" + hashlib.sha256(
+                    license_number.upper().encode("utf-8")
+                ).hexdigest()[:18].upper()
+                store_name = str(row.get("store_name", "") or license_number).strip()
+                cursor.execute(
+                    "INSERT INTO qcc_sales_menu_customers (customer_id, buyer_name, "
+                    "store_name, license_number, allowed_brands, access_code_hash, "
+                    "source_system, metrc_synced_at, last_shipment, is_active) "
+                    "VALUES (%s, '', %s, %s, %s::jsonb, NULL, 'Metrc Transfers', "
+                    "NOW(), %s, FALSE) ON CONFLICT (customer_id) DO UPDATE SET "
+                    "store_name = EXCLUDED.store_name, license_number = EXCLUDED.license_number, "
+                    "source_system = 'Metrc Transfers', metrc_synced_at = NOW(), "
+                    "last_shipment = EXCLUDED.last_shipment, updated_at = NOW()",
+                    (
+                        customer_id, store_name, license_number,
+                        json.dumps(MENU_BRANDS), row.get("last_shipment"),
+                    ),
+                )
+        connection.commit()
+    return len(rows)
+
+
+def activate_menu_customer(
+    customer_id: str, *, buyer_name: str, email: str, payment_terms: str,
+    assigned_salesperson: str, minimum_order_cases: int,
+    allowed_brands: list[str], access_code: str,
+) -> None:
+    if not buyer_name.strip():
+        raise ValueError("Enter the buyer name for this account.")
+    if len(re.sub(r"\s+", "", access_code)) < 6:
+        raise ValueError("Use an access code with at least six characters.")
+    ensure_sales_menu_schema()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE qcc_sales_menu_customers SET buyer_name = %s, email = %s, "
+                "payment_terms = %s, assigned_salesperson = %s, "
+                "minimum_order_cases = %s, allowed_brands = %s::jsonb, "
+                "access_code_hash = %s, is_active = TRUE, updated_at = NOW() "
+                "WHERE customer_id = %s",
+                (
+                    buyer_name.strip(), email.strip(), payment_terms.strip(),
+                    assigned_salesperson.strip(), max(int(minimum_order_cases), 0),
+                    json.dumps(allowed_brands or MENU_BRANDS),
+                    _access_code_hash(access_code), customer_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Select a Metrc customer to activate.")
         connection.commit()
 
 
@@ -758,8 +1020,8 @@ def create_menu_customer(
                 "INSERT INTO qcc_sales_menu_customers (customer_id, buyer_name, "
                 "store_name, license_number, email, payment_terms, "
                 "assigned_salesperson, minimum_order_cases, allowed_brands, "
-                "access_code_hash) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s::jsonb, %s)",
+                "access_code_hash, source_system, is_active) VALUES (%s, %s, %s, "
+                "%s, %s, %s, %s, %s, %s::jsonb, %s, 'Manual', TRUE)",
                 (
                     customer_id, buyer_name.strip(), store_name.strip(),
                     license_number.strip(), email.strip(), payment_terms.strip(),
@@ -815,9 +1077,10 @@ def review_menu_order(order_id: str, status: str, *, reviewed_by: str) -> dict[s
                 for product_id, case_count in cursor.fetchall():
                     cursor.execute(
                         "UPDATE qcc_sales_menu_products SET available_cases = "
+                        "available_cases - %s, manual_override_cases = "
                         "available_cases - %s, updated_by = %s, updated_at = NOW() "
                         "WHERE product_id = %s AND available_cases >= %s",
-                        (case_count, reviewed_by, product_id, case_count),
+                        (case_count, case_count, reviewed_by, product_id, case_count),
                     )
                     if cursor.rowcount != 1:
                         raise ValueError(
@@ -1130,6 +1393,7 @@ class MenuAdminState(rx.State):
     customer_minimum_cases: str = "0"
     customer_allowed_brands: str = "Clade9, Craft Kings, Royal Smalls, Melt x Clade9, Locals Only"
     customer_access_code: str = ""
+    customer_selection: str = ""
     price_customer_selection: str = ""
     price_product_selection: str = ""
     price_override: str = ""
@@ -1156,6 +1420,8 @@ class MenuAdminState(rx.State):
     def set_customer_allowed_brands(self, value: str): self.customer_allowed_brands = value
     @rx.event
     def set_customer_access_code(self, value: str): self.customer_access_code = value
+    @rx.event
+    def set_customer_selection(self, value: str): self.customer_selection = value
     @rx.event
     def set_price_customer_selection(self, value: str): self.price_customer_selection = value
     @rx.event
@@ -1187,11 +1453,22 @@ class MenuAdminState(rx.State):
         self.error = ""
         yield
         try:
-            self._employee()
+            employee = self._employee()
+            updated_by = str(employee.get("full_name") or employee.get("user_email"))
+            initial = load_menu_admin_data()
+            if not initial.get("database_ready"):
+                self._apply_payload(initial)
+                self.loaded = True
+                self.message = "Preview mode: connect Supabase to save customers, quantities, and orders."
+                return
+            inventory = refresh_menu_inventory_from_metrc(updated_by=updated_by)
+            synced_customers = sync_menu_customers_from_metrc()
             self._apply_payload(load_menu_admin_data())
             self.loaded = True
-            if not self.database_ready:
-                self.message = "Preview mode: connect Supabase to save customers, quantities, and orders."
+            self.message = (
+                f"Metrc snapshot refreshed: {inventory['matched']} menu SKUs matched; "
+                f"{inventory['review']} need review. {synced_customers} customer records synchronized."
+            )
         except Exception as error:
             self.error = str(error)
         finally:
@@ -1209,14 +1486,67 @@ class MenuAdminState(rx.State):
         self.message = ""
         try:
             employee = self._employee()
+            current = {
+                str(row.get("product_id", "")): int(row.get("available_cases", 0) or 0)
+                for row in self.products
+            }
             counts: dict[str, int] = {}
             for product_id, value in self.availability_drafts.items():
-                counts[product_id] = max(int(float(value or 0)), 0)
+                parsed = max(int(float(value or 0)), 0)
+                if parsed != current.get(product_id, 0):
+                    counts[product_id] = parsed
+            if not counts:
+                self.message = "No menu quantity overrides changed."
+                return
             update_menu_availability(
                 counts, updated_by=str(employee.get("full_name") or employee.get("user_email"))
             )
             self._apply_payload(load_menu_admin_data())
             self.message = "Published menu quantities were updated."
+        except Exception as error:
+            self.error = str(error)
+
+    @rx.event
+    def reset_inventory_override(self, product_id: str):
+        self.error = ""
+        self.message = ""
+        try:
+            employee = self._employee()
+            clear_menu_inventory_override(
+                product_id,
+                updated_by=str(employee.get("full_name") or employee.get("user_email")),
+            )
+            self._apply_payload(load_menu_admin_data())
+            self.message = "The SKU now follows its Metrc case count."
+        except Exception as error:
+            self.error = str(error)
+
+    @rx.event
+    def activate_selected_customer(self):
+        self.error = ""
+        self.message = ""
+        try:
+            self._employee()
+            customer_id = self.customer_selection.split(" | ", 1)[0]
+            if not customer_id:
+                raise ValueError("Select a Metrc customer.")
+            allowed = [
+                brand.strip() for brand in self.customer_allowed_brands.split(",")
+                if brand.strip() in MENU_BRANDS
+            ]
+            activate_menu_customer(
+                customer_id,
+                buyer_name=self.customer_buyer_name,
+                email=self.customer_email,
+                payment_terms=self.customer_payment_terms,
+                assigned_salesperson=self.customer_salesperson,
+                minimum_order_cases=int(float(self.customer_minimum_cases or 0)),
+                allowed_brands=allowed,
+                access_code=self.customer_access_code,
+            )
+            self.customer_access_code = ""
+            self._apply_payload(load_menu_admin_data())
+            self.message = "The Metrc customer is now an active buyer account."
         except Exception as error:
             self.error = str(error)
 
@@ -1312,7 +1642,7 @@ class MenuAdminState(rx.State):
     @rx.var(cache=True)
     def customer_options(self) -> list[str]:
         return [
-            f"{row.get('customer_id', '')} | {row.get('store_name', '')} - {row.get('buyer_name', '')}"
+            f"{row.get('customer_id', '')} | {row.get('store_name', '')} ({row.get('license_number', '')})"
             for row in self.customers
         ]
 
@@ -1765,12 +2095,40 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
         rx.table.cell(product["strain"]),
         rx.table.cell(rx.text("$", product["unit_price"])),
         rx.table.cell(product["units_per_case"]),
+        rx.table.cell(product["metrc_on_hand_units"]),
+        rx.table.cell(product["metrc_case_equivalent"]),
+        rx.table.cell(
+            rx.vstack(
+                rx.badge(
+                    product["inventory_match_status"],
+                    color_scheme=rx.cond(
+                        product["inventory_match_status"] == "Matched", "green", "orange"
+                    ),
+                    variant="soft",
+                ),
+                rx.text(product["inventory_match_detail"], size="1", color="#64748b"),
+                spacing="1", align="start",
+            )
+        ),
         rx.table.cell(product["held_cases"]),
         rx.table.cell(
             rx.input(
                 type="number", min="0", step="1", value=product["draft_cases"],
                 on_change=lambda value: MenuAdminState.change_availability(product["product_id"], value),
                 width="92px", size="1", text_align="center",
+            )
+        ),
+        rx.table.cell(
+            rx.vstack(
+                rx.text(product["inventory_source"], size="1", weight="bold"),
+                rx.cond(
+                    product["inventory_source"] == "Manual override",
+                    rx.button(
+                        "Use Metrc", size="1", variant="outline",
+                        on_click=MenuAdminState.reset_inventory_override(product["product_id"]),
+                    ),
+                ),
+                spacing="1", align="start",
             )
         ),
         rx.table.cell(product["available_to_order"]),
@@ -1786,6 +2144,14 @@ def _admin_customer_row(customer: rx.Var) -> rx.Component:
         rx.table.cell(customer["minimum_order_cases"]),
         rx.table.cell(customer["assigned_salesperson"]),
         rx.table.cell(customer["allowed_brands_display"]),
+        rx.table.cell(customer["source_system"]),
+        rx.table.cell(
+            rx.badge(
+                rx.cond(customer["is_active"], "Active", "Needs access code"),
+                color_scheme=rx.cond(customer["is_active"], "green", "orange"),
+                variant="soft",
+            )
+        ),
     )
 
 
@@ -1858,14 +2224,15 @@ def sales_menu_admin_panel() -> rx.Component:
                         rx.input(placeholder="Search menu products...", value=MenuAdminState.product_search, on_change=MenuAdminState.set_product_search, width="310px"),
                         rx.select(["All Brands", *MENU_BRANDS], value=MenuAdminState.product_brand_filter, on_change=MenuAdminState.set_product_brand_filter, width="210px"),
                         rx.spacer(),
-                        rx.button("Publish All Quantities", on_click=MenuAdminState.save_all_availability, color_scheme="teal"),
+                        rx.button("Refresh Metrc Inventory", on_click=MenuAdminState.load_admin, variant="outline"),
+                        rx.button("Save Quantity Overrides", on_click=MenuAdminState.save_all_availability, color_scheme="teal"),
                         gap="3", wrap="wrap", width="100%", align="end",
                     ),
                     rx.box(
                         rx.table.root(
-                            rx.table.header(rx.table.row(*[rx.table.column_header_cell(value) for value in ["Brand", "Size", "Product", "Strain / Variety", "Unit Price", "Units / Case", "Held", "Published Cases", "Available to Order"]])),
+                            rx.table.header(rx.table.row(*[rx.table.column_header_cell(value) for value in ["Brand", "Size", "Product", "Strain / Variety", "Unit Price", "Units / Case", "Metrc Units", "Metrc Full Cases", "Metrc Match", "Held", "Published Cases", "Quantity Source", "Available to Order"]])),
                             rx.table.body(rx.foreach(MenuAdminState.filtered_products, _admin_product_row)),
-                            width="100%", min_width="1180px", variant="surface",
+                            width="100%", min_width="1720px", variant="surface",
                         ),
                         width="100%", max_height="640px", overflow="auto",
                     ),
@@ -1877,11 +2244,20 @@ def sales_menu_admin_panel() -> rx.Component:
                 rx.vstack(
                     rx.card(
                         rx.vstack(
-                            rx.heading("Create Buyer Access", size="4"),
+                            rx.heading("Activate a Metrc Customer", size="4"),
+                            rx.text(
+                                "Customers are synchronized from accepted Metrc retail transfers. Select a customer and assign its buyer controls and unique access code.",
+                                color="#64748b", size="2",
+                            ),
+                            rx.select(
+                                MenuAdminState.customer_options,
+                                placeholder="Select Metrc customer",
+                                value=MenuAdminState.customer_selection,
+                                on_change=MenuAdminState.set_customer_selection,
+                                width="100%",
+                            ),
                             rx.grid(
                                 rx.input(placeholder="Buyer name", value=MenuAdminState.customer_buyer_name, on_change=MenuAdminState.set_customer_buyer_name),
-                                rx.input(placeholder="Store name", value=MenuAdminState.customer_store_name, on_change=MenuAdminState.set_customer_store_name),
-                                rx.input(placeholder="NJ license number", value=MenuAdminState.customer_license, on_change=MenuAdminState.set_customer_license),
                                 rx.input(placeholder="Buyer email", value=MenuAdminState.customer_email, on_change=MenuAdminState.set_customer_email),
                                 rx.input(placeholder="Payment terms", value=MenuAdminState.customer_payment_terms, on_change=MenuAdminState.set_customer_payment_terms),
                                 rx.input(placeholder="Assigned salesperson", value=MenuAdminState.customer_salesperson, on_change=MenuAdminState.set_customer_salesperson),
@@ -1890,7 +2266,7 @@ def sales_menu_admin_panel() -> rx.Component:
                                 columns=rx.breakpoints(initial="1", md="2", xl="4"), gap="3", width="100%",
                             ),
                             rx.input(placeholder="Allowed brands, comma separated", value=MenuAdminState.customer_allowed_brands, on_change=MenuAdminState.set_customer_allowed_brands, width="100%"),
-                            rx.button("Create Buyer Account", on_click=MenuAdminState.create_customer, color_scheme="teal"),
+                            rx.button("Activate Buyer Account", on_click=MenuAdminState.activate_selected_customer, color_scheme="teal"),
                             spacing="3", width="100%",
                         ), width="100%",
                     ),
@@ -1908,9 +2284,9 @@ def sales_menu_admin_panel() -> rx.Component:
                     ),
                     rx.box(
                         rx.table.root(
-                            rx.table.header(rx.table.row(*[rx.table.column_header_cell(value) for value in ["Store", "Buyer", "License", "Terms", "Minimum Cases", "Salesperson", "Allowed Brands"]])),
+                            rx.table.header(rx.table.row(*[rx.table.column_header_cell(value) for value in ["Store", "Buyer", "License", "Terms", "Minimum Cases", "Salesperson", "Allowed Brands", "Source", "Access"]])),
                             rx.table.body(rx.foreach(MenuAdminState.customers, _admin_customer_row)),
-                            width="100%", min_width="1040px", variant="surface",
+                            width="100%", min_width="1280px", variant="surface",
                         ), width="100%", overflow_x="auto",
                     ),
                     spacing="4", width="100%",
