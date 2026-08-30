@@ -285,6 +285,23 @@ body {
   line-height: 1.15;
 }
 
+/* Row-limited operational tables keep a stable column grid as users move
+   between pages or switch the number of visible rows. */
+.qcc-fixed-column-grid .gridjs-table {
+  table-layout: fixed !important;
+  width: 100% !important;
+}
+
+.qcc-fixed-column-grid .gridjs-th,
+.qcc-fixed-column-grid .gridjs-td {
+  box-sizing: border-box;
+}
+
+.qcc-fixed-column-grid .gridjs-td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* Transfer tables contain long operational field names. Keep the header
    readable and reserve space for Grid.js sort controls without shrinking or
    clipping the title. */

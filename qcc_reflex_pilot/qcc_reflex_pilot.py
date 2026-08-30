@@ -9831,6 +9831,7 @@ def data_grid(
     column_width: int = 165,
     minimum_width: int = 900,
     page_size: Any = 25,
+    resizable: bool = True,
 ) -> rx.Component:
     table_width = max(minimum_width, len(columns) * column_width)
     return rx.box(
@@ -9840,7 +9841,7 @@ def data_grid(
             pagination={"limit": page_size},
             search=show_search,
             sort=True,
-            resizable=True,
+            resizable=resizable,
             height=height,
             width=f"{table_width}px",
             min_width=f"{table_width}px",
@@ -12522,16 +12523,20 @@ def limited_data_grid(
     minimum_width: int = 900,
 ) -> rx.Component:
     """Grid.js table with a consistent row-limit control below it."""
+    fixed_class_name = " ".join(
+        value for value in [class_name, "qcc-fixed-column-grid"] if value
+    )
     return rx.vstack(
         data_grid(
             data,
             columns,
             height=height,
             show_search=show_search,
-            class_name=class_name,
+            class_name=fixed_class_name,
             column_width=column_width,
             minimum_width=minimum_width,
             page_size=page_size,
+            resizable=False,
         ),
         table_row_limit_control(rows_value, rows_change),
         width="100%",
