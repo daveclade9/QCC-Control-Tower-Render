@@ -3791,7 +3791,7 @@ def apply_availability_adjusted_velocity(
     result.loc[matched, "Availability Weeks"] = pd.to_numeric(
         result.loc[matched, "Adjusted Availability Weeks"], errors="coerce"
     ).fillna(0)
-    result.loc[matched, "Velocity Model"] = "Experimental Availability-Adjusted"
+    result.loc[matched, "Velocity Model"] = "Availability-Adjusted"
     current_units = pd.to_numeric(
         result["Current Units"], errors="coerce"
     ).fillna(0)
@@ -4584,7 +4584,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
             velocity["Avg Weekly Units - Last 30 Days"], errors="coerce"
         ).fillna(0).round(2)
         velocity_windows["All Time"] = record_list(velocity)
-        for label in ["1 Week", "60 Days", "90 Days", "120 Days"]:
+        for label in ["1 Week", "30 Days", "60 Days", "90 Days", "120 Days"]:
             frame = period_frames[label].drop(columns=[
                 "Potential Matching WIP", "Potential WIP Summary",
                 "Matching Pre-WIP Weight", "Avg Weekly Units - Last 30 Days",
@@ -4601,10 +4601,12 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
     else:
         velocity_windows["All Time"] = record_list(velocity)
         velocity_windows.update({
-            "1 Week": [], "60 Days": [], "90 Days": [], "120 Days": [],
+            "1 Week": [], "30 Days": [], "60 Days": [], "90 Days": [],
+            "120 Days": [],
         })
     availability_period_days = {
         "1 Week": 7,
+        "30 Days": 30,
         "60 Days": 60,
         "90 Days": 90,
         "120 Days": 120,
@@ -5047,11 +5049,12 @@ def demo_dashboard_data() -> dict[str, Any]:
         ],
         "velocity": velocity,
         "velocity_windows": {
-            "1 Week": velocity, "60 Days": velocity, "90 Days": velocity,
-            "120 Days": velocity, "All Time": velocity,
+            "1 Week": velocity, "30 Days": velocity, "60 Days": velocity,
+            "90 Days": velocity, "120 Days": velocity, "All Time": velocity,
         },
         "availability_adjusted_velocity_windows": {
             "1 Week": adjusted_demo_velocity,
+            "30 Days": adjusted_demo_velocity,
             "60 Days": adjusted_demo_velocity,
             "90 Days": adjusted_demo_velocity,
             "120 Days": adjusted_demo_velocity,

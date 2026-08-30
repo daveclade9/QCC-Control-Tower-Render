@@ -700,7 +700,7 @@ class DashboardState(rx.State):
     cultivation_provisional_strains: list[str] = ["Hood Candy", "Jelly Cake"]
     cultivation_new_strain_message: str = ""
     cultivation_new_strain_error: str = ""
-    cultivation_clone_plan_demand_model: str = "Experimental Availability-Adjusted"
+    cultivation_clone_plan_demand_model: str = "Availability-Adjusted"
     cultivation_clone_plan_allocations: dict[str, float] = {}
     cultivation_clone_plan_entry_version: int = 0
     cultivation_clone_plan_status: str = "Draft"
@@ -5781,14 +5781,24 @@ class DashboardState(rx.State):
 
     @rx.event
     def change_cultivation_clone_plan_demand_model(self, value: str):
-        self.cultivation_clone_plan_demand_model = (
+        self.cultivation_clone_plan_demand_model = self._normalized_clone_demand_model(
             value
-            if value in {
-                "Experimental Availability-Adjusted",
-                "Current SKU Velocity",
-            }
-            else "Experimental Availability-Adjusted"
         )
+
+    @staticmethod
+    def _normalized_clone_demand_model(value: Any) -> str:
+        """Normalize current choices and legacy saved-plan labels."""
+        label = str(value or "").strip()
+        if label == "Experimental Availability-Adjusted":
+            return "Availability-Adjusted"
+        if label in {
+            "Availability-Adjusted",
+            "30-Day Availability-Adjusted",
+            "60-Day Availability-Adjusted",
+            "Current SKU Velocity",
+        }:
+            return label
+        return "Availability-Adjusted"
 
     @rx.event
     def change_cultivation_clone_plan_allocation(self, strain: str, value: str):
@@ -5870,9 +5880,8 @@ class DashboardState(rx.State):
             for strain, value in dict(plan.get("allocations") or {}).items()
             if float(value or 0) > 0
         }
-        self.cultivation_clone_plan_demand_model = str(
-            plan.get("demand_model", "Experimental Availability-Adjusted")
-            or "Experimental Availability-Adjusted"
+        self.cultivation_clone_plan_demand_model = self._normalized_clone_demand_model(
+            plan.get("demand_model", "Availability-Adjusted")
         )
         self.cultivation_clone_plan_status = "Approved"
         self.cultivation_clone_plan_dirty = False
@@ -6261,9 +6270,8 @@ class DashboardState(rx.State):
             for strain, value in dict(plan.get("allocations") or {}).items()
             if float(value or 0) > 0
         }
-        self.cultivation_clone_plan_demand_model = str(
-            plan.get("demand_model", "Experimental Availability-Adjusted")
-            or "Experimental Availability-Adjusted"
+        self.cultivation_clone_plan_demand_model = self._normalized_clone_demand_model(
+            plan.get("demand_model", "Availability-Adjusted")
         )
         self.cultivation_clone_plan_status = str(plan.get("status", "Approved"))
         self.cultivation_clone_plan_dirty = False
@@ -6293,9 +6301,8 @@ class DashboardState(rx.State):
             for strain, value in dict(plan.get("allocations") or {}).items()
             if float(value or 0) > 0
         }
-        self.cultivation_clone_plan_demand_model = str(
-            plan.get("demand_model", "Experimental Availability-Adjusted")
-            or "Experimental Availability-Adjusted"
+        self.cultivation_clone_plan_demand_model = self._normalized_clone_demand_model(
+            plan.get("demand_model", "Availability-Adjusted")
         )
         self.cultivation_clone_plan_status = "Approved"
         self.cultivation_clone_plan_dirty = False
@@ -6804,23 +6811,21 @@ class DashboardState(rx.State):
 
     def _clone_plan_weekly_demand_by_strain(self) -> dict[str, float]:
         totals: dict[str, float] = {}
-        experimental = self.cultivation_clone_plan_demand_model.startswith("Experimental")
-        if experimental:
-            for row in self.availability_demand_summary:
-                sku = str(row.get("SKU Type", "") or "")
-                grams_per_unit = sku_fill_grams(sku)
-                key = normalized_strain(row.get("Strain", ""))
-                if key and grams_per_unit > 0:
-                    units = self._number(row, "Experimental Adjusted Velocity")
-                    totals[key] = totals.get(key, 0.0) + units * grams_per_unit / 453.59237
-        for row in self.velocity:
+        adjusted_period = {
+            "Availability-Adjusted": "All Time",
+            "30-Day Availability-Adjusted": "30 Days",
+            "60-Day Availability-Adjusted": "60 Days",
+        }.get(self.cultivation_clone_plan_demand_model)
+        demand_rows = (
+            self.availability_adjusted_velocity_windows.get(adjusted_period, [])
+            if adjusted_period else self.velocity
+        )
+        for row in demand_rows:
             sku = str(row.get("SKU Type", "") or "")
             sku_lower = sku.casefold()
             is_flower = any(size in sku_lower for size in ("1g flower", "3.5g flower", "7g flower"))
             is_preroll = "pre-roll" in sku_lower or "preroll" in sku_lower
             if not (is_flower or is_preroll):
-                continue
-            if experimental and is_flower:
                 continue
             key = normalized_strain(row.get("Strain", ""))
             grams_per_unit = sku_fill_grams(sku)
@@ -10891,7 +10896,7 @@ def sku_planning_panel() -> rx.Component:
                     rx.badge(
                         rx.cond(
                             DashboardState.sku_use_availability_adjusted,
-                            "Experimental Adjusted",
+                            "Availability-Adjusted",
                             "Current SKU Velocity",
                         ),
                         color_scheme=rx.cond(
@@ -10938,7 +10943,7 @@ def sku_planning_panel() -> rx.Component:
         rx.cond(
             DashboardState.sku_use_availability_adjusted,
             rx.callout(
-                "Experimental mode removes only full internal weeks identified as Likely OOS from the selected timeframe. Recent trailing gaps remain included. Unsupported SKU types retain Current SKU Velocity.",
+                "Availability-adjusted mode removes only full internal weeks identified as Likely OOS from the selected timeframe. Recent trailing gaps remain included. Unsupported SKU types retain Current SKU Velocity.",
                 icon="flask-conical",
                 color_scheme="purple",
                 width="100%",
@@ -15837,7 +15842,12 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     rx.box(
                         rx.text("Demand model", size="1", weight="bold", color=MUTED),
                         rx.select(
-                            ["Experimental Availability-Adjusted", "Current SKU Velocity"],
+                            [
+                                "Availability-Adjusted",
+                                "30-Day Availability-Adjusted",
+                                "60-Day Availability-Adjusted",
+                                "Current SKU Velocity",
+                            ],
                             value=DashboardState.cultivation_clone_plan_demand_model,
                             on_change=DashboardState.change_cultivation_clone_plan_demand_model,
                             width="100%",
@@ -16753,7 +16763,7 @@ def cultivation_demand_availability_panel() -> rx.Component:
             rx.vstack(
                 rx.flex(
                     rx.box(
-                        rx.heading("Experimental Availability-Adjusted Demand", size="5", color=DARK),
+                        rx.heading("Availability-Adjusted Demand", size="5", color=DARK),
                         rx.text(
                             "Compare current SKU Planning velocity with a shipment-based estimate that removes likely constrained weeks after each SKU launches.",
                             color=MUTED,
@@ -16837,7 +16847,7 @@ def cultivation_demand_availability_panel() -> rx.Component:
                             "Brand", "Strain", "SKU\nType", "First Ship\nWeek",
                             "Last Ship\nWeek", "Calendar\nWeeks", "Shipping\nWeeks",
                             "Likely\nConstrained\nWeeks", "Recent Gap\nWeeks",
-                            "Current\nVelocity", "Experimental\nAdjusted\nVelocity",
+                            "Current\nVelocity", "Availability-\nAdjusted\nVelocity",
                             "Adjustment", "Signal",
                         ],
                         height="520px",

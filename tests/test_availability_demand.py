@@ -122,7 +122,7 @@ def test_selected_window_recalculates_velocity_supply_and_status() -> None:
     assert flower["Weeks of Supply"] == 2.0
     assert flower["Likely OOS Weeks"] == 4
     assert flower["Demand Status"] == "Stockout Risk Within 4 Weeks"
-    assert flower["Velocity Model"] == "Experimental Availability-Adjusted"
+    assert flower["Velocity Model"] == "Availability-Adjusted"
     assert vape["Avg Weekly Units"] == 20.0
     assert vape["Weeks of Supply"] == 5.0
     assert vape["Velocity Model"] == "Current SKU Velocity — no adjusted evidence"
