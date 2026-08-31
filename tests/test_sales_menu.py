@@ -5,6 +5,7 @@ from unittest.mock import patch
 from qcc_reflex_pilot.sales_menu import (
     _access_code_hash,
     _clean_text,
+    _expected_inventory_identity,
     _package_size_sort,
     authenticate_menu_customer,
     load_customer_menu_products,
@@ -99,6 +100,41 @@ class SalesMenuTests(unittest.TestCase):
             {"brand": "Clade9", "strain": "J1", "sku_type": "1g Pre-Roll B", "on_hand_units": 20},
         ])[0]
         self.assertEqual(matched["match_status"], "Multiple Metrc SKU matches")
+
+    def test_known_menu_metrc_aliases_are_explicit(self):
+        cases = [
+            (
+                {"brand": "Clade9", "category": "Flower", "package_size": "7g", "product_type": "Low Tops (Mylar)", "strain": "Private Reserve"},
+                ("Clade9", "Private Reserve OG", "7g Flower"),
+            ),
+            (
+                {"brand": "Craft Kings", "category": "Pre-Rolls", "package_size": "1g", "product_type": "Single - Non infused", "strain": "Indica"},
+                ("Craft Kings", "Indica Blend", "1g Pre-Roll"),
+            ),
+            (
+                {"brand": "Craft Kings", "category": "Pre-Rolls", "package_size": "1g", "product_type": "Single - Cured Resin Infused", "strain": "Hybrid"},
+                ("Craft Kings", "Hybrid Blend", "1g Infused Pre-Roll"),
+            ),
+            (
+                {"brand": "Clade9", "category": "Vape Cartridges", "package_size": "1g", "product_type": "Cured Resin", "strain": "Diamond Bar"},
+                ("Clade9", "Diamond Bar", "1g Vape CR"),
+            ),
+            (
+                {"brand": "Clade9", "category": "Disposables", "package_size": "1g", "product_type": "Distillate", "strain": "Blue Dream"},
+                ("Clade9", "Blue Dream", "1g Vape DC"),
+            ),
+            (
+                {"brand": "Melt x Clade9", "category": "Disposables", "package_size": "0.5g", "product_type": "Live Rosin", "strain": "Melt x Clade9 Fig Bar"},
+                ("Clade9", "Fig Bar", "1g Live Rosin"),
+            ),
+            (
+                {"brand": "Craft Kings", "category": "Edibles", "package_size": "100mg - 10 gummies per pack", "product_type": "Hash Gummies", "strain": "Mango"},
+                ("Craft Kings", "Mango", "Edibles"),
+            ),
+        ]
+        for product, expected in cases:
+            with self.subTest(product=product):
+                self.assertEqual(_expected_inventory_identity(product), expected)
 
 
 if __name__ == "__main__":

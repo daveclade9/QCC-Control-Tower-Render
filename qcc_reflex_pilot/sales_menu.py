@@ -200,6 +200,59 @@ def _menu_inventory_family(product: dict[str, Any]) -> str:
     return category
 
 
+def _expected_inventory_identity(product: dict[str, Any]) -> tuple[str, str, str]:
+    """Return the exact Metrc brand, strain, and SKU type for a menu row."""
+    brand = str(product.get("brand", "") or "").strip()
+    strain = str(product.get("strain", "") or "").strip()
+    size = str(product.get("package_size", "") or "").strip()
+    category = str(product.get("category", "") or "").strip()
+    product_type = str(product.get("product_type", "") or "").casefold()
+
+    if _inventory_key(strain) == "privatereserve":
+        strain = "Private Reserve OG"
+    if brand == "Craft Kings" and category == "Pre-Rolls":
+        blend = _inventory_key(strain)
+        if blend in {"indica", "hybrid", "sativa"}:
+            strain = f"{strain} Blend"
+        if size == "1g":
+            if "ice water hash" in product_type:
+                sku_type = "1g IWH Infused Pre-Roll"
+            elif "cured resin" in product_type:
+                sku_type = "1g Infused Pre-Roll"
+            else:
+                sku_type = "1g Pre-Roll"
+        elif "ice water hash" in product_type:
+            sku_type = "3.5g IWH Infused Pre-Rolls 5-Pack"
+        else:
+            sku_type = "3.5g Infused Pre-Rolls 5-Pack"
+        return brand, strain, sku_type
+    if brand == "Clade9" and category == "Pre-Rolls":
+        return brand, strain, "1g Pre-Roll" if size == "1g" else "3.5g Pre-Rolls"
+    if brand == "Clade9" and category in {"Vape Cartridges", "Disposables"}:
+        return brand, strain, "1g Vape CR" if "cured resin" in product_type else "1g Vape DC"
+    if brand == "Melt x Clade9" and "live rosin" in product_type:
+        strain = re.sub(r"^Melt\s*x\s*Clade9\s+", "", strain, flags=re.IGNORECASE)
+        return "Clade9", strain, "1g Live Rosin"
+    if brand == "Craft Kings" and category == "Edibles":
+        return brand, strain, "Edibles"
+    if category == "Flower":
+        if brand == "Royal Smalls" and size == "28g":
+            return brand, strain, "28g Flower Smalls"
+        return brand, strain, f"{size} Flower"
+    return brand, strain, " ".join(part for part in (size, str(product.get("product_type", ""))) if part)
+
+
+def _inventory_identity(row: dict[str, Any]) -> tuple[str, str, str]:
+    return tuple(
+        _inventory_key(row.get(field)) for field in ("brand", "strain", "sku_type")
+    )
+
+
+def _menu_sku_filter_label(product: dict[str, Any]) -> str:
+    _, _, sku_type = _expected_inventory_identity(product)
+    return sku_type or "Other SKU"
+
+
 def match_menu_inventory(
     products: list[dict[str, Any]], inventory_rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -215,6 +268,21 @@ def match_menu_inventory(
         "royalsmalls": {"royalsmalls", "craftkingsroyalsmalls"},
     }
     for product in products:
+        expected = _inventory_identity(dict(zip(
+            ("brand", "strain", "sku_type"), _expected_inventory_identity(product)
+        )))
+        exact = [row for row in inventory_rows if _inventory_identity(row) == expected]
+        if exact:
+            units = int(round(sum(float(row.get("on_hand_units", 0) or 0) for row in exact)))
+            units_per_case = max(int(product.get("units_per_case", 0) or 0), 1)
+            results.append({
+                "product_id": product["product_id"], "metrc_on_hand_units": max(units, 0),
+                "metrc_case_equivalent": max(units, 0) // units_per_case,
+                "match_status": "Matched",
+                "match_detail": ", ".join(sorted({str(row.get("sku_type", "")) for row in exact})),
+                "matched_inventory_keys": [expected],
+            })
+            continue
         product_brand = _inventory_key(product.get("brand"))
         accepted_brands = brand_aliases.get(product_brand, {product_brand})
         strain = _inventory_key(product.get("strain"))
@@ -250,6 +318,7 @@ def match_menu_inventory(
                 "product_id": product["product_id"], "metrc_on_hand_units": 0,
                 "metrc_case_equivalent": 0, "match_status": "No Metrc SKU match",
                 "match_detail": "Use a manual override until the SKU mapping is available.",
+                "matched_inventory_keys": [],
             })
             continue
         best_score = max(score for score, _ in candidates)
@@ -260,6 +329,7 @@ def match_menu_inventory(
                 "product_id": product["product_id"], "metrc_on_hand_units": 0,
                 "metrc_case_equivalent": 0, "match_status": "Multiple Metrc SKU matches",
                 "match_detail": ", ".join(sorted({str(row.get("sku_type", "")) for row in best})),
+                "matched_inventory_keys": [],
             })
             continue
         units = int(round(sum(float(row.get("on_hand_units", 0) or 0) for row in best)))
@@ -269,8 +339,79 @@ def match_menu_inventory(
             "metrc_case_equivalent": max(units, 0) // units_per_case,
             "match_status": "Matched",
             "match_detail": ", ".join(sorted({str(row.get("sku_type", "")) for row in best})),
+            "matched_inventory_keys": [_inventory_identity(row) for row in best],
         })
     return results
+
+
+def _discover_metrc_menu_products(
+    cursor: Any,
+    products: list[dict[str, Any]],
+    inventory_rows: list[dict[str, Any]],
+    matches: list[dict[str, Any]],
+) -> int:
+    """Add high-confidence Metrc-only SKUs to admin as inactive review rows."""
+    matched_keys = {
+        tuple(key)
+        for match in matches
+        for key in match.get("matched_inventory_keys", [])
+    }
+    templates: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for product in products:
+        expected_brand, _, expected_sku = _expected_inventory_identity(product)
+        templates.setdefault(
+            (_inventory_key(expected_brand), _inventory_key(expected_sku)), []
+        ).append(product)
+    inserted = 0
+    max_sort = max((int(row.get("sort_order", 0) or 0) for row in products), default=0)
+    for row in inventory_rows:
+        identity = _inventory_identity(row)
+        units = float(row.get("on_hand_units", 0) or 0)
+        if identity in matched_keys or units <= 1:
+            continue
+        candidates = templates.get((identity[0], identity[2]), [])
+        if not candidates:
+            continue
+        signatures = {
+            (
+                str(item.get("category", "")), str(item.get("package_size", "")),
+                str(item.get("product_type", "")), float(item.get("unit_price", 0) or 0),
+                int(item.get("units_per_case", 0) or 0),
+            )
+            for item in candidates
+        }
+        if len(signatures) != 1:
+            continue
+        template = candidates[0]
+        strain = str(row.get("strain", "") or "").strip()
+        if _inventory_key(strain) == "lipsmackerz":
+            strain = "Lipsmackerz"
+        elif _inventory_key(strain) == "privatereserveog":
+            strain = "Private Reserve"
+        identity_text = "|".join([
+            str(template.get("brand", "")), str(template.get("category", "")),
+            str(template.get("package_size", "")), str(template.get("product_type", "")),
+            strain,
+        ]).casefold()
+        product_id = "MENU-" + hashlib.sha256(identity_text.encode("utf-8")).hexdigest()[:16].upper()
+        max_sort += 1
+        cursor.execute(
+            "INSERT INTO qcc_sales_menu_products (product_id, brand, category, "
+            "package_size, product_type, strain, thc_display, terpene_display, "
+            "unit_price, units_per_case, available_cases, is_active, notes, "
+            "sort_order, inventory_match_status, inventory_match_detail) "
+            "VALUES (%s, %s, %s, %s, %s, %s, '', '', %s, %s, 0, FALSE, %s, %s, "
+            "'Imported for review', %s) ON CONFLICT (product_id) DO NOTHING",
+            (
+                product_id, template.get("brand"), template.get("category"),
+                template.get("package_size"), template.get("product_type"), strain,
+                template.get("unit_price"), template.get("units_per_case"),
+                "Discovered in Metrc inventory. Review before publishing to buyers.",
+                max_sort, str(row.get("sku_type", "")),
+            ),
+        )
+        inserted += int(cursor.rowcount == 1)
+    return inserted
 
 
 def _records(cursor: Any) -> list[dict[str, Any]]:
@@ -800,6 +941,7 @@ def load_menu_admin_data() -> dict[str, Any]:
                 "inventory_match_status": "Preview mode",
                 "inventory_match_detail": "Connect Supabase to load Metrc inventory.",
                 "inventory_source": "Metrc snapshot",
+                "sku_filter_label": _menu_sku_filter_label(product),
             })
         return {
             "database_ready": False,
@@ -857,6 +999,7 @@ def load_menu_admin_data() -> dict[str, Any]:
             "Manual override" if product.get("manual_override_cases") is not None
             else "Metrc snapshot"
         )
+        product["sku_filter_label"] = _menu_sku_filter_label(product)
         product["held_cases"] = int(product.get("held_cases", 0) or 0)
         product["available_to_order"] = max(
             product["available_cases"] - product["held_cases"], 0
@@ -900,10 +1043,23 @@ def refresh_menu_inventory_from_metrc(*, updated_by: str) -> dict[str, Any]:
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT product_id, brand, category, package_size, product_type, "
-                "strain, units_per_case FROM qcc_sales_menu_products"
+                "strain, unit_price, units_per_case, sort_order "
+                "FROM qcc_sales_menu_products"
             )
             products = _records(cursor)
-            matches = match_menu_inventory(products, frame.to_dict("records"))
+            inventory_rows = frame.to_dict("records")
+            matches = match_menu_inventory(products, inventory_rows)
+            discovered = _discover_metrc_menu_products(
+                cursor, products, inventory_rows, matches
+            )
+            if discovered:
+                cursor.execute(
+                    "SELECT product_id, brand, category, package_size, product_type, "
+                    "strain, unit_price, units_per_case, sort_order "
+                    "FROM qcc_sales_menu_products"
+                )
+                products = _records(cursor)
+                matches = match_menu_inventory(products, inventory_rows)
             for match in matches:
                 cursor.execute(
                     "UPDATE qcc_sales_menu_products SET metrc_on_hand_units = %s, "
@@ -923,6 +1079,7 @@ def refresh_menu_inventory_from_metrc(*, updated_by: str) -> dict[str, Any]:
         "snapshot_date": str(snapshot.get("business_date") or snapshot.get("published_at") or ""),
         "matched": sum(1 for row in matches if row["match_status"] == "Matched"),
         "review": sum(1 for row in matches if row["match_status"] != "Matched"),
+        "discovered": discovered,
     }
 
 
@@ -1384,6 +1541,7 @@ class MenuAdminState(rx.State):
     availability_drafts: dict[str, str] = {}
     product_search: str = ""
     product_brand_filter: str = "All Brands"
+    product_sku_filter: str = "All SKU Types"
     customer_buyer_name: str = ""
     customer_store_name: str = ""
     customer_license: str = ""
@@ -1402,6 +1560,8 @@ class MenuAdminState(rx.State):
     def set_product_search(self, value: str): self.product_search = value
     @rx.event
     def set_product_brand_filter(self, value: str): self.product_brand_filter = value
+    @rx.event
+    def set_product_sku_filter(self, value: str): self.product_sku_filter = value
     @rx.event
     def set_customer_buyer_name(self, value: str): self.customer_buyer_name = value
     @rx.event
@@ -1467,7 +1627,8 @@ class MenuAdminState(rx.State):
             self.loaded = True
             self.message = (
                 f"Metrc snapshot refreshed: {inventory['matched']} menu SKUs matched; "
-                f"{inventory['review']} need review. {synced_customers} customer records synchronized."
+                f"{inventory['review']} need review; {inventory['discovered']} new SKUs "
+                f"were added to admin for review. {synced_customers} customer records synchronized."
             )
         except Exception as error:
             self.error = str(error)
@@ -1622,6 +1783,8 @@ class MenuAdminState(rx.State):
         for row in self.products:
             if self.product_brand_filter != "All Brands" and row.get("brand") != self.product_brand_filter:
                 continue
+            if self.product_sku_filter != "All SKU Types" and row.get("sku_filter_label") != self.product_sku_filter:
+                continue
             haystack = " ".join(
                 str(row.get(key, "")) for key in
                 ("brand", "category", "package_size", "product_type", "strain")
@@ -1652,6 +1815,14 @@ class MenuAdminState(rx.State):
             f"{row.get('product_id', '')} | {row.get('brand', '')} | {row.get('package_size', '')} {row.get('strain', '')}"
             for row in self.products
         ]
+
+    @rx.var(cache=True)
+    def menu_sku_filter_options(self) -> list[str]:
+        values = sorted({
+            str(row.get("sku_filter_label", ""))
+            for row in self.products if row.get("sku_filter_label")
+        })
+        return ["All SKU Types", *values]
 
     @rx.var(cache=True)
     def active_product_count(self) -> int:
@@ -2110,6 +2281,13 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
                 spacing="1", align="start",
             )
         ),
+        rx.table.cell(
+            rx.badge(
+                rx.cond(product["is_active"], "Published", "Admin review"),
+                color_scheme=rx.cond(product["is_active"], "green", "purple"),
+                variant="soft",
+            )
+        ),
         rx.table.cell(product["held_cases"]),
         rx.table.cell(
             rx.input(
@@ -2223,6 +2401,7 @@ def sales_menu_admin_panel() -> rx.Component:
                     rx.flex(
                         rx.input(placeholder="Search menu products...", value=MenuAdminState.product_search, on_change=MenuAdminState.set_product_search, width="310px"),
                         rx.select(["All Brands", *MENU_BRANDS], value=MenuAdminState.product_brand_filter, on_change=MenuAdminState.set_product_brand_filter, width="210px"),
+                        rx.select(MenuAdminState.menu_sku_filter_options, value=MenuAdminState.product_sku_filter, on_change=MenuAdminState.set_product_sku_filter, width="235px"),
                         rx.spacer(),
                         rx.button("Refresh Metrc Inventory", on_click=MenuAdminState.load_admin, variant="outline"),
                         rx.button("Save Quantity Overrides", on_click=MenuAdminState.save_all_availability, color_scheme="teal"),
@@ -2230,9 +2409,9 @@ def sales_menu_admin_panel() -> rx.Component:
                     ),
                     rx.box(
                         rx.table.root(
-                            rx.table.header(rx.table.row(*[rx.table.column_header_cell(value) for value in ["Brand", "Size", "Product", "Strain / Variety", "Unit Price", "Units / Case", "Metrc Units", "Metrc Full Cases", "Metrc Match", "Held", "Published Cases", "Quantity Source", "Available to Order"]])),
+                            rx.table.header(rx.table.row(*[rx.table.column_header_cell(value) for value in ["Brand", "Size", "Product", "Strain / Variety", "Unit Price", "Units / Case", "Metrc Units", "Metrc Full Cases", "Metrc Match", "Menu Status", "Held", "Published Cases", "Quantity Source", "Available to Order"]])),
                             rx.table.body(rx.foreach(MenuAdminState.filtered_products, _admin_product_row)),
-                            width="100%", min_width="1720px", variant="surface",
+                            width="100%", min_width="1840px", variant="surface",
                         ),
                         width="100%", max_height="640px", overflow="auto",
                     ),
