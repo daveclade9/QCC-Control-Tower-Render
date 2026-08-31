@@ -17759,6 +17759,19 @@ def protected_dashboard() -> rx.Component:
                         size="1",
                         color=MUTED,
                     ),
+                    rx.cond(
+                        DashboardState.is_administrator,
+                        rx.button(
+                            rx.icon("settings", size=14),
+                            "Administration",
+                            on_click=DashboardState.change_workspace_view(
+                                "administration"
+                            ),
+                            variant="outline",
+                            color_scheme="teal",
+                            size="1",
+                        ),
+                    ),
                     rx.button(
                         "Sign Out",
                         on_click=DashboardState.sign_out,
@@ -17807,10 +17820,6 @@ def protected_dashboard() -> rx.Component:
                     rx.tabs.trigger("Quality & Compliance", value="quality"),
                     rx.tabs.trigger(
                         "Distribution & Customer Service", value="distribution"
-                    ),
-                    rx.cond(
-                        DashboardState.is_administrator,
-                        rx.tabs.trigger("Administration", value="administration"),
                     ),
                     class_name="qcc-tabs qcc-tabs-primary",
                     width="100%",
@@ -17868,7 +17877,7 @@ def protected_dashboard() -> rx.Component:
                     value="administration",
                     padding_top="1.25rem",
                 ),
-                default_value="executive",
+                value=DashboardState.workspace_view,
                 on_change=DashboardState.change_workspace_view,
                 width="100%",
             ),
