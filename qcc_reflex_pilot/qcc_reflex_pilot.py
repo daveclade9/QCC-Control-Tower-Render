@@ -17775,8 +17775,8 @@ def protected_dashboard() -> rx.Component:
                     rx.button(
                         "Sign Out",
                         on_click=DashboardState.sign_out,
-                        variant="soft",
-                        color_scheme="gray",
+                        variant="outline",
+                        color_scheme="teal",
                         size="1",
                     ),
                     align="end",
