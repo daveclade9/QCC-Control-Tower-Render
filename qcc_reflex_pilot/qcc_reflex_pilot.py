@@ -6817,10 +6817,26 @@ class DashboardState(rx.State):
             "30-Day Availability-Adjusted": "30 Days",
             "60-Day Availability-Adjusted": "60 Days",
         }.get(self.cultivation_clone_plan_demand_model)
-        demand_rows = (
-            self.availability_adjusted_velocity_windows.get(adjusted_period, [])
-            if adjusted_period else self.velocity
-        )
+        if adjusted_period:
+            selected_window = self.availability_adjusted_velocity_windows.get(
+                adjusted_period
+            )
+            if selected_window is None:
+                # Sales history loads in the background. A newly selected window
+                # can therefore be absent briefly; use the best populated demand
+                # series instead of presenting every strain as zero demand.
+                selected_window = (
+                    self.availability_adjusted_velocity_windows.get("All Time")
+                    or self.velocity
+                )
+            elif (
+                not selected_window
+                and not any(self.availability_adjusted_velocity_windows.values())
+            ):
+                selected_window = self.velocity
+            demand_rows = selected_window
+        else:
+            demand_rows = self.velocity
         for row in demand_rows:
             sku = str(row.get("SKU Type", "") or "")
             sku_lower = sku.casefold()

@@ -58,6 +58,24 @@ class CloneDemandModelTest(unittest.TestCase):
             expected_lbs = units * 3.5 / 453.59237
             self.assertAlmostEqual(demand["diamond bar"], expected_lbs)
 
+    def test_missing_adjusted_window_does_not_zero_all_demand(self):
+        self.state.availability_adjusted_velocity_windows = {
+            "All Time": self.state.availability_adjusted_velocity_windows["All Time"]
+        }
+        self.state.cultivation_clone_plan_demand_model = (
+            "30-Day Availability-Adjusted"
+        )
+        demand = self.state._clone_plan_weekly_demand_by_strain()
+        expected_lbs = 10.0 * 3.5 / 453.59237
+        self.assertAlmostEqual(demand["diamond bar"], expected_lbs)
+
+    def test_background_loading_uses_current_velocity_until_adjusted_data_arrives(self):
+        self.state.availability_adjusted_velocity_windows = {"All Time": []}
+        self.state.cultivation_clone_plan_demand_model = "Availability-Adjusted"
+        demand = self.state._clone_plan_weekly_demand_by_strain()
+        expected_lbs = 5.0 * 3.5 / 453.59237
+        self.assertAlmostEqual(demand["diamond bar"], expected_lbs)
+
 
 if __name__ == "__main__":
     unittest.main()
