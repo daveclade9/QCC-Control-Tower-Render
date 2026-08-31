@@ -4,6 +4,9 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from qcc_reflex_pilot.sales_menu import (
+    MenuAdminState,
+    ORDER_STATUS_APPROVED,
+    ORDER_STATUS_PENDING,
     _access_code_hash,
     _clean_text,
     _expected_inventory_identity,
@@ -14,6 +17,7 @@ from qcc_reflex_pilot.sales_menu import (
     sales_menu_seed_products,
     save_menu_product_review,
     send_order_email,
+    undo_menu_order_approval,
 )
 
 
@@ -175,6 +179,74 @@ class SalesMenuTests(unittest.TestCase):
                 is_active=False,
                 updated_by="QCC Tester",
             )
+
+    def test_undo_approval_restores_exact_cases_and_returns_order_to_pending(self):
+        connection = MagicMock()
+        cursor = MagicMock()
+        cursor.rowcount = 1
+        cursor.fetchone.return_value = (ORDER_STATUS_APPROVED,)
+        cursor.fetchall.return_value = [("MENU-A", 2), ("MENU-B", 3)]
+        connection.__enter__.return_value = connection
+        connection.cursor.return_value.__enter__.return_value = cursor
+        order = {"order_id": "ORDER-1", "status": ORDER_STATUS_PENDING}
+        with patch(
+            "qcc_reflex_pilot.sales_menu.ensure_sales_menu_schema", return_value=True
+        ), patch(
+            "qcc_reflex_pilot.sales_menu.database_url", return_value="postgresql://test"
+        ), patch(
+            "qcc_reflex_pilot.sales_menu.psycopg.connect", return_value=connection
+        ), patch(
+            "qcc_reflex_pilot.sales_menu._order_summary", return_value=order
+        ), patch(
+            "qcc_reflex_pilot.sales_menu.send_order_email"
+        ) as email:
+            result = undo_menu_order_approval(
+                "ORDER-1", reviewed_by="QCC Tester"
+            )
+        restore_calls = [
+            call for call in cursor.execute.call_args_list
+            if "available_cases +" in call.args[0]
+        ]
+        self.assertEqual(len(restore_calls), 2)
+        self.assertEqual(restore_calls[0].args[1], (2, 2, "QCC Tester", "MENU-A"))
+        self.assertEqual(restore_calls[1].args[1], (3, 3, "QCC Tester", "MENU-B"))
+        status_calls = [
+            call for call in cursor.execute.call_args_list
+            if "SET status" in call.args[0]
+        ]
+        self.assertEqual(status_calls[0].args[1][0], ORDER_STATUS_PENDING)
+        connection.commit.assert_called_once_with()
+        email.assert_called_once()
+        self.assertEqual(result, order)
+
+    def test_menu_quantities_create_bold_sku_type_blocks(self):
+        state = MenuAdminState(_reflex_internal_init=True)
+        state.products = [
+            {
+                "product_id": "A", "brand": "Clade9", "category": "Flower",
+                "package_size": "3.5g", "product_type": "Flower", "strain": "J1",
+                "available_cases": 2, "sku_filter_label": "3.5g Flower",
+            },
+            {
+                "product_id": "B", "brand": "Clade9", "category": "Flower",
+                "package_size": "3.5g", "product_type": "Flower", "strain": "G13",
+                "available_cases": 2, "sku_filter_label": "3.5g Flower",
+            },
+            {
+                "product_id": "C", "brand": "Clade9", "category": "Flower",
+                "package_size": "7g", "product_type": "Flower", "strain": "G13",
+                "available_cases": 1, "sku_filter_label": "7g Flower",
+            },
+        ]
+        rows = state.filtered_products
+        self.assertEqual(
+            [row["sku_block_label"] for row in rows],
+            ["Clade9 · 3.5g Flower", "Clade9 · 3.5g Flower", "Clade9 · 7g Flower"],
+        )
+        self.assertEqual(
+            [row["starts_sku_block"] for row in rows],
+            [True, False, True],
+        )
 
     def test_flower_inventory_converts_units_to_full_cases(self):
         product = next(

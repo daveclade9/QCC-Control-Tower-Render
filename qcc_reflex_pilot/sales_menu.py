@@ -1459,6 +1459,52 @@ def review_menu_order(order_id: str, status: str, *, reviewed_by: str) -> dict[s
     return order
 
 
+def undo_menu_order_approval(order_id: str, *, reviewed_by: str) -> dict[str, Any]:
+    """Reverse one approved order's inventory deduction and return it to Pending."""
+    ensure_sales_menu_schema()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT status FROM qcc_sales_menu_orders WHERE order_id = %s FOR UPDATE",
+                (order_id,),
+            )
+            current = cursor.fetchone()
+            if not current:
+                raise ValueError("Order not found.")
+            if current[0] != ORDER_STATUS_APPROVED:
+                raise ValueError("Only an approved order can have its approval undone.")
+            cursor.execute(
+                "SELECT product_id, case_count FROM qcc_sales_menu_order_items "
+                "WHERE order_id = %s",
+                (order_id,),
+            )
+            for product_id, case_count in cursor.fetchall():
+                cursor.execute(
+                    "UPDATE qcc_sales_menu_products SET available_cases = "
+                    "available_cases + %s, manual_override_cases = "
+                    "available_cases + %s, updated_by = %s, updated_at = NOW() "
+                    "WHERE product_id = %s",
+                    (case_count, case_count, reviewed_by, product_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError(
+                        "A menu SKU from this order no longer exists; approval was not undone."
+                    )
+            cursor.execute(
+                "UPDATE qcc_sales_menu_orders SET status = %s, reviewed_at = NULL, "
+                "reviewed_by = %s, updated_at = NOW() WHERE order_id = %s",
+                (
+                    ORDER_STATUS_PENDING,
+                    f"Approval undone by {reviewed_by}",
+                    order_id,
+                ),
+            )
+        connection.commit()
+    order = _order_summary(order_id)
+    send_order_email(order, "Order approval undone; returned to sales review")
+    return order
+
+
 class BuyerMenuState(rx.State):
     access_code: str = ""
     access_error: str = ""
@@ -2164,6 +2210,25 @@ class MenuAdminState(rx.State):
         except Exception as error:
             self.error = str(error)
 
+    @rx.event
+    def undo_order_approval(self, order_id: str):
+        self.error = ""
+        self.message = ""
+        try:
+            employee = self._employee()
+            undo_menu_order_approval(
+                order_id,
+                reviewed_by=str(
+                    employee.get("full_name") or employee.get("user_email")
+                ),
+            )
+            self._apply_payload(load_menu_admin_data())
+            self.message = (
+                "Approval was undone, its cases were restored, and the order is pending again."
+            )
+        except Exception as error:
+            self.error = str(error)
+
     @rx.var(cache=True)
     def filtered_products(self) -> list[dict[str, Any]]:
         search = self.product_search.strip().casefold()
@@ -2184,6 +2249,35 @@ class MenuAdminState(rx.State):
                 str(row.get("product_id", "")), str(row.get("available_cases", 0))
             )
             rows.append(record)
+        brand_order = {brand: index for index, brand in enumerate(MENU_BRANDS)}
+        category_order = {
+            "Flower": 0, "Pre-Rolls": 1, "Vapes": 2,
+            "Concentrates": 3, "Edibles": 4,
+        }
+        rows.sort(key=lambda row: (
+            brand_order.get(str(row.get("brand", "")), len(brand_order)),
+            category_order.get(str(row.get("category", "")), 99),
+            str(row.get("product_type", "")).casefold(),
+            _package_size_sort(str(row.get("package_size", ""))),
+            str(row.get("strain", "")).casefold(),
+        ))
+        prior_group = ""
+        for record in rows:
+            group = "|".join(
+                str(record.get(field, "") or "").strip()
+                for field in ("brand", "package_size", "product_type")
+            )
+            record["starts_sku_block"] = group != prior_group
+            record["sku_block_label"] = " · ".join(
+                value for value in (
+                    str(record.get("brand", "") or "").strip(),
+                    " ".join(value for value in (
+                        str(record.get("package_size", "") or "").strip(),
+                        str(record.get("product_type", "") or "").strip(),
+                    ) if value),
+                ) if value
+            )
+            prior_group = group
         return rows
 
     @rx.var(cache=True)
@@ -2720,6 +2814,26 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
     )
 
 
+def _admin_product_group_rows(product: rx.Var) -> rx.Component:
+    return rx.fragment(
+        rx.cond(
+            product["starts_sku_block"],
+            rx.table.row(
+                rx.table.cell(
+                    rx.hstack(
+                        rx.icon("boxes", size=16),
+                        rx.text(product["sku_block_label"], weight="bold"),
+                        spacing="2", align="center",
+                    ),
+                    col_span=15,
+                    class_name="qcc-menu-sku-block-heading",
+                ),
+            ),
+        ),
+        _admin_product_row(product),
+    )
+
+
 def _admin_customer_row(customer: rx.Var) -> rx.Component:
     return rx.table.row(
         rx.table.cell(rx.text(customer["store_name"], weight="bold")),
@@ -2805,6 +2919,15 @@ def _admin_order_card(order: rx.Var) -> rx.Component:
                     rx.button("Approve", on_click=MenuAdminState.review_order(order["order_id"], ORDER_STATUS_APPROVED), color_scheme="green"),
                     rx.button("Decline", on_click=MenuAdminState.review_order(order["order_id"], ORDER_STATUS_DECLINED), color_scheme="red", variant="outline"),
                     gap="2",
+                ),
+            ),
+            rx.cond(
+                order["status"] == ORDER_STATUS_APPROVED,
+                rx.button(
+                    "Undo Approval",
+                    on_click=MenuAdminState.undo_order_approval(order["order_id"]),
+                    color_scheme="orange",
+                    variant="outline",
                 ),
             ),
             spacing="3", width="100%",
@@ -3113,7 +3236,12 @@ def sales_menu_admin_panel() -> rx.Component:
                                     ),
                                 ),
                             ),
-                            rx.table.body(rx.foreach(MenuAdminState.filtered_products, _admin_product_row)),
+                            rx.table.body(
+                                rx.foreach(
+                                    MenuAdminState.filtered_products,
+                                    _admin_product_group_rows,
+                                )
+                            ),
                             width="100%", table_layout="fixed", variant="surface",
                             class_name="qcc-menu-quantity-table",
                         ),

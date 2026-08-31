@@ -1492,6 +1492,16 @@ body {
   max-width: 100%;
 }
 
+.qcc-menu-quantity-table .qcc-menu-sku-block-heading {
+  padding: 0.55rem 0.7rem !important;
+  color: #ffffff;
+  background: #172554;
+  border-top: 3px solid #7c3aed;
+  border-bottom: 2px solid #7c3aed;
+  font-size: 0.8rem !important;
+  letter-spacing: 0.025em;
+}
+
 .qcc-menu-product-name-cell {
   border-left: 3px solid transparent;
 }
