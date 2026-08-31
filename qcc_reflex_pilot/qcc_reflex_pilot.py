@@ -501,6 +501,8 @@ class DashboardState(rx.State):
     search_text: str = ""
     global_filters_resetting: bool = False
     qa_view: str = "cultivation"
+    quality_view: str = "cultivation"
+    distribution_view: str = "customers"
     # Large source collections stay backend-only. Only filtered display data
     # is synchronized through the websocket.
     _qa_packages: list[dict[str, Any]] = []
@@ -1106,7 +1108,7 @@ class DashboardState(rx.State):
         self.transfer_page = 1
         self.exception_page = 1
         self._sync_qa_consistency_filters()
-        if self.workspace_view == "qa" and self.qa_view in {"transfers", "exceptions"}:
+        if self.workspace_view == "distribution" and self.distribution_view in {"transfers", "exceptions"}:
             yield DashboardState.load_distribution_operations_background
 
     @rx.event
@@ -1117,7 +1119,7 @@ class DashboardState(rx.State):
         self.transfer_page = 1
         self.exception_page = 1
         self._sync_qa_consistency_filters()
-        if self.workspace_view == "qa" and self.qa_view in {"transfers", "exceptions"}:
+        if self.workspace_view == "distribution" and self.distribution_view in {"transfers", "exceptions"}:
             yield DashboardState.load_distribution_operations_background
 
     @rx.event
@@ -1128,7 +1130,7 @@ class DashboardState(rx.State):
         self.transfer_page = 1
         self.exception_page = 1
         self._sync_qa_consistency_filters()
-        if self.workspace_view == "qa" and self.qa_view in {"transfers", "exceptions"}:
+        if self.workspace_view == "distribution" and self.distribution_view in {"transfers", "exceptions"}:
             yield DashboardState.load_distribution_operations_background
 
     @rx.event
@@ -1139,7 +1141,7 @@ class DashboardState(rx.State):
         self.inventory_page = 1
         self.transfer_page = 1
         self.exception_page = 1
-        if self.workspace_view == "qa" and self.qa_view in {"transfers", "exceptions"}:
+        if self.workspace_view == "distribution" and self.distribution_view in {"transfers", "exceptions"}:
             yield DashboardState.load_distribution_operations_background
 
     @staticmethod
@@ -1265,17 +1267,17 @@ class DashboardState(rx.State):
                 return
             self.qa_loading = True
             self.qa_error = ""
-            self.qa_message = "Loading Quality Assurance data..."
+            self.qa_message = "Loading Quality & Compliance data..."
         try:
             payload = await rx.run_in_thread(
                 lambda: load_qa_module_data(force_refresh=force_refresh)
             )
             async with self:
                 self._apply_qa_payload(payload)
-                self.qa_message = "Quality Assurance data is ready."
+                self.qa_message = "Quality & Compliance data is ready."
         except Exception as error:
             async with self:
-                self.qa_error = f"Quality Assurance could not be loaded: {error}"
+                self.qa_error = f"Quality & Compliance could not be loaded: {error}"
                 self.qa_message = ""
         finally:
             async with self:
@@ -1291,6 +1293,33 @@ class DashboardState(rx.State):
         self.exception_page = 1
         # Release the navigation update before hydrating a potentially large
         # transfer-backed distribution view.
+        yield
+        if value in {"transfers", "exceptions"}:
+            yield DashboardState.load_distribution_operations_background
+            return
+        if value not in self.sales_loaded_views:
+            yield DashboardState.load_sales_background
+
+    @rx.event
+    def change_quality_view(self, value: str):
+        """Change the Quality & Compliance subtab without affecting Distribution."""
+        if value not in {"cultivation", "manufacturing", "labels"}:
+            return
+        self.quality_view = value
+        self.qa_view = value
+
+    @rx.event
+    def change_distribution_view(self, value: str):
+        """Change the Distribution & Customer Service subtab."""
+        if value not in {"customers", "retail", "exceptions", "lineage", "transfers"}:
+            return
+        self.distribution_view = value
+        self.qa_view = value
+        if value not in {"customers", "retail", "transfers", "exceptions"}:
+            return
+        self.sales_demand_view = value
+        self.transfer_page = 1
+        self.exception_page = 1
         yield
         if value in {"transfers", "exceptions"}:
             yield DashboardState.load_distribution_operations_background
@@ -3202,7 +3231,7 @@ class DashboardState(rx.State):
             self.loading = True
             self.sales_background_loading = True
             self.qa_loading = True
-            self.qa_message = "Loading Quality Assurance data..."
+            self.qa_message = "Loading Quality & Compliance data..."
 
         inventory_task = asyncio.create_task(
             rx.run_in_thread(get_dashboard_data)
@@ -3268,11 +3297,11 @@ class DashboardState(rx.State):
                     elif name == "qa":
                         if error is None and payload is not None:
                             self._apply_qa_payload(payload)
-                            self.qa_message = "Quality Assurance data is ready."
+                            self.qa_message = "Quality & Compliance data is ready."
                             self.qa_error = ""
                         else:
                             self.qa_error = (
-                                f"Quality Assurance could not be loaded: {error}"
+                                f"Quality & Compliance could not be loaded: {error}"
                             )
                             self.qa_message = ""
                         self.qa_loading = False
@@ -3350,7 +3379,7 @@ class DashboardState(rx.State):
 
     @rx.event(background=True)
     async def load_distribution_operations_background(self):
-        """Load only the active Distribution Operations view and page."""
+        """Load only the active Distribution & Customer Service view and page."""
         async with self:
             self.distribution_request_revision += 1
             request_revision = self.distribution_request_revision
@@ -3556,10 +3585,10 @@ class DashboardState(rx.State):
 
         optional_view = self.sales_demand_view
         if (
-            self.workspace_view == "qa"
-            and self.qa_view in {"customers", "retail", "transfers", "exceptions"}
+            self.workspace_view == "distribution"
+            and self.distribution_view in {"customers", "retail", "transfers", "exceptions"}
         ):
-            optional_view = self.qa_view
+            optional_view = self.distribution_view
         elif self.workspace_view != "sales_demand":
             return
         if optional_view in self.sales_loaded_views:
@@ -5263,17 +5292,21 @@ class DashboardState(rx.State):
             if not self.cultivation_clone_plan_history_loaded:
                 yield DashboardState.load_cultivation_clone_plan_history
             return
-        if value == "qa":
+        if value == "quality":
+            self.qa_view = self.quality_view
             if not self.qa_loaded and not self.qa_loading:
                 yield DashboardState.load_qa_background(False)
-            if self.qa_view in {"transfers", "exceptions"}:
+            return
+        if value == "distribution":
+            self.qa_view = self.distribution_view
+            if self.distribution_view in {"transfers", "exceptions"}:
                 yield DashboardState.load_distribution_operations_background
                 return
             if (
-                self.qa_view in {"customers", "retail"}
-                and self.qa_view not in self.sales_loaded_views
+                self.distribution_view in {"customers", "retail"}
+                and self.distribution_view not in self.sales_loaded_views
             ):
-                self.sales_demand_view = self.qa_view
+                self.sales_demand_view = self.distribution_view
                 yield DashboardState.load_sales_background
             return
         if value != "sales_demand":
@@ -10332,7 +10365,7 @@ def filters() -> rx.Component:
                 rx.box(
                     rx.heading("Global Filters", size="4"),
                     rx.text(
-                        "All selections apply to Sales & Demand Planning and Inventory; Brand and Strain also filter Quality Assurance.",
+                        "All selections apply to Sales & Demand Planning and Cannabis Inventory; Brand and Strain also filter Quality & Compliance.",
                         size="1",
                         color=MUTED,
                     ),
@@ -13142,7 +13175,7 @@ def wip_inventory_view() -> rx.Component:
 def inventory_panel() -> rx.Component:
     """Package-level inventory published to shared Supabase."""
     return rx.vstack(
-        rx.heading("Inventory", size="5"),
+        rx.heading("Cannabis Inventory", size="5"),
         rx.cond(
             DashboardState.authoritative_cpg_ready,
             rx.callout(
@@ -14213,13 +14246,13 @@ def qa_label_panel() -> rx.Component:
     )
 
 
-def qa_panel() -> rx.Component:
+def quality_compliance_panel() -> rx.Component:
     return rx.vstack(
         rx.flex(
             rx.box(
-                rx.heading("Distribution Operations", size="6", color=DARK),
+                rx.heading("Quality & Compliance", size="6", color=DARK),
                 rx.text(
-                    "Lab data, compliance label printing, customer activity, retail availability, and transfer operations.",
+                    "Cultivation and manufacturing lab data, COAs, label printing, testing, and compliance.",
                     color=MUTED,
                 ),
             ),
@@ -14250,7 +14283,7 @@ def qa_panel() -> rx.Component:
         ),
         qa_import_panel(),
         rx.text(
-            "The global Brand and Strain filters above apply to lab and distribution views where relevant.",
+            "The global Brand and Strain filters above apply to lab and label views where relevant.",
             size="1", color=MUTED,
         ),
         rx.tabs.root(
@@ -14260,21 +14293,16 @@ def qa_panel() -> rx.Component:
                 rx.tabs.trigger(
                     "Compliance Label Search & Printing", value="labels"
                 ),
-                rx.tabs.trigger("Customers", value="customers"),
-                rx.tabs.trigger("Retail Availability", value="retail"),
-                rx.tabs.trigger("Shipment Exceptions", value="exceptions"),
-                rx.tabs.trigger("Package Lineage", value="lineage"),
-                rx.tabs.trigger("Transfer Data", value="transfers"),
                 class_name="qcc-tabs",
                 width="100%",
             ),
-            value=DashboardState.qa_view,
-            on_change=DashboardState.change_qa_view,
+            value=DashboardState.quality_view,
+            on_change=DashboardState.change_quality_view,
             width="100%",
         ),
         rx.box(
             rx.match(
-                DashboardState.qa_view,
+                DashboardState.quality_view,
                 ("cultivation", qa_operation_panel(
                     "Cultivation",
                     DashboardState.qa_cultivation_test_type,
@@ -14322,11 +14350,6 @@ def qa_panel() -> rx.Component:
                     DashboardState.qa_manufacturing_detail_page_size,
                 )),
                 ("labels", qa_label_panel()),
-                ("customers", customers_panel()),
-                ("retail", retail_availability_panel()),
-                ("exceptions", exceptions_panel()),
-                ("lineage", package_lineage_panel()),
-                ("transfers", transfer_data_panel()),
                 qa_operation_panel(
                     "Cultivation",
                     DashboardState.qa_cultivation_test_type,
@@ -14354,6 +14377,118 @@ def qa_panel() -> rx.Component:
             width="100%", padding_top="1rem", padding_bottom="6rem",
         ),
         width="100%", spacing="4",
+    )
+
+
+def distribution_customer_service_panel() -> rx.Component:
+    """Customer, shipment, transfer, and package-history operations."""
+    return rx.vstack(
+        rx.box(
+            rx.heading("Distribution & Customer Service", size="6", color=DARK),
+            rx.text(
+                "Customers, retail availability, shipment exceptions, package lineage, and transfer operations.",
+                color=MUTED,
+            ),
+            width="100%",
+        ),
+        rx.text(
+            "The global Brand, Strain, SKU, and search filters above apply where relevant.",
+            size="1",
+            color=MUTED,
+        ),
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger("Customers", value="customers"),
+                rx.tabs.trigger("Retail Availability", value="retail"),
+                rx.tabs.trigger("Shipment Exceptions", value="exceptions"),
+                rx.tabs.trigger("Package Lineage", value="lineage"),
+                rx.tabs.trigger("Transfer Data", value="transfers"),
+                class_name="qcc-tabs",
+                width="100%",
+            ),
+            value=DashboardState.distribution_view,
+            on_change=DashboardState.change_distribution_view,
+            width="100%",
+        ),
+        rx.box(
+            rx.match(
+                DashboardState.distribution_view,
+                ("customers", customers_panel()),
+                ("retail", retail_availability_panel()),
+                ("exceptions", exceptions_panel()),
+                ("lineage", package_lineage_panel()),
+                ("transfers", transfer_data_panel()),
+                customers_panel(),
+            ),
+            width="100%",
+            padding_top="1rem",
+            padding_bottom="6rem",
+        ),
+        width="100%",
+        spacing="4",
+    )
+
+
+def erp_foundation_panel(
+    title: str,
+    description: str,
+    first_workspace: str,
+    workspace_description: str,
+) -> rx.Component:
+    """A stable navigation destination for the next ERP build phase."""
+    return rx.vstack(
+        rx.box(
+            rx.heading(title, size="6", color=DARK),
+            rx.text(description, color=MUTED),
+            width="100%",
+        ),
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger(first_workspace, value="foundation"),
+                class_name="qcc-tabs",
+                width="100%",
+            ),
+            default_value="foundation",
+            width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.badge("ERP FOUNDATION", color_scheme="teal", size="2"),
+                rx.heading(first_workspace, size="5", color=DARK),
+                rx.text(workspace_description, color=MUTED, max_width="900px"),
+                rx.callout(
+                    "This staging step establishes the module boundary without changing current production data or workflows.",
+                    icon="info",
+                    color_scheme="blue",
+                    width="100%",
+                ),
+                align="start",
+                spacing="3",
+                width="100%",
+            ),
+            width="100%",
+            border_left=f"4px solid {ACCENT}",
+        ),
+        width="100%",
+        spacing="4",
+    )
+
+
+def manufacturing_panel() -> rx.Component:
+    return erp_foundation_panel(
+        "Manufacturing",
+        "BOM recipes, production orders, yields, work in process, and material consumption.",
+        "BOM Registry",
+        "The BOM Registry will connect finished-product recipes to a shared Item Master, including packaging and supplies owned by Materials & Procurement and cannabis inputs owned by Cannabis Inventory.",
+    )
+
+
+def materials_procurement_panel() -> rx.Component:
+    return erp_foundation_panel(
+        "Materials & Procurement",
+        "Packaging, operating supplies, suppliers, purchasing, and receiving.",
+        "Packaging Inventory",
+        "Packaging Inventory will be the first materials workspace, followed by supplier records, purchase orders, receiving, and reorder controls.",
     )
 
 
@@ -17665,9 +17800,14 @@ def protected_dashboard() -> rx.Component:
                 rx.tabs.list(
                     rx.tabs.trigger("Executive Dashboard", value="executive"),
                     rx.tabs.trigger("Sales & Demand Planning", value="sales_demand"),
-                    rx.tabs.trigger("Inventory", value="inventory"),
                     rx.tabs.trigger("Cultivation", value="cultivation"),
-                    rx.tabs.trigger("Distribution Operations", value="qa"),
+                    rx.tabs.trigger("Manufacturing", value="manufacturing"),
+                    rx.tabs.trigger("Cannabis Inventory", value="inventory"),
+                    rx.tabs.trigger("Materials & Procurement", value="materials"),
+                    rx.tabs.trigger("Quality & Compliance", value="quality"),
+                    rx.tabs.trigger(
+                        "Distribution & Customer Service", value="distribution"
+                    ),
                     rx.cond(
                         DashboardState.is_administrator,
                         rx.tabs.trigger("Administration", value="administration"),
@@ -17686,18 +17826,33 @@ def protected_dashboard() -> rx.Component:
                     padding_top="1.25rem",
                 ),
                 rx.tabs.content(
-                    inventory_panel(),
-                    value="inventory",
-                    padding_top="1.25rem",
-                ),
-                rx.tabs.content(
                     cultivation_panel(),
                     value="cultivation",
                     padding_top="1.25rem",
                 ),
                 rx.tabs.content(
-                    qa_panel(),
-                    value="qa",
+                    manufacturing_panel(),
+                    value="manufacturing",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    inventory_panel(),
+                    value="inventory",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    materials_procurement_panel(),
+                    value="materials",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    quality_compliance_panel(),
+                    value="quality",
+                    padding_top="1.25rem",
+                ),
+                rx.tabs.content(
+                    distribution_customer_service_panel(),
+                    value="distribution",
                     padding_top="1.25rem",
                 ),
                 rx.tabs.content(
