@@ -1149,6 +1149,58 @@ def clear_menu_inventory_override(product_id: str, *, updated_by: str) -> None:
         connection.commit()
 
 
+def save_menu_product_review(
+    product_id: str,
+    *,
+    brand: str,
+    category: str,
+    package_size: str,
+    product_type: str,
+    strain: str,
+    unit_price: float,
+    units_per_case: int,
+    notes: str,
+    is_active: bool,
+    updated_by: str,
+) -> None:
+    """Save an administrator's SKU review and buyer-menu publication decision."""
+    required = {
+        "Brand": brand,
+        "Category": category,
+        "Package size": package_size,
+        "Product type": product_type,
+        "Strain / variety": strain,
+    }
+    missing = [label for label, value in required.items() if not str(value).strip()]
+    if missing:
+        raise ValueError(f"Complete the following fields: {', '.join(missing)}.")
+    if float(unit_price) < 0:
+        raise ValueError("Unit price cannot be negative.")
+    if int(units_per_case) <= 0:
+        raise ValueError("Units per case must be greater than zero.")
+    ensure_sales_menu_schema()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE qcc_sales_menu_products SET brand = %s, category = %s, "
+                "package_size = %s, product_type = %s, strain = %s, unit_price = %s, "
+                "units_per_case = %s, notes = %s, is_active = %s, "
+                "metrc_case_equivalent = COALESCE(metrc_on_hand_units, 0) / %s, "
+                "available_cases = CASE WHEN manual_override_cases IS NULL "
+                "THEN COALESCE(metrc_on_hand_units, 0) / %s ELSE manual_override_cases END, "
+                "updated_by = %s, updated_at = NOW() WHERE product_id = %s",
+                (
+                    brand.strip(), category.strip(), package_size.strip(),
+                    product_type.strip(), strain.strip(), float(unit_price),
+                    int(units_per_case), notes.strip(), bool(is_active),
+                    int(units_per_case), int(units_per_case), updated_by, product_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("The selected menu SKU could not be found.")
+        connection.commit()
+
+
 def sync_menu_customers_from_metrc() -> int:
     """Upsert transfer-derived Metrc retailers as inactive buyer accounts."""
     ensure_sales_menu_schema()
@@ -1695,6 +1747,18 @@ class MenuAdminState(rx.State):
     product_search: str = ""
     product_brand_filter: str = "All Brands"
     product_sku_filter: str = "All SKU Types"
+    review_product_id: str = ""
+    review_product_brand: str = "Clade9"
+    review_product_category: str = ""
+    review_product_package_size: str = ""
+    review_product_type: str = ""
+    review_product_strain: str = ""
+    review_product_unit_price: str = "0.00"
+    review_product_units_per_case: str = "1"
+    review_product_notes: str = ""
+    review_product_is_active: bool = False
+    review_product_match_status: str = ""
+    review_product_match_detail: str = ""
     customer_buyer_name: str = ""
     customer_store_name: str = ""
     customer_license: str = ""
@@ -1722,6 +1786,24 @@ class MenuAdminState(rx.State):
     def set_product_brand_filter(self, value: str): self.product_brand_filter = value
     @rx.event
     def set_product_sku_filter(self, value: str): self.product_sku_filter = value
+    @rx.event
+    def set_review_product_brand(self, value: str): self.review_product_brand = value
+    @rx.event
+    def set_review_product_category(self, value: str): self.review_product_category = value
+    @rx.event
+    def set_review_product_package_size(self, value: str): self.review_product_package_size = value
+    @rx.event
+    def set_review_product_type(self, value: str): self.review_product_type = value
+    @rx.event
+    def set_review_product_strain(self, value: str): self.review_product_strain = value
+    @rx.event
+    def set_review_product_unit_price(self, value: str): self.review_product_unit_price = value
+    @rx.event
+    def set_review_product_units_per_case(self, value: str): self.review_product_units_per_case = value
+    @rx.event
+    def set_review_product_notes(self, value: str): self.review_product_notes = value
+    @rx.event
+    def set_review_product_is_active(self, value: bool): self.review_product_is_active = value
     @rx.event
     def set_customer_buyer_name(self, value: str): self.customer_buyer_name = value
     @rx.event
@@ -1863,6 +1945,60 @@ class MenuAdminState(rx.State):
             )
             self._apply_payload(load_menu_admin_data())
             self.message = "The SKU now follows its Metrc case count."
+        except Exception as error:
+            self.error = str(error)
+
+    @rx.event
+    def start_product_review(self, product_id: str):
+        product = next(
+            (row for row in self.products if str(row.get("product_id", "")) == product_id),
+            None,
+        )
+        if not product:
+            self.error = "The selected menu SKU could not be found."
+            return
+        self.error = ""
+        self.message = ""
+        self.review_product_id = product_id
+        self.review_product_brand = str(product.get("brand", "") or "")
+        self.review_product_category = str(product.get("category", "") or "")
+        self.review_product_package_size = str(product.get("package_size", "") or "")
+        self.review_product_type = str(product.get("product_type", "") or "")
+        self.review_product_strain = str(product.get("strain", "") or "")
+        self.review_product_unit_price = f"{float(product.get('unit_price', 0) or 0):.2f}"
+        self.review_product_units_per_case = str(int(product.get("units_per_case", 0) or 0))
+        self.review_product_notes = str(product.get("notes", "") or "")
+        self.review_product_is_active = bool(product.get("is_active", False))
+        self.review_product_match_status = str(product.get("inventory_match_status", "") or "")
+        self.review_product_match_detail = str(product.get("inventory_match_detail", "") or "")
+
+    @rx.event
+    def cancel_product_review(self):
+        self.review_product_id = ""
+
+    @rx.event
+    def save_product_review(self):
+        self.error = ""
+        self.message = ""
+        try:
+            employee = self._employee()
+            save_menu_product_review(
+                self.review_product_id,
+                brand=self.review_product_brand,
+                category=self.review_product_category,
+                package_size=self.review_product_package_size,
+                product_type=self.review_product_type,
+                strain=self.review_product_strain,
+                unit_price=float(self.review_product_unit_price or 0),
+                units_per_case=int(float(self.review_product_units_per_case or 0)),
+                notes=self.review_product_notes,
+                is_active=self.review_product_is_active,
+                updated_by=str(employee.get("full_name") or employee.get("user_email")),
+            )
+            publication = "published" if self.review_product_is_active else "kept unpublished"
+            self.review_product_id = ""
+            self._apply_payload(load_menu_admin_data())
+            self.message = f"The menu SKU was reviewed and {publication}."
         except Exception as error:
             self.error = str(error)
 
@@ -2521,6 +2657,13 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
         rx.table.cell(product["metrc_on_hand_units"]),
         rx.table.cell(product["metrc_case_equivalent"]),
         rx.table.cell(
+            rx.input(
+                type="number", min="0", step="1", value=product["draft_cases"],
+                on_change=lambda value: MenuAdminState.change_availability(product["product_id"], value),
+                width="92px", size="1", text_align="center",
+            )
+        ),
+        rx.table.cell(
             rx.vstack(
                 rx.badge(
                     product["inventory_match_status"],
@@ -2540,13 +2683,15 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
                 variant="soft",
             )
         ),
-        rx.table.cell(product["held_cases"]),
         rx.table.cell(
-            rx.input(
-                type="number", min="0", step="1", value=product["draft_cases"],
-                on_change=lambda value: MenuAdminState.change_availability(product["product_id"], value),
-                width="92px", size="1", text_align="center",
-            )
+            rx.text(product["held_cases"], weight="bold", color="#9a3412"),
+            background="#fff7ed", border_left="2px solid #0f766e",
+            text_align="center",
+        ),
+        rx.table.cell(
+            rx.text(product["available_to_order"], weight="bold", color="#166534"),
+            background="#f0fdf4", border_right="2px solid #0f766e",
+            text_align="center",
         ),
         rx.table.cell(
             rx.vstack(
@@ -2561,7 +2706,15 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
                 spacing="1", align="start",
             )
         ),
-        rx.table.cell(product["available_to_order"]),
+        rx.table.cell(
+            rx.button(
+                rx.cond(product["is_active"], "Edit", "Review SKU"),
+                size="1",
+                variant=rx.cond(product["is_active"], "outline", "solid"),
+                color_scheme=rx.cond(product["is_active"], "gray", "purple"),
+                on_click=MenuAdminState.start_product_review(product["product_id"]),
+            )
+        ),
     )
 
 
@@ -2735,6 +2888,143 @@ def _admin_order_editor() -> rx.Component:
     )
 
 
+def _admin_product_review_editor() -> rx.Component:
+    return rx.cond(
+        MenuAdminState.review_product_id != "",
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.heading("Review Menu SKU", size="4"),
+                        rx.text(
+                            "Confirm the commercial details and decide whether this SKU should appear on buyer menus.",
+                            color="#64748b", size="2",
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.badge(
+                        MenuAdminState.review_product_match_status,
+                        color_scheme=rx.cond(
+                            MenuAdminState.review_product_match_status == "Matched",
+                            "green", "orange",
+                        ),
+                        variant="soft",
+                    ),
+                    width="100%", align="center", gap="3", wrap="wrap",
+                ),
+                rx.text(
+                    MenuAdminState.review_product_match_detail,
+                    size="1", color="#64748b",
+                ),
+                rx.grid(
+                    rx.box(
+                        rx.text("Brand", size="1", weight="bold"),
+                        rx.select(
+                            MENU_BRANDS,
+                            value=MenuAdminState.review_product_brand,
+                            on_change=MenuAdminState.set_review_product_brand,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Category", size="1", weight="bold"),
+                        rx.input(
+                            value=MenuAdminState.review_product_category,
+                            on_change=MenuAdminState.set_review_product_category,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Package size", size="1", weight="bold"),
+                        rx.input(
+                            value=MenuAdminState.review_product_package_size,
+                            on_change=MenuAdminState.set_review_product_package_size,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Product type", size="1", weight="bold"),
+                        rx.input(
+                            value=MenuAdminState.review_product_type,
+                            on_change=MenuAdminState.set_review_product_type,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Strain / variety", size="1", weight="bold"),
+                        rx.input(
+                            value=MenuAdminState.review_product_strain,
+                            on_change=MenuAdminState.set_review_product_strain,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Unit price", size="1", weight="bold"),
+                        rx.input(
+                            type="number", min="0", step="0.01",
+                            value=MenuAdminState.review_product_unit_price,
+                            on_change=MenuAdminState.set_review_product_unit_price,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Units per case", size="1", weight="bold"),
+                        rx.input(
+                            type="number", min="1", step="1",
+                            value=MenuAdminState.review_product_units_per_case,
+                            on_change=MenuAdminState.set_review_product_units_per_case,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Buyer menu status", size="1", weight="bold"),
+                        rx.hstack(
+                            rx.switch(
+                                checked=MenuAdminState.review_product_is_active,
+                                on_change=MenuAdminState.set_review_product_is_active,
+                            ),
+                            rx.text(
+                                rx.cond(
+                                    MenuAdminState.review_product_is_active,
+                                    "Publish to buyers", "Keep unpublished",
+                                ),
+                                weight="bold",
+                            ),
+                            spacing="2", min_height="32px", align="center",
+                        ),
+                    ),
+                    columns=rx.breakpoints(initial="1", md="2", xl="4"),
+                    gap="3", width="100%",
+                ),
+                rx.box(
+                    rx.text("Internal notes", size="1", weight="bold"),
+                    rx.text_area(
+                        value=MenuAdminState.review_product_notes,
+                        on_change=MenuAdminState.set_review_product_notes,
+                        width="100%",
+                    ),
+                    width="100%",
+                ),
+                rx.hstack(
+                    rx.button(
+                        "Save SKU Review",
+                        on_click=MenuAdminState.save_product_review,
+                        color_scheme="teal",
+                    ),
+                    rx.button(
+                        "Cancel",
+                        on_click=MenuAdminState.cancel_product_review,
+                        variant="outline",
+                    ),
+                    spacing="2",
+                ),
+                spacing="3", width="100%",
+            ),
+            border_left="5px solid #7c3aed", width="100%",
+        ),
+    )
+
+
 def sales_menu_admin_panel() -> rx.Component:
     return rx.vstack(
         rx.card(
@@ -2776,11 +3066,44 @@ def sales_menu_admin_panel() -> rx.Component:
                         rx.button("Save Quantity Overrides", on_click=MenuAdminState.save_all_availability, color_scheme="teal"),
                         gap="3", wrap="wrap", width="100%", align="end",
                     ),
+                    _admin_product_review_editor(),
                     rx.box(
                         rx.table.root(
-                            rx.table.header(rx.table.row(*[rx.table.column_header_cell(value) for value in ["Brand", "Size", "Product", "Strain / Variety", "Unit Price", "Units / Case", "Metrc Units", "Metrc Full Cases", "Metrc Match", "Menu Status", "Held", "Published Cases", "Quantity Source", "Available to Order"]])),
+                            rx.table.header(
+                                rx.table.row(
+                                    *[
+                                        rx.table.column_header_cell(value, row_span=2)
+                                        for value in [
+                                            "Brand", "Size", "Product", "Strain / Variety",
+                                            "Unit Price", "Units / Case", "Metrc Units",
+                                            "Metrc Full Cases", "Published Cases", "Metrc Match",
+                                            "Menu Status",
+                                        ]
+                                    ],
+                                    rx.table.column_header_cell(
+                                        "Sales Availability", col_span=2,
+                                        text_align="center", background="#0f766e", color="white",
+                                        border_left="2px solid #0f766e",
+                                        border_right="2px solid #0f766e",
+                                    ),
+                                    rx.table.column_header_cell("Quantity Source", row_span=2),
+                                    rx.table.column_header_cell("Review", row_span=2),
+                                ),
+                                rx.table.row(
+                                    rx.table.column_header_cell(
+                                        "Held", text_align="center",
+                                        background="#fff7ed", color="#9a3412",
+                                        border_left="2px solid #0f766e",
+                                    ),
+                                    rx.table.column_header_cell(
+                                        "Available to Order", text_align="center",
+                                        background="#f0fdf4", color="#166534",
+                                        border_right="2px solid #0f766e",
+                                    ),
+                                ),
+                            ),
                             rx.table.body(rx.foreach(MenuAdminState.filtered_products, _admin_product_row)),
-                            width="100%", min_width="1840px", variant="surface",
+                            width="100%", min_width="2020px", variant="surface",
                         ),
                         width="100%", max_height="640px", overflow="auto",
                     ),

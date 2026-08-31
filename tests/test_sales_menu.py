@@ -12,6 +12,7 @@ from qcc_reflex_pilot.sales_menu import (
     load_customer_menu_products,
     match_menu_inventory,
     sales_menu_seed_products,
+    save_menu_product_review,
     send_order_email,
 )
 
@@ -125,6 +126,55 @@ class SalesMenuTests(unittest.TestCase):
         smtp.login.assert_called_once_with("orders@clade9.com", "abcdefghijklmnop")
         sent_message = smtp.send_message.call_args.args[0]
         self.assertEqual(sent_message["To"], "dave@clade9.com, buyer@example.com")
+
+    def test_product_review_recalculates_full_cases_and_publication(self):
+        connection = MagicMock()
+        cursor = MagicMock()
+        cursor.rowcount = 1
+        connection.__enter__.return_value = connection
+        connection.cursor.return_value.__enter__.return_value = cursor
+        with patch(
+            "qcc_reflex_pilot.sales_menu.ensure_sales_menu_schema", return_value=True
+        ), patch(
+            "qcc_reflex_pilot.sales_menu.database_url", return_value="postgresql://test"
+        ), patch(
+            "qcc_reflex_pilot.sales_menu.psycopg.connect", return_value=connection
+        ):
+            save_menu_product_review(
+                "MENU-TEST",
+                brand="Clade9",
+                category="Flower",
+                package_size="3.5g",
+                product_type="Flower",
+                strain="Diamond Bar",
+                unit_price=25,
+                units_per_case=28,
+                notes="Reviewed",
+                is_active=True,
+                updated_by="QCC Tester",
+            )
+        statement, parameters = cursor.execute.call_args.args
+        self.assertIn("metrc_case_equivalent", statement)
+        self.assertIn("available_cases", statement)
+        self.assertEqual(parameters[8], True)
+        self.assertEqual(parameters[9:11], (28, 28))
+        connection.commit.assert_called_once_with()
+
+    def test_product_review_requires_valid_case_configuration(self):
+        with self.assertRaisesRegex(ValueError, "Units per case"):
+            save_menu_product_review(
+                "MENU-TEST",
+                brand="Clade9",
+                category="Flower",
+                package_size="3.5g",
+                product_type="Flower",
+                strain="Diamond Bar",
+                unit_price=25,
+                units_per_case=0,
+                notes="",
+                is_active=False,
+                updated_by="QCC Tester",
+            )
 
     def test_flower_inventory_converts_units_to_full_cases(self):
         product = next(
