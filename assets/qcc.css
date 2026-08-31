@@ -1460,6 +1460,38 @@ body {
   background: rgba(199, 165, 91, 0.09);
 }
 
+/* Keep Buyer Menu Administration quantities readable in a single desktop
+   viewport. Detailed Metrc-match explanations remain available by tooltip. */
+.qcc-menu-quantity-table {
+  width: 100% !important;
+  table-layout: fixed !important;
+}
+
+.qcc-menu-quantity-table th,
+.qcc-menu-quantity-table td {
+  min-width: 0 !important;
+  padding: 0.42rem 0.32rem !important;
+  line-height: 1.15;
+  vertical-align: middle;
+  white-space: normal !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+}
+
+.qcc-menu-quantity-table th {
+  font-size: 0.68rem !important;
+}
+
+.qcc-menu-quantity-table td {
+  font-size: 0.73rem !important;
+}
+
+.qcc-menu-quantity-table input,
+.qcc-menu-quantity-table button {
+  min-width: 0 !important;
+  max-width: 100%;
+}
+
 .qcc-menu-product-name-cell {
   border-left: 3px solid transparent;
 }

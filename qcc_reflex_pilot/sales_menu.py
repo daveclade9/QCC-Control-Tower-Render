@@ -2660,11 +2660,11 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
             rx.input(
                 type="number", min="0", step="1", value=product["draft_cases"],
                 on_change=lambda value: MenuAdminState.change_availability(product["product_id"], value),
-                width="92px", size="1", text_align="center",
+                width="100%", min_width="0", size="1", text_align="center",
             )
         ),
         rx.table.cell(
-            rx.vstack(
+            rx.tooltip(
                 rx.badge(
                     product["inventory_match_status"],
                     color_scheme=rx.cond(
@@ -2672,8 +2672,7 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
                     ),
                     variant="soft",
                 ),
-                rx.text(product["inventory_match_detail"], size="1", color="#64748b"),
-                spacing="1", align="start",
+                content=product["inventory_match_detail"],
             )
         ),
         rx.table.cell(
@@ -2698,9 +2697,12 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
                 rx.text(product["inventory_source"], size="1", weight="bold"),
                 rx.cond(
                     product["inventory_source"] == "Manual override",
-                    rx.button(
-                        "Use Metrc", size="1", variant="outline",
-                        on_click=MenuAdminState.reset_inventory_override(product["product_id"]),
+                    rx.tooltip(
+                        rx.button(
+                            "Reset", size="1", variant="outline",
+                            on_click=MenuAdminState.reset_inventory_override(product["product_id"]),
+                        ),
+                        content="Remove the manual override and use Metrc Full Cases.",
                     ),
                 ),
                 spacing="1", align="start",
@@ -2708,7 +2710,7 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
         ),
         rx.table.cell(
             rx.button(
-                rx.cond(product["is_active"], "Edit", "Review SKU"),
+                rx.cond(product["is_active"], "Edit", "Review"),
                 size="1",
                 variant=rx.cond(product["is_active"], "outline", "solid"),
                 color_scheme=rx.cond(product["is_active"], "gray", "purple"),
@@ -3072,22 +3074,31 @@ def sales_menu_admin_panel() -> rx.Component:
                             rx.table.header(
                                 rx.table.row(
                                     *[
-                                        rx.table.column_header_cell(value, row_span=2)
-                                        for value in [
-                                            "Brand", "Size", "Product", "Strain / Variety",
-                                            "Unit Price", "Units / Case", "Metrc Units",
-                                            "Metrc Full Cases", "Published Cases", "Metrc Match",
-                                            "Menu Status",
+                                        rx.table.column_header_cell(
+                                            value, row_span=2, width=width,
+                                        )
+                                        for value, width in [
+                                            ("Brand", "7%"), ("Size", "4%"),
+                                            ("Product", "7%"), ("Strain / Variety", "9%"),
+                                            ("Unit Price", "5%"), ("Units / Case", "5%"),
+                                            ("Metrc Units", "5%"), ("Metrc Full Cases", "6%"),
+                                            ("Published Cases", "6%"), ("Metrc Match", "7%"),
+                                            ("Menu Status", "7%"),
                                         ]
                                     ],
                                     rx.table.column_header_cell(
                                         "Sales Availability", col_span=2,
+                                        width="12%",
                                         text_align="center", background="#0f766e", color="white",
                                         border_left="2px solid #0f766e",
                                         border_right="2px solid #0f766e",
                                     ),
-                                    rx.table.column_header_cell("Quantity Source", row_span=2),
-                                    rx.table.column_header_cell("Review", row_span=2),
+                                    rx.table.column_header_cell(
+                                        "Quantity Source", row_span=2, width="8%"
+                                    ),
+                                    rx.table.column_header_cell(
+                                        "Review", row_span=2, width="5%"
+                                    ),
                                 ),
                                 rx.table.row(
                                     rx.table.column_header_cell(
@@ -3103,9 +3114,11 @@ def sales_menu_admin_panel() -> rx.Component:
                                 ),
                             ),
                             rx.table.body(rx.foreach(MenuAdminState.filtered_products, _admin_product_row)),
-                            width="100%", min_width="2020px", variant="surface",
+                            width="100%", table_layout="fixed", variant="surface",
+                            class_name="qcc-menu-quantity-table",
                         ),
-                        width="100%", max_height="640px", overflow="auto",
+                        width="100%", max_height="640px", overflow_y="auto",
+                        overflow_x="hidden",
                     ),
                     spacing="3", width="100%",
                 ),
