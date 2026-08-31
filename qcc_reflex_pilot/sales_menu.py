@@ -9,8 +9,10 @@ import json
 import os
 import re
 import secrets
+import smtplib
 import threading
 from datetime import date, datetime
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, TypedDict
 from urllib.request import Request, urlopen
@@ -463,6 +465,7 @@ def _ensure_sales_menu_schema(cursor: Any) -> None:
             minimum_order_cases INTEGER NOT NULL DEFAULT 0,
             allowed_brands JSONB NOT NULL DEFAULT '[]'::jsonb,
             access_code_hash TEXT UNIQUE,
+            access_code_display TEXT NOT NULL DEFAULT '',
             source_system TEXT NOT NULL DEFAULT 'Manual',
             metrc_synced_at TIMESTAMPTZ,
             last_shipment TIMESTAMPTZ,
@@ -484,6 +487,7 @@ def _ensure_sales_menu_schema(cursor: Any) -> None:
     cursor.execute(
         "ALTER TABLE qcc_sales_menu_customers "
         "ALTER COLUMN access_code_hash DROP NOT NULL, "
+        "ADD COLUMN IF NOT EXISTS access_code_display TEXT NOT NULL DEFAULT '', "
         "ADD COLUMN IF NOT EXISTS source_system TEXT NOT NULL DEFAULT 'Manual', "
         "ADD COLUMN IF NOT EXISTS metrc_synced_at TIMESTAMPTZ, "
         "ADD COLUMN IF NOT EXISTS last_shipment TIMESTAMPTZ"
@@ -515,6 +519,7 @@ def _ensure_sales_menu_schema(cursor: Any) -> None:
             requested_delivery_date DATE,
             customer_notes TEXT NOT NULL DEFAULT '',
             submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             reviewed_at TIMESTAMPTZ,
             reviewed_by TEXT NOT NULL DEFAULT ''
         )
@@ -541,6 +546,10 @@ def _ensure_sales_menu_schema(cursor: Any) -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_qcc_menu_orders_customer "
         "ON qcc_sales_menu_orders(customer_id, submitted_at DESC)"
+    )
+    cursor.execute(
+        "ALTER TABLE qcc_sales_menu_orders "
+        "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
     )
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_qcc_menu_orders_status "
@@ -699,7 +708,8 @@ def _order_summary(order_id: str) -> dict[str, Any]:
             )
             orders = _records(cursor)
             cursor.execute(
-                "SELECT brand, package_size, product_type, strain, case_count, "
+                "SELECT order_item_id, product_id, brand, package_size, "
+                "product_type, strain, case_count, "
                 "units_per_case, unit_price, line_total FROM qcc_sales_menu_order_items "
                 "WHERE order_id = %s ORDER BY brand, product_type, strain",
                 (order_id,),
@@ -723,14 +733,19 @@ def _order_summary(order_id: str) -> dict[str, Any]:
 
 
 def send_order_email(order: dict[str, Any], event_label: str) -> tuple[bool, str]:
-    """Send one branded order summary through Resend when configured."""
+    """Send one branded order summary through Google SMTP or Resend."""
+    smtp_host = os.getenv("QCC_MENU_SMTP_HOST", "").strip()
+    smtp_port_value = os.getenv("QCC_MENU_SMTP_PORT", "587").strip() or "587"
+    smtp_username = os.getenv("QCC_MENU_SMTP_USERNAME", "").strip()
+    smtp_password = os.getenv("QCC_MENU_SMTP_APP_PASSWORD", "").replace(" ", "")
     api_key = (
         os.getenv("QCC_MENU_RESEND_API_KEY", "").strip()
         or os.getenv("RESEND_API_KEY", "").strip()
     )
-    if not api_key:
+    smtp_configured = bool(smtp_host and smtp_username and smtp_password)
+    if not smtp_configured and not api_key:
         return False, "Order saved; email delivery is not configured yet."
-    recipient = os.getenv(
+    recipient_value = os.getenv(
         "QCC_MENU_ORDER_EMAIL_TO", MENU_EMAIL_TO_DEFAULT
     ).strip() or MENU_EMAIL_TO_DEFAULT
     sender = os.getenv(
@@ -768,15 +783,47 @@ def send_order_email(order: dict[str, Any], event_label: str) -> tuple[bool, str
         f"<p><b>Notes:</b> {html.escape(str(order.get('customer_notes', '') or 'None'))}</p>"
         "</div>"
     )
-    recipients = [recipient]
+    recipients = [
+        address.strip() for address in re.split(r"[,;]", recipient_value)
+        if address.strip()
+    ]
     buyer_email = str(order.get("email", "") or "").strip()
-    if buyer_email and buyer_email.casefold() != recipient.casefold():
+    if buyer_email and buyer_email.casefold() not in {
+        address.casefold() for address in recipients
+    }:
         recipients.append(buyer_email)
+    subject = f"{event_label}: {order.get('order_number', 'QCC order')}"
+    if smtp_configured:
+        try:
+            smtp_port = int(smtp_port_value)
+            message = EmailMessage()
+            message["Subject"] = subject
+            message["From"] = sender
+            message["To"] = ", ".join(recipients)
+            message.set_content(
+                f"{event_label}: {order.get('order_number', 'QCC order')}\n"
+                f"Customer: {order.get('store_name', '')}\n"
+                f"Total: {int(order.get('total_cases', 0))} cases / "
+                f"{int(order.get('total_units', 0)):,} units / "
+                f"${float(order.get('total_amount', 0)):,.2f}"
+            )
+            message.add_alternative(body, subtype="html")
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as smtp:
+                smtp.ehlo()
+                smtp.starttls()
+                smtp.ehlo()
+                smtp.login(smtp_username, smtp_password)
+                smtp.send_message(message)
+            return True, "Email summary sent through Google Workspace."
+        except Exception as error:  # Order persistence must survive email outages.
+            if not api_key:
+                return False, f"Order saved; email could not be sent: {error}"
+
     payload = json.dumps(
         {
             "from": sender,
             "to": recipients,
-            "subject": f"{event_label}: {order.get('order_number', 'QCC order')}",
+            "subject": subject,
             "html": body,
         }
     ).encode("utf-8")
@@ -970,15 +1017,16 @@ def load_menu_admin_data() -> dict[str, Any]:
                 "SELECT customer_id, buyer_name, store_name, license_number, email, "
                 "payment_terms, assigned_salesperson, minimum_order_cases, "
                 "allowed_brands, is_active, source_system, metrc_synced_at, "
-                "last_shipment, (access_code_hash IS NOT NULL) AS has_access_code, "
+                "last_shipment, access_code_display, "
+                "(access_code_hash IS NOT NULL) AS has_access_code, "
                 "created_at FROM qcc_sales_menu_customers "
                 "ORDER BY store_name, buyer_name"
             )
             customers = _records(cursor)
             cursor.execute(
-                "SELECT o.order_id, o.order_number, o.status, o.total_cases, "
+            "SELECT o.order_id, o.order_number, o.status, o.total_cases, "
                 "o.total_units, o.total_amount, o.requested_delivery_date, "
-                "o.submitted_at, o.reviewed_at, o.reviewed_by, c.store_name, "
+                "o.customer_notes, o.submitted_at, o.reviewed_at, o.reviewed_by, c.store_name, "
                 "c.buyer_name, c.assigned_salesperson FROM qcc_sales_menu_orders o "
                 "JOIN qcc_sales_menu_customers c ON c.customer_id = o.customer_id "
                 "ORDER BY CASE WHEN o.status = %s THEN 0 ELSE 1 END, o.submitted_at DESC "
@@ -1009,6 +1057,11 @@ def load_menu_admin_data() -> dict[str, Any]:
         customer["allowed_brands_display"] = ", ".join(customer["allowed_brands"])
     for order in orders:
         order["total_amount"] = float(order.get("total_amount", 0) or 0)
+        order["total_amount_display"] = f"${order['total_amount']:,.2f}"
+        order["total_units_display"] = f"{int(order.get('total_units', 0) or 0):,}"
+        order["requested_delivery_display"] = str(
+            order.get("requested_delivery_date") or "Not specified"
+        )
     return {
         "database_ready": True,
         "products": products,
@@ -1117,7 +1170,9 @@ def sync_menu_customers_from_metrc() -> int:
                     "source_system, metrc_synced_at, last_shipment, is_active) "
                     "VALUES (%s, '', %s, %s, %s::jsonb, NULL, 'Metrc Transfers', "
                     "NOW(), %s, FALSE) ON CONFLICT (customer_id) DO UPDATE SET "
-                    "store_name = EXCLUDED.store_name, license_number = EXCLUDED.license_number, "
+                    "store_name = CASE WHEN qcc_sales_menu_customers.is_active "
+                    "THEN qcc_sales_menu_customers.store_name ELSE EXCLUDED.store_name END, "
+                    "license_number = EXCLUDED.license_number, "
                     "source_system = 'Metrc Transfers', metrc_synced_at = NOW(), "
                     "last_shipment = EXCLUDED.last_shipment, updated_at = NOW()",
                     (
@@ -1130,32 +1185,47 @@ def sync_menu_customers_from_metrc() -> int:
 
 
 def activate_menu_customer(
-    customer_id: str, *, buyer_name: str, email: str, payment_terms: str,
+    customer_id: str, *, buyer_name: str, store_name: str, email: str,
+    payment_terms: str,
     assigned_salesperson: str, minimum_order_cases: int,
-    allowed_brands: list[str], access_code: str,
+    allowed_brands: list[str], access_code: str, is_active: bool = True,
 ) -> None:
     if not buyer_name.strip():
         raise ValueError("Enter the buyer name for this account.")
-    if len(re.sub(r"\s+", "", access_code)) < 6:
-        raise ValueError("Use an access code with at least six characters.")
     ensure_sales_menu_schema()
     with psycopg.connect(database_url(), connect_timeout=15) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "UPDATE qcc_sales_menu_customers SET buyer_name = %s, email = %s, "
+                "SELECT access_code_hash FROM qcc_sales_menu_customers "
+                "WHERE customer_id = %s",
+                (customer_id,),
+            )
+            current = cursor.fetchone()
+            if not current:
+                raise ValueError("Select a Metrc customer to edit.")
+            normalized_code = re.sub(r"\s+", "", access_code)
+            if normalized_code and len(normalized_code) < 6:
+                raise ValueError("Use an access code with at least six characters.")
+            if is_active and not normalized_code and not current[0]:
+                raise ValueError("Assign an access code before activating this buyer.")
+            cursor.execute(
+                "UPDATE qcc_sales_menu_customers SET buyer_name = %s, store_name = %s, "
+                "email = %s, "
                 "payment_terms = %s, assigned_salesperson = %s, "
                 "minimum_order_cases = %s, allowed_brands = %s::jsonb, "
-                "access_code_hash = %s, is_active = TRUE, updated_at = NOW() "
+                "access_code_hash = CASE WHEN %s = '' THEN access_code_hash ELSE %s END, "
+                "access_code_display = CASE WHEN %s = '' THEN access_code_display ELSE %s END, "
+                "is_active = %s, updated_at = NOW() "
                 "WHERE customer_id = %s",
                 (
-                    buyer_name.strip(), email.strip(), payment_terms.strip(),
+                    buyer_name.strip(), store_name.strip(), email.strip(), payment_terms.strip(),
                     assigned_salesperson.strip(), max(int(minimum_order_cases), 0),
                     json.dumps(allowed_brands or MENU_BRANDS),
-                    _access_code_hash(access_code), customer_id,
+                    normalized_code,
+                    _access_code_hash(normalized_code) if normalized_code else "",
+                    normalized_code, normalized_code, bool(is_active), customer_id,
                 ),
             )
-            if cursor.rowcount != 1:
-                raise ValueError("Select a Metrc customer to activate.")
         connection.commit()
 
 
@@ -1177,14 +1247,16 @@ def create_menu_customer(
                 "INSERT INTO qcc_sales_menu_customers (customer_id, buyer_name, "
                 "store_name, license_number, email, payment_terms, "
                 "assigned_salesperson, minimum_order_cases, allowed_brands, "
-                "access_code_hash, source_system, is_active) VALUES (%s, %s, %s, "
-                "%s, %s, %s, %s, %s, %s::jsonb, %s, 'Manual', TRUE)",
+                "access_code_hash, access_code_display, source_system, is_active) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, "
+                "'Manual', TRUE)",
                 (
                     customer_id, buyer_name.strip(), store_name.strip(),
                     license_number.strip(), email.strip(), payment_terms.strip(),
                     assigned_salesperson.strip(), max(int(minimum_order_cases), 0),
                     json.dumps(allowed_brands or MENU_BRANDS),
                     _access_code_hash(access_code),
+                    re.sub(r"\s+", "", access_code),
                 ),
             )
         connection.commit()
@@ -1208,6 +1280,87 @@ def save_customer_price(
                 (customer_id, product_id, unit_price, updated_by),
             )
         connection.commit()
+
+
+def update_pending_menu_order(
+    order_id: str,
+    case_counts: dict[str, int],
+    *,
+    requested_delivery_date: str,
+    customer_notes: str,
+    updated_by: str,
+) -> dict[str, Any]:
+    """Edit a pending order and recalculate all order totals atomically."""
+    ensure_sales_menu_schema()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT status FROM qcc_sales_menu_orders WHERE order_id = %s FOR UPDATE",
+                (order_id,),
+            )
+            order_row = cursor.fetchone()
+            if not order_row:
+                raise ValueError("Order not found.")
+            if order_row[0] != ORDER_STATUS_PENDING:
+                raise ValueError("Only pending orders can be edited.")
+            cursor.execute(
+                "SELECT oi.order_item_id, oi.product_id, oi.units_per_case, "
+                "oi.unit_price, p.available_cases, COALESCE((SELECT SUM(other.case_count) "
+                "FROM qcc_sales_menu_order_items other JOIN qcc_sales_menu_orders held "
+                "ON held.order_id = other.order_id WHERE other.product_id = oi.product_id "
+                "AND held.status = %s AND held.order_id <> %s), 0) AS other_holds "
+                "FROM qcc_sales_menu_order_items oi JOIN qcc_sales_menu_products p "
+                "ON p.product_id = oi.product_id WHERE oi.order_id = %s FOR UPDATE OF oi",
+                (ORDER_STATUS_PENDING, order_id, order_id),
+            )
+            items = _records(cursor)
+            total_cases = 0
+            total_units = 0
+            total_amount = 0.0
+            retained = 0
+            for item in items:
+                item_id = str(item.get("order_item_id", ""))
+                cases = max(int(case_counts.get(item_id, 0)), 0)
+                available = int(item.get("available_cases", 0) or 0)
+                other_holds = int(item.get("other_holds", 0) or 0)
+                if cases > max(available - other_holds, 0):
+                    raise ValueError(
+                        "One or more edited quantities exceed the cases available after other order holds."
+                    )
+                if cases == 0:
+                    cursor.execute(
+                        "DELETE FROM qcc_sales_menu_order_items WHERE order_item_id = %s",
+                        (item_id,),
+                    )
+                    continue
+                units_per_case = int(item.get("units_per_case", 0) or 0)
+                unit_price = float(item.get("unit_price", 0) or 0)
+                line_total = round(cases * units_per_case * unit_price, 2)
+                cursor.execute(
+                    "UPDATE qcc_sales_menu_order_items SET case_count = %s, "
+                    "line_total = %s WHERE order_item_id = %s",
+                    (cases, line_total, item_id),
+                )
+                retained += 1
+                total_cases += cases
+                total_units += cases * units_per_case
+                total_amount += line_total
+            if not retained:
+                raise ValueError("An order must contain at least one line item.")
+            delivery_value = requested_delivery_date.strip() or None
+            cursor.execute(
+                "UPDATE qcc_sales_menu_orders SET total_cases = %s, total_units = %s, "
+                "total_amount = %s, requested_delivery_date = %s, customer_notes = %s, "
+                "updated_at = NOW() WHERE order_id = %s",
+                (
+                    total_cases, total_units, round(total_amount, 2), delivery_value,
+                    customer_notes.strip(), order_id,
+                ),
+            )
+        connection.commit()
+    order = _order_summary(order_id)
+    send_order_email(order, f"Order updated by {updated_by}")
+    return order
 
 
 def review_menu_order(order_id: str, status: str, *, reviewed_by: str) -> dict[str, Any]:
@@ -1551,10 +1704,17 @@ class MenuAdminState(rx.State):
     customer_minimum_cases: str = "0"
     customer_allowed_brands: str = "Clade9, Craft Kings, Royal Smalls, Melt x Clade9, Locals Only"
     customer_access_code: str = ""
+    customer_is_active: bool = True
     customer_selection: str = ""
     price_customer_selection: str = ""
     price_product_selection: str = ""
     price_override: str = ""
+    editing_order_id: str = ""
+    editing_order_number: str = ""
+    editing_order_delivery_date: str = ""
+    editing_order_notes: str = ""
+    editing_order_items: list[dict[str, Any]] = []
+    editing_order_case_drafts: dict[str, str] = {}
 
     @rx.event
     def set_product_search(self, value: str): self.product_search = value
@@ -1581,13 +1741,37 @@ class MenuAdminState(rx.State):
     @rx.event
     def set_customer_access_code(self, value: str): self.customer_access_code = value
     @rx.event
-    def set_customer_selection(self, value: str): self.customer_selection = value
+    def set_customer_is_active(self, value: bool): self.customer_is_active = value
+    @rx.event
+    def set_customer_selection(self, value: str):
+        self.customer_selection = value
+        customer_id = value.split(" | ", 1)[0]
+        customer = next(
+            (row for row in self.customers if row.get("customer_id") == customer_id),
+            None,
+        )
+        if not customer:
+            return
+        self.customer_buyer_name = str(customer.get("buyer_name", "") or "")
+        self.customer_store_name = str(customer.get("store_name", "") or "")
+        self.customer_license = str(customer.get("license_number", "") or "")
+        self.customer_email = str(customer.get("email", "") or "")
+        self.customer_payment_terms = str(customer.get("payment_terms", "") or "")
+        self.customer_salesperson = str(customer.get("assigned_salesperson", "") or "")
+        self.customer_minimum_cases = str(int(customer.get("minimum_order_cases", 0) or 0))
+        self.customer_allowed_brands = ", ".join(customer.get("allowed_brands") or MENU_BRANDS)
+        self.customer_access_code = str(customer.get("access_code_display", "") or "")
+        self.customer_is_active = bool(customer.get("is_active", False))
     @rx.event
     def set_price_customer_selection(self, value: str): self.price_customer_selection = value
     @rx.event
     def set_price_product_selection(self, value: str): self.price_product_selection = value
     @rx.event
     def set_price_override(self, value: str): self.price_override = value
+    @rx.event
+    def set_editing_order_delivery_date(self, value: str): self.editing_order_delivery_date = value
+    @rx.event
+    def set_editing_order_notes(self, value: str): self.editing_order_notes = value
 
     def _employee(self) -> dict[str, Any]:
         employee = validate_app_session(str(self.auth_session_token or ""))
@@ -1698,16 +1882,17 @@ class MenuAdminState(rx.State):
             activate_menu_customer(
                 customer_id,
                 buyer_name=self.customer_buyer_name,
+                store_name=self.customer_store_name,
                 email=self.customer_email,
                 payment_terms=self.customer_payment_terms,
                 assigned_salesperson=self.customer_salesperson,
                 minimum_order_cases=int(float(self.customer_minimum_cases or 0)),
                 allowed_brands=allowed,
                 access_code=self.customer_access_code,
+                is_active=self.customer_is_active,
             )
-            self.customer_access_code = ""
             self._apply_payload(load_menu_admin_data())
-            self.message = "The Metrc customer is now an active buyer account."
+            self.message = "Buyer account controls were saved."
         except Exception as error:
             self.error = str(error)
 
@@ -1758,6 +1943,73 @@ class MenuAdminState(rx.State):
             )
             self.price_override = ""
             self.message = "Customer-specific SKU price saved."
+        except Exception as error:
+            self.error = str(error)
+
+    @rx.event
+    def begin_edit_order(self, order_id: str):
+        self.error = ""
+        try:
+            self._employee()
+            order = _order_summary(order_id)
+            if not order or order.get("status") != ORDER_STATUS_PENDING:
+                raise ValueError("Only pending orders can be edited.")
+            self.editing_order_id = order_id
+            self.editing_order_number = str(order.get("order_number", ""))
+            self.editing_order_delivery_date = str(order.get("requested_delivery_date") or "")
+            self.editing_order_notes = str(order.get("customer_notes", "") or "")
+            self.editing_order_items = [
+                {**item, "draft_cases": str(int(item.get("case_count", 0) or 0))}
+                for item in order.get("items", [])
+            ]
+            self.editing_order_case_drafts = {
+                str(item.get("order_item_id", "")): str(int(item.get("case_count", 0) or 0))
+                for item in self.editing_order_items
+            }
+        except Exception as error:
+            self.error = str(error)
+
+    @rx.event
+    def change_editing_order_cases(self, order_item_id: str, value: str):
+        drafts = dict(self.editing_order_case_drafts)
+        drafts[order_item_id] = value
+        self.editing_order_case_drafts = drafts
+        self.editing_order_items = [
+            {**item, "draft_cases": value}
+            if str(item.get("order_item_id", "")) == order_item_id else item
+            for item in self.editing_order_items
+        ]
+
+    @rx.event
+    def cancel_edit_order(self):
+        self.editing_order_id = ""
+        self.editing_order_number = ""
+        self.editing_order_items = []
+        self.editing_order_case_drafts = {}
+
+    @rx.event
+    def save_order_edits(self):
+        self.error = ""
+        self.message = ""
+        try:
+            employee = self._employee()
+            counts = {
+                item_id: max(int(float(value or 0)), 0)
+                for item_id, value in self.editing_order_case_drafts.items()
+            }
+            update_pending_menu_order(
+                self.editing_order_id,
+                counts,
+                requested_delivery_date=self.editing_order_delivery_date,
+                customer_notes=self.editing_order_notes,
+                updated_by=str(employee.get("full_name") or employee.get("user_email")),
+            )
+            self.editing_order_id = ""
+            self.editing_order_number = ""
+            self.editing_order_items = []
+            self.editing_order_case_drafts = {}
+            self._apply_payload(load_menu_admin_data())
+            self.message = "Order changes were saved and an updated email was sent."
         except Exception as error:
             self.error = str(error)
 
@@ -2330,6 +2582,28 @@ def _admin_customer_row(customer: rx.Var) -> rx.Component:
                 variant="soft",
             )
         ),
+        rx.table.cell(
+            rx.code(
+                rx.cond(
+                    customer["access_code_display"] != "",
+                    customer["access_code_display"],
+                    "Reset required",
+                ),
+                size="2",
+            )
+        ),
+        rx.table.cell(
+            rx.button(
+                "Edit",
+                size="1",
+                variant="outline",
+                on_click=MenuAdminState.set_customer_selection(
+                    customer["customer_id"].to_string()
+                    + " | "
+                    + customer["store_name"].to_string()
+                ),
+            )
+        ),
     )
 
 
@@ -2345,16 +2619,34 @@ def _admin_order_card(order: rx.Var) -> rx.Component:
                 rx.badge(order["status"], color_scheme=rx.cond(order["status"] == ORDER_STATUS_PENDING, "orange", rx.cond(order["status"] == ORDER_STATUS_APPROVED, "green", "red"))),
                 width="100%", align="center",
             ),
-            rx.flex(
-                rx.text(order["total_cases"], " cases"),
-                rx.text(order["total_units"], " units"),
-                rx.text("$", order["total_amount"], weight="bold"),
-                rx.text("Requested: ", order["requested_delivery_date"], color="#64748b"),
-                gap="5", wrap="wrap", width="100%",
+            rx.grid(
+                *[
+                    rx.box(
+                        rx.text(label, size="1", color="#64748b", weight="bold"),
+                        rx.text(value, size="3", weight="bold"),
+                        padding="0.7rem 0.9rem",
+                        border="1px solid #e2e8f0",
+                        border_radius="8px",
+                        min_width="145px",
+                    )
+                    for label, value in [
+                        ("CASES", order["total_cases"]),
+                        ("UNITS", order["total_units_display"]),
+                        ("ORDER TOTAL", order["total_amount_display"]),
+                        ("REQUESTED DELIVERY", order["requested_delivery_display"]),
+                    ]
+                ],
+                columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+                gap="3", width="100%",
             ),
             rx.cond(
                 order["status"] == ORDER_STATUS_PENDING,
                 rx.hstack(
+                    rx.button(
+                        "Edit Order",
+                        on_click=MenuAdminState.begin_edit_order(order["order_id"]),
+                        variant="outline",
+                    ),
                     rx.button("Approve", on_click=MenuAdminState.review_order(order["order_id"], ORDER_STATUS_APPROVED), color_scheme="green"),
                     rx.button("Decline", on_click=MenuAdminState.review_order(order["order_id"], ORDER_STATUS_DECLINED), color_scheme="red", variant="outline"),
                     gap="2",
@@ -2363,6 +2655,83 @@ def _admin_order_card(order: rx.Var) -> rx.Component:
             spacing="3", width="100%",
         ),
         width="100%",
+    )
+
+
+def _admin_order_edit_item(item: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(rx.text(item["brand"], weight="bold")),
+        rx.table.cell(
+            item["package_size"].to_string()
+            + " "
+            + item["product_type"].to_string()
+        ),
+        rx.table.cell(item["strain"]),
+        rx.table.cell(
+            rx.input(
+                type="number", min="0", step="1", width="100px",
+                value=item["draft_cases"],
+                on_change=lambda value: MenuAdminState.change_editing_order_cases(
+                    item["order_item_id"], value
+                ),
+            )
+        ),
+    )
+
+
+def _admin_order_editor() -> rx.Component:
+    return rx.cond(
+        MenuAdminState.editing_order_id != "",
+        rx.card(
+            rx.vstack(
+                rx.heading("Edit " + MenuAdminState.editing_order_number, size="5"),
+                rx.text(
+                    "Set a line to zero to remove it. Availability is rechecked before saving.",
+                    color="#64748b", size="2",
+                ),
+                rx.box(
+                    rx.table.root(
+                        rx.table.header(
+                            rx.table.row(*[
+                                rx.table.column_header_cell(label)
+                                for label in ["Brand", "Product", "Strain", "Cases"]
+                            ])
+                        ),
+                        rx.table.body(
+                            rx.foreach(MenuAdminState.editing_order_items, _admin_order_edit_item)
+                        ),
+                        width="100%", min_width="720px",
+                    ),
+                    width="100%", overflow_x="auto",
+                ),
+                rx.grid(
+                    rx.box(
+                        rx.text("Requested delivery", size="1", weight="bold"),
+                        rx.input(
+                            type="date", value=MenuAdminState.editing_order_delivery_date,
+                            on_change=MenuAdminState.set_editing_order_delivery_date,
+                            width="100%",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Order notes", size="1", weight="bold"),
+                        rx.text_area(
+                            value=MenuAdminState.editing_order_notes,
+                            on_change=MenuAdminState.set_editing_order_notes,
+                            width="100%",
+                        ),
+                    ),
+                    columns=rx.breakpoints(initial="1", md="2"), gap="3", width="100%",
+                ),
+                rx.hstack(
+                    rx.button("Save Changes", on_click=MenuAdminState.save_order_edits, color_scheme="teal"),
+                    rx.button("Cancel", on_click=MenuAdminState.cancel_edit_order, variant="outline"),
+                    spacing="2",
+                ),
+                spacing="3", width="100%",
+            ),
+            border_left="5px solid #7c3aed", width="100%",
+        ),
     )
 
 
@@ -2423,9 +2792,9 @@ def sales_menu_admin_panel() -> rx.Component:
                 rx.vstack(
                     rx.card(
                         rx.vstack(
-                            rx.heading("Activate a Metrc Customer", size="4"),
+                            rx.heading("Manage Buyer Account", size="4"),
                             rx.text(
-                                "Customers are synchronized from accepted Metrc retail transfers. Select a customer and assign its buyer controls and unique access code.",
+                                "Customers are synchronized from accepted Metrc retail transfers. Select an account to edit its buyer controls or reset its access code.",
                                 color="#64748b", size="2",
                             ),
                             rx.select(
@@ -2436,6 +2805,8 @@ def sales_menu_admin_panel() -> rx.Component:
                                 width="100%",
                             ),
                             rx.grid(
+                                rx.input(placeholder="Store name", value=MenuAdminState.customer_store_name, on_change=MenuAdminState.set_customer_store_name),
+                                rx.input(placeholder="NJ license number", value=MenuAdminState.customer_license, disabled=True),
                                 rx.input(placeholder="Buyer name", value=MenuAdminState.customer_buyer_name, on_change=MenuAdminState.set_customer_buyer_name),
                                 rx.input(placeholder="Buyer email", value=MenuAdminState.customer_email, on_change=MenuAdminState.set_customer_email),
                                 rx.input(placeholder="Payment terms", value=MenuAdminState.customer_payment_terms, on_change=MenuAdminState.set_customer_payment_terms),
@@ -2445,7 +2816,15 @@ def sales_menu_admin_panel() -> rx.Component:
                                 columns=rx.breakpoints(initial="1", md="2", xl="4"), gap="3", width="100%",
                             ),
                             rx.input(placeholder="Allowed brands, comma separated", value=MenuAdminState.customer_allowed_brands, on_change=MenuAdminState.set_customer_allowed_brands, width="100%"),
-                            rx.button("Activate Buyer Account", on_click=MenuAdminState.activate_selected_customer, color_scheme="teal"),
+                            rx.hstack(
+                                rx.switch(
+                                    checked=MenuAdminState.customer_is_active,
+                                    on_change=MenuAdminState.set_customer_is_active,
+                                ),
+                                rx.text("Buyer account active", weight="bold"),
+                                spacing="2",
+                            ),
+                            rx.button("Save Buyer Account", on_click=MenuAdminState.activate_selected_customer, color_scheme="teal"),
                             spacing="3", width="100%",
                         ), width="100%",
                     ),
@@ -2463,9 +2842,9 @@ def sales_menu_admin_panel() -> rx.Component:
                     ),
                     rx.box(
                         rx.table.root(
-                            rx.table.header(rx.table.row(*[rx.table.column_header_cell(value) for value in ["Store", "Buyer", "License", "Terms", "Minimum Cases", "Salesperson", "Allowed Brands", "Source", "Access"]])),
+                            rx.table.header(rx.table.row(*[rx.table.column_header_cell(value) for value in ["Store", "Buyer", "License", "Terms", "Minimum Cases", "Salesperson", "Allowed Brands", "Source", "Status", "Access Code", "Edit"]])),
                             rx.table.body(rx.foreach(MenuAdminState.customers, _admin_customer_row)),
-                            width="100%", min_width="1280px", variant="surface",
+                            width="100%", min_width="1540px", variant="surface",
                         ), width="100%", overflow_x="auto",
                     ),
                     spacing="4", width="100%",
@@ -2474,6 +2853,7 @@ def sales_menu_admin_panel() -> rx.Component:
             ),
             rx.tabs.content(
                 rx.vstack(
+                    _admin_order_editor(),
                     rx.cond(
                         MenuAdminState.orders.length() > 0,
                         rx.vstack(rx.foreach(MenuAdminState.orders, _admin_order_card), spacing="3", width="100%"),

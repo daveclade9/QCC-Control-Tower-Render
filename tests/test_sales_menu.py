@@ -1,6 +1,7 @@
 import os
+import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from qcc_reflex_pilot.sales_menu import (
     _access_code_hash,
@@ -62,12 +63,68 @@ class SalesMenuTests(unittest.TestCase):
     def test_order_persists_even_when_email_is_not_configured(self):
         with patch.dict(
             os.environ,
-            {"QCC_MENU_RESEND_API_KEY": "", "RESEND_API_KEY": ""},
+            {
+                "QCC_MENU_SMTP_HOST": "",
+                "QCC_MENU_SMTP_USERNAME": "",
+                "QCC_MENU_SMTP_APP_PASSWORD": "",
+                "QCC_MENU_RESEND_API_KEY": "",
+                "RESEND_API_KEY": "",
+            },
             clear=False,
         ):
             sent, message = send_order_email({}, "New order")
         self.assertFalse(sent)
         self.assertIn("not configured", message)
+
+    def test_order_email_accepts_multiple_internal_recipients(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        with patch.dict(
+            os.environ,
+            {
+                "QCC_MENU_RESEND_API_KEY": "re_test",
+                "QCC_MENU_ORDER_EMAIL_TO": "sales@clade9.com, dave@clade9.com",
+            },
+            clear=False,
+        ), patch("qcc_reflex_pilot.sales_menu.urlopen", return_value=response) as send:
+            sent, _ = send_order_email(
+                {"order_number": "TEST-1", "email": "buyer@example.com", "items": []},
+                "New order",
+            )
+        self.assertTrue(sent)
+        payload = json.loads(send.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(
+            payload["to"],
+            ["sales@clade9.com", "dave@clade9.com", "buyer@example.com"],
+        )
+
+    def test_order_email_prefers_google_workspace_smtp(self):
+        smtp = MagicMock()
+        smtp.__enter__.return_value = smtp
+        with patch.dict(
+            os.environ,
+            {
+                "QCC_MENU_SMTP_HOST": "smtp.gmail.com",
+                "QCC_MENU_SMTP_PORT": "587",
+                "QCC_MENU_SMTP_USERNAME": "orders@clade9.com",
+                "QCC_MENU_SMTP_APP_PASSWORD": "abcd efgh ijkl mnop",
+                "QCC_MENU_EMAIL_FROM": "orders@clade9.com",
+                "QCC_MENU_ORDER_EMAIL_TO": "dave@clade9.com",
+                "QCC_MENU_RESEND_API_KEY": "re_fallback",
+            },
+            clear=False,
+        ), patch("qcc_reflex_pilot.sales_menu.smtplib.SMTP", return_value=smtp) as connect:
+            sent, message = send_order_email(
+                {"order_number": "TEST-2", "email": "buyer@example.com", "items": []},
+                "New order",
+            )
+        self.assertTrue(sent)
+        self.assertIn("Google Workspace", message)
+        connect.assert_called_once_with("smtp.gmail.com", 587, timeout=15)
+        smtp.starttls.assert_called_once_with()
+        smtp.login.assert_called_once_with("orders@clade9.com", "abcdefghijklmnop")
+        sent_message = smtp.send_message.call_args.args[0]
+        self.assertEqual(sent_message["To"], "dave@clade9.com, buyer@example.com")
 
     def test_flower_inventory_converts_units_to_full_cases(self):
         product = next(
