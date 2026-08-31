@@ -161,6 +161,14 @@ STRAIN_YIELD_G_PER_SQFT: dict[str, float] = {
     "brooklyn runtz": 60.3,
 }
 
+# Temporary planning rates for cultivars that do not yet have enough completed
+# harvest history for the standard 70% strain / 30% room blend. These values
+# are used directly and should be retired when an evidence-based benchmark is
+# available.
+PROVISIONAL_STRAIN_YIELD_G_PER_SQFT: dict[str, float] = {
+    "south central purps": 85.0,
+}
+
 STRAIN_ALIASES: dict[str, str] = {
     "lip smackers": "lipsmackerz",
     "lip smackerz": "lipsmackerz",
@@ -457,6 +465,11 @@ def exact_bench_allocations(
 
 def estimated_yield_g_per_sqft(strain: str, room: str) -> float:
     """Blend cultivar history (70%) with the selected room history (30%)."""
+    provisional_rate = PROVISIONAL_STRAIN_YIELD_G_PER_SQFT.get(
+        normalized_strain(strain)
+    )
+    if provisional_rate is not None:
+        return round(provisional_rate, 1)
     room_rate = ROOM_YIELD_G_PER_SQFT.get(room, 90.0)
     strain_rate = STRAIN_YIELD_G_PER_SQFT.get(normalized_strain(strain))
     if strain_rate is None:

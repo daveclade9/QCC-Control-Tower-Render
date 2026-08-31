@@ -57,6 +57,15 @@ def test_clone_planner_normalizes_known_sales_strain_aliases():
     assert normalized_strain("Lip Smackers") == "lipsmackerz"
 
 
+def test_south_central_purps_uses_temporary_conservative_yield_override():
+    assert estimated_yield_g_per_sqft(
+        "South Central Purps", "Flower Room 4"
+    ) == 85.0
+    assert estimated_yield_pounds(
+        185, "South Central Purps", "Flower Room 4"
+    ) == 34.7
+
+
 def test_timeline_uses_21_rooting_days_and_19_veg_days():
     assert cultivation_timeline("2026-10-01") == {
         "clone_cut_date": "2026-08-22",
