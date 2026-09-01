@@ -169,7 +169,7 @@ from .plant_data import parse_metrc_plant_exports, plant_crop_reconciliation
 from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 
 
-PILOT_VERSION = "0.9.6.18-staging"
+PILOT_VERSION = "0.9.6.19-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -7525,9 +7525,40 @@ class DashboardState(rx.State):
             0,
         )
         if registered:
-            start = max(0, current_index - history_count)
-            periods = registered[start:current_index + 13]
-            actual_history_count = current_index - start
+            future_periods = registered[current_index:current_index + 13]
+            historical_periods = registered[
+                max(0, current_index - history_count):current_index
+            ] if history_count else []
+            if len(historical_periods) < history_count:
+                try:
+                    harvest = date.fromisoformat(current_period["harvest_date"])
+                    available = date.fromisoformat(current_period["available_date"])
+                    generated_history = prior_clone_planning_periods(
+                        history_count,
+                        first_crop=current_period["crop"],
+                        first_cut_date=date.fromisoformat(
+                            current_period["clone_cut_date"]
+                        ),
+                        post_harvest_days=max(0, (available - harvest).days),
+                    )
+                except (TypeError, ValueError):
+                    generated_history = []
+                # Workbook-era periods fill registry gaps; saved registry rows
+                # win whenever both sources describe the same crop.
+                combined = {
+                    str(period.get("crop", "")): dict(period)
+                    for period in generated_history
+                }
+                combined.update({
+                    str(period.get("crop", "")): dict(period)
+                    for period in registered[:current_index]
+                })
+                historical_periods = sorted(
+                    combined.values(),
+                    key=lambda period: str(period.get("clone_cut_date", "")),
+                )[-history_count:]
+            periods = [*historical_periods, *future_periods]
+            actual_history_count = len(historical_periods)
         else:
             historical_periods = list(reversed(prior_clone_planning_periods(history_count))) if history_count else []
             periods = [*historical_periods, *clone_planning_periods(13)]

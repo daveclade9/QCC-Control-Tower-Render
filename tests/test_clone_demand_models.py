@@ -134,6 +134,44 @@ class CloneDemandModelTest(unittest.TestCase):
             expected_adjusted,
         )
 
+    def test_registered_schedule_uses_workbook_history_for_lookbacks(self):
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": default_schedule(26),
+            "historical_yields": [],
+        }
+        self.state.cultivation_registry_loaded = True
+
+        self.state.cultivation_clone_plan_lookback = "Last 4 Crops"
+        four = self.state.cultivation_clone_plan_periods
+        self.assertEqual(
+            [row["crop"] for row in four[:5]],
+            ["F1.10", "F2.10", "F3.10", "F4.10", "F5.10"],
+        )
+        self.assertTrue(all(row["is_historical"] for row in four[:4]))
+        self.assertTrue(four[4]["is_current"])
+
+        self.state.cultivation_clone_plan_lookback = "Last 8 Crops"
+        eight = self.state.cultivation_clone_plan_periods
+        self.assertEqual(
+            [row["crop"] for row in eight[:9]],
+            [
+                "F2.9", "F3.9", "F4.9", "F5.9", "F1.10",
+                "F2.10", "F3.10", "F4.10", "F5.10",
+            ],
+        )
+        diamond_bar = next(
+            row for row in self.state.cultivation_clone_plan_matrix_rows
+            if row["strain"] == "Diamond Bar"
+            and row["metric"] == "Clone Allocation"
+        )
+        f2_index = next(
+            index for index, row in enumerate(eight) if row["crop"] == "F2.10"
+        )
+        self.assertEqual(diamond_bar["values"][f2_index]["value"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
