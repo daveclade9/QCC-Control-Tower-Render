@@ -1,9 +1,11 @@
 import unittest
+from datetime import date
 
 from qcc_reflex_pilot.cultivation_registry import (
     calculate_bench_metrics,
     calculate_lighting_total,
     calculate_room_metrics,
+    current_schedule_row,
     default_cycle_program,
     default_room_rows,
     fresh_frozen_canopy,
@@ -57,7 +59,25 @@ class CultivationRegistryTests(unittest.TestCase):
         self.assertEqual(rows[0]["crop"], "F5.10")
         self.assertEqual(rows[1]["crop"], "F1.11")
         self.assertEqual(rows[1]["clone_cut_date"], "2026-09-11")
-        self.assertEqual(rows[0]["status"], "Planning")
+        self.assertEqual(rows[0]["status"], "Upcoming")
+
+    def test_current_schedule_uses_date_until_user_explicitly_selects_crop(self):
+        rows = generate_schedule(
+            program=default_cycle_program(),
+            rooms=default_room_rows(),
+            start_crop="F5.10",
+            first_clone_cut="2026-08-28",
+            count=40,
+        )
+        rows[34]["status"] = "Planning"
+        self.assertEqual(
+            current_schedule_row(rows, date(2026, 8, 31))["crop"], "F5.10"
+        )
+        rows[34]["source"] = "Selected Current Crop"
+        self.assertEqual(
+            current_schedule_row(rows, date(2026, 8, 31))["crop"],
+            rows[34]["crop"],
+        )
 
     def test_independent_room_program_is_supported(self):
         program = {
@@ -82,4 +102,3 @@ class CultivationRegistryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

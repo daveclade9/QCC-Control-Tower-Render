@@ -1031,7 +1031,7 @@ body {
   background: #111827 !important;
   color: #ffffff !important;
   border-right: 1px solid #64748b !important;
-  height: 58px;
+  height: 82px;
   padding: 7px 9px !important;
   position: sticky !important;
   top: 0 !important;
@@ -1042,6 +1042,20 @@ body {
 .qcc-clone-plan-table thead th:nth-child(1),
 .qcc-clone-plan-table thead th:nth-child(2) {
   z-index: 50 !important;
+}
+
+.qcc-clone-plan-table thead th:nth-child(1) {
+  left: 0;
+  width: 200px;
+  min-width: 200px;
+  max-width: 200px;
+}
+
+.qcc-clone-plan-table thead th:nth-child(2) {
+  left: 200px;
+  width: 170px;
+  min-width: 170px;
+  max-width: 170px;
 }
 
 .qcc-clone-plan-table tbody td {

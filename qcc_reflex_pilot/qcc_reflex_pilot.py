@@ -149,6 +149,7 @@ from .cultivation_registry import (
     calculate_bench_metrics,
     calculate_lighting_total,
     calculate_room_metrics,
+    current_schedule_row,
     default_bench_rows,
     default_cycle_program,
     default_room_rows,
@@ -168,7 +169,7 @@ from .plant_data import parse_metrc_plant_exports, plant_crop_reconciliation
 from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 
 
-PILOT_VERSION = "0.9.6.16-staging"
+PILOT_VERSION = "0.9.6.17-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -5485,15 +5486,9 @@ class DashboardState(rx.State):
         return self._cultivation_registry
 
     def _current_clone_period(self) -> dict[str, str]:
-        """Return the selected schedule crop using the legacy anchor as fallback."""
+        """Return the explicitly selected or date-current schedule crop."""
         rows = list(self._registry_payload().get("schedule", []))
-        current = next((row for row in rows if row.get("status") == "Planning"), None)
-        if current is None and rows:
-            today = date.today().isoformat()
-            current = next(
-                (row for row in rows if str(row.get("clone_cut_date", "")) >= today),
-                rows[-1],
-            )
+        current = current_schedule_row(rows)
         if current:
             return {
                 "crop": str(current.get("crop", "")),
@@ -16413,7 +16408,9 @@ def cultivation_clone_plan_matrix_row(row: rx.Var) -> rx.Component:
         rx.table.cell(
             row["strain"],
             font_weight="800",
+            width="200px",
             min_width="200px",
+            max_width="200px",
             background="#ffffff",
             position="sticky",
             left="0",
@@ -16422,7 +16419,9 @@ def cultivation_clone_plan_matrix_row(row: rx.Var) -> rx.Component:
         rx.table.cell(
             row["metric"],
             font_weight="700",
+            width="170px",
             min_width="170px",
+            max_width="170px",
             background=rx.match(
                 row["metric"],
                 ("Clone Allocation", "#ede9fe"),
@@ -16461,7 +16460,7 @@ def cultivation_clone_plan_period_header(period: rx.Var) -> rx.Component:
 
 
 def cultivation_clone_plan_page_period_header(period: rx.Var) -> rx.Component:
-    return rx.box(
+    return rx.table.column_header_cell(
         rx.tooltip(
             rx.vstack(
                 rx.text(period["crop"], weight="bold", color="#ffffff"),
@@ -16513,15 +16512,13 @@ def cultivation_clone_plan_page_period_header(period: rx.Var) -> rx.Component:
             ),
             content=period["harvest_date_full_label"],
         ),
-        display="flex",
-        align_items="center",
-        justify_content="center",
+        text_align="center",
         width="102px",
         min_width="102px",
-        flex_shrink="0",
+        max_width="102px",
         height="82px",
+        padding="0",
         cursor="help",
-        border_right="1px solid #64748b",
         class_name=rx.cond(
             period["is_current"],
             "qcc-clone-plan-page-period qcc-current-clone-period",
@@ -16852,43 +16849,28 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     gap="2",
                 ),
                 rx.box(
-                    rx.box(
-                        rx.flex(
-                            rx.box(
-                                rx.text("Strain", weight="bold", color="#ffffff"),
-                                display="flex",
-                                align_items="center",
-                                padding="0 12px",
-                                border_right="1px solid #64748b",
-                                background="#111827",
-                                width="200px",
-                                min_width="200px",
-                                height="82px",
-                            ),
-                            rx.box(
-                                rx.text("Planning Row", weight="bold", color="#ffffff"),
-                                display="flex",
-                                align_items="center",
-                                padding="0 12px",
-                                border_right="1px solid #64748b",
-                                background="#111827",
-                                width="170px",
-                                min_width="170px",
-                                height="82px",
-                            ),
-                            rx.foreach(
-                                DashboardState.cultivation_clone_plan_periods,
-                                cultivation_clone_plan_page_period_header,
-                            ),
-                            width="max-content",
-                            min_width="100%",
-                            gap="0",
-                        ),
-                        width="max-content",
-                        min_width="100%",
-                        class_name="qcc-clone-plan-page-header",
-                    ),
                     rx.table.root(
+                        rx.table.header(
+                            rx.table.row(
+                                rx.table.column_header_cell(
+                                    "Strain",
+                                    width="200px",
+                                    min_width="200px",
+                                    max_width="200px",
+                                ),
+                                rx.table.column_header_cell(
+                                    "Planning Row",
+                                    width="170px",
+                                    min_width="170px",
+                                    max_width="170px",
+                                ),
+                                rx.foreach(
+                                    DashboardState.cultivation_clone_plan_periods,
+                                    cultivation_clone_plan_page_period_header,
+                                ),
+                            ),
+                            class_name="qcc-clone-plan-page-header",
+                        ),
                         rx.table.body(
                             rx.foreach(
                                 DashboardState.cultivation_clone_plan_matrix_rows,

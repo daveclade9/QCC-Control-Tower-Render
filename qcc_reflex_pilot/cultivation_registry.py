@@ -254,20 +254,48 @@ def generate_schedule(
             "flower_entry_date": flower.isoformat(),
             "harvest_date": harvest.isoformat(),
             "available_date": available.isoformat(),
-            "status": "Planning" if offset == 0 else "Upcoming",
+            # Generated rows are proposed schedule records. Selecting the
+            # active Clone Allocation crop is a separate explicit action.
+            "status": "Upcoming",
             "source": "Generated",
         })
     return rows
 
 
 def default_schedule(count: int = DEFAULT_FUTURE_CROPS) -> list[dict[str, Any]]:
-    return generate_schedule(
+    rows = generate_schedule(
         program=default_cycle_program(),
         rooms=default_room_rows(),
         start_crop=CLONE_PLANNING_FIRST_CROP,
         first_clone_cut=CLONE_PLANNING_FIRST_CUT_DATE,
         count=count,
     )
+    if rows:
+        rows[0]["status"] = "Planning"
+    return rows
+
+
+def current_schedule_row(
+    rows: list[dict[str, Any]], as_of: date | None = None
+) -> dict[str, Any] | None:
+    """Resolve an explicitly selected crop, otherwise use the current cut date."""
+    if not rows:
+        return None
+    ordered = sorted(rows, key=lambda row: str(row.get("clone_cut_date", "")))
+    explicitly_selected = next(
+        (
+            row
+            for row in ordered
+            if str(row.get("status", "")) == "Planning"
+            and str(row.get("source", "")) == "Selected Current Crop"
+        ),
+        None,
+    )
+    if explicitly_selected is not None:
+        return explicitly_selected
+    today = (as_of or date.today()).isoformat()
+    started = [row for row in ordered if str(row.get("clone_cut_date", "")) <= today]
+    return started[-1] if started else ordered[0]
 
 
 def schedule_conflicts(rows: list[dict[str, Any]]) -> list[str]:
@@ -524,7 +552,12 @@ def set_current_schedule(schedule_id: str, updated_by: str) -> None:
             if not found:
                 raise ValueError("The selected schedule record no longer exists.")
             cursor.execute("UPDATE qcc_cultivation_schedule SET status=CASE WHEN status='Planning' THEN 'Upcoming' ELSE status END,updated_by=%s,updated_at=%s WHERE program_id=%s", (updated_by,now,found[0]))
-            cursor.execute("UPDATE qcc_cultivation_schedule SET status='Planning',updated_by=%s,updated_at=%s WHERE schedule_id=%s", (updated_by,now,schedule_id))
+            cursor.execute(
+                "UPDATE qcc_cultivation_schedule SET status='Planning',"
+                "source='Selected Current Crop',updated_by=%s,updated_at=%s "
+                "WHERE schedule_id=%s",
+                (updated_by, now, schedule_id),
+            )
         connection.commit()
 
 
