@@ -528,6 +528,66 @@ def set_current_schedule(schedule_id: str, updated_by: str) -> None:
         connection.commit()
 
 
+def rename_schedule_crop(
+    schedule_id: str,
+    new_crop: str,
+    updated_by: str,
+) -> str:
+    """Rename one schedule crop and migrate its linked cultivation records."""
+    crop_text = " ".join(str(new_crop or "").strip().split())
+    if not crop_text:
+        raise ValueError("Enter a crop name before saving.")
+    if len(crop_text) > 80:
+        raise ValueError("Crop names must be 80 characters or fewer.")
+    if psycopg is None or not database_url():
+        raise RuntimeError("A live Supabase connection is required to rename a crop.")
+    now = datetime.now().astimezone().isoformat()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_schema(cursor)
+            cursor.execute(
+                "SELECT crop,program_id FROM qcc_cultivation_schedule "
+                "WHERE schedule_id=%s",
+                (schedule_id,),
+            )
+            found = cursor.fetchone()
+            if not found:
+                raise ValueError("The current schedule record no longer exists.")
+            old_crop, program_id = str(found[0]), str(found[1])
+            cursor.execute(
+                "SELECT 1 FROM qcc_cultivation_schedule "
+                "WHERE program_id=%s AND lower(crop)=lower(%s) "
+                "AND schedule_id<>%s LIMIT 1",
+                (program_id, crop_text, schedule_id),
+            )
+            if cursor.fetchone():
+                raise ValueError(
+                    f"{crop_text} already exists in this cycle program."
+                )
+            cursor.execute(
+                "UPDATE qcc_cultivation_schedule SET crop=%s,updated_by=%s,"
+                "updated_at=%s WHERE schedule_id=%s",
+                (crop_text, updated_by, now, schedule_id),
+            )
+            # Keep saved plans, exact room layouts, Fresh Frozen adjustments,
+            # and editable yield records attached to the renamed schedule crop.
+            for table_name, column_name in (
+                ("qcc_clone_plans", "crop"),
+                ("qcc_clone_allocations", "cycle_name"),
+                ("qcc_crop_fresh_frozen_adjustments", "crop"),
+                ("qcc_cultivation_historical_yields", "crop"),
+            ):
+                cursor.execute("SELECT to_regclass(%s)", (table_name,))
+                if cursor.fetchone()[0]:
+                    cursor.execute(
+                        f"UPDATE {table_name} SET {column_name}=%s "
+                        f"WHERE lower({column_name})=lower(%s)",
+                        (crop_text, old_crop),
+                    )
+        connection.commit()
+    return crop_text
+
+
 def save_historical_yield(record: dict[str, Any], updated_by: str) -> str:
     crop = str(record.get("crop", "")).strip()
     room = str(record.get("room", "")).strip()

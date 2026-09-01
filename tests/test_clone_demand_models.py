@@ -1,5 +1,11 @@
 import unittest
 
+from qcc_reflex_pilot.cultivation_registry import (
+    default_bench_rows,
+    default_cycle_program,
+    default_room_rows,
+    default_schedule,
+)
 from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
 
 
@@ -13,6 +19,7 @@ class CloneDemandModelTest(unittest.TestCase):
                 "Avg Weekly Units": 5.0,
             }
         ]
+        self.state.velocity_windows = {"All Time": list(self.state.velocity)}
         self.state.availability_adjusted_velocity_windows = {
             "All Time": [
                 {
@@ -75,6 +82,34 @@ class CloneDemandModelTest(unittest.TestCase):
         demand = self.state._clone_plan_weekly_demand_by_strain()
         expected_lbs = 5.0 * 3.5 / 453.59237
         self.assertAlmostEqual(demand["diamond bar"], expected_lbs)
+
+    def test_cached_matrix_recalculates_when_demand_model_changes(self):
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": default_schedule(13),
+            "historical_yields": [],
+        }
+        self.state.cultivation_registry_loaded = True
+
+        def diamond_bar_two_week_demand():
+            return next(
+                row["values"][0]["value"]
+                for row in self.state.cultivation_clone_plan_matrix_rows
+                if row["strain"] == "Diamond Bar"
+                and row["metric"] == "Two-Week Demand"
+            )
+
+        self.state.cultivation_clone_plan_demand_model = "Availability-Adjusted"
+        self.state.cultivation_clone_plan_demand_revision += 1
+        all_time = diamond_bar_two_week_demand()
+        self.state.cultivation_clone_plan_demand_model = "30-Day Availability-Adjusted"
+        self.state.cultivation_clone_plan_demand_revision += 1
+        thirty_day = diamond_bar_two_week_demand()
+        self.assertNotEqual(all_time, thirty_day)
+        self.assertAlmostEqual(all_time, round(2 * 10 * 3.5 / 453.59237, 1))
+        self.assertAlmostEqual(thirty_day, round(2 * 20 * 3.5 / 453.59237, 1))
 
 
 if __name__ == "__main__":

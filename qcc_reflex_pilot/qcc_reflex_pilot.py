@@ -156,6 +156,7 @@ from .cultivation_registry import (
     fresh_frozen_canopy,
     generate_schedule,
     load_registry,
+    rename_schedule_crop,
     save_bench,
     save_cycle_program,
     save_historical_yield,
@@ -167,7 +168,7 @@ from .plant_data import parse_metrc_plant_exports, plant_crop_reconciliation
 from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 
 
-PILOT_VERSION = "0.9.6.15-staging"
+PILOT_VERSION = "0.9.6.16-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -744,6 +745,7 @@ class DashboardState(rx.State):
     cultivation_new_strain_message: str = ""
     cultivation_new_strain_error: str = ""
     cultivation_clone_plan_demand_model: str = "Availability-Adjusted"
+    cultivation_clone_plan_demand_revision: int = 0
     cultivation_clone_plan_allocations: dict[str, float] = {}
     cultivation_clone_plan_entry_version: int = 0
     cultivation_clone_plan_status: str = "Draft"
@@ -812,6 +814,8 @@ class DashboardState(rx.State):
     cultivation_schedule_first_cut: str = CLONE_PLANNING_FIRST_CUT_DATE.isoformat()
     cultivation_schedule_count: int = DEFAULT_FUTURE_CROPS
     cultivation_schedule_preview: list[dict[str, Any]] = []
+    cultivation_current_schedule_id: str = ""
+    cultivation_current_crop_draft: str = ""
     cultivation_schedule_saving: bool = False
     cultivation_program_name: str = "Main F1-F5 Rotation"
     cultivation_program_code_prefix: str = "F"
@@ -946,6 +950,7 @@ class DashboardState(rx.State):
     for _registry_text_field in (
         "cultivation_schedule_program", "cultivation_schedule_start_crop",
         "cultivation_schedule_first_cut", "cultivation_program_name",
+        "cultivation_current_crop_draft",
         "cultivation_program_code_prefix", "cultivation_program_room_rotation",
         "cultivation_room_edit_id", "cultivation_room_code", "cultivation_room_name",
         "cultivation_room_building", "cultivation_room_program",
@@ -5623,7 +5628,33 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def cultivation_schedule_id_options(self) -> list[str]:
         _ = self.cultivation_registry_revision
-        return [str(row.get("schedule_id", "")) for row in self._registry_payload().get("schedule", [])]
+        return [
+            f'{row.get("crop", "")} | {row.get("room", "")} | '
+            f'{row.get("clone_cut_date", "")} | {row.get("schedule_id", "")}'
+            for row in self._registry_payload().get("schedule", [])
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_schedule_preview_rows(self) -> list[dict[str, Any]]:
+        return [{
+            "Crop": row.get("crop", ""), "Room": row.get("room", ""),
+            "Clone Cut Date": row.get("clone_cut_date", ""),
+            "Flower Entry Date": row.get("flower_entry_date", ""),
+            "Harvest Date": row.get("harvest_date", ""),
+            "Available Date": row.get("available_date", ""),
+            "Status": row.get("status", ""),
+        } for row in self.cultivation_schedule_preview]
+
+    @rx.var(cache=True)
+    def cultivation_current_crop_badge(self) -> str:
+        _ = self.cultivation_registry_revision
+        return "CURRENT CYCLE · " + self._current_clone_period()["crop"]
+
+    @rx.var(cache=True)
+    def cultivation_current_room_capacity_title(self) -> str:
+        _ = self.cultivation_registry_revision
+        room = self._current_clone_period()["room"].replace("Flower Room ", "F")
+        return f"{room} Room Capacity"
 
     @rx.var(cache=True)
     def cultivation_historical_yield_id_options(self) -> list[str]:
@@ -5643,6 +5674,16 @@ class DashboardState(rx.State):
             self._cultivation_registry = load_registry()
             self.cultivation_registry_loaded = True
             self.cultivation_registry_revision += 1
+            period = self._current_clone_period()
+            current = next(
+                (row for row in self._cultivation_registry.get("schedule", [])
+                 if str(row.get("crop", "")) == period["crop"]),
+                None,
+            )
+            self.cultivation_current_schedule_id = str(
+                (current or {}).get("schedule_id", "")
+            )
+            self.cultivation_current_crop_draft = period["crop"]
             self.cultivation_registry_message = "Cultivation schedule and facility registries loaded."
         except Exception as error:
             self.cultivation_registry_loaded = True
@@ -5679,6 +5720,13 @@ class DashboardState(rx.State):
                 first_clone_cut=self.cultivation_schedule_first_cut,
                 count=self.cultivation_schedule_count,
             )
+            if any(
+                str(row.get("program_id", "")) == self.cultivation_schedule_program
+                and str(row.get("status", "")) == "Planning"
+                for row in registry.get("schedule", [])
+            ):
+                for row in self.cultivation_schedule_preview:
+                    row["status"] = "Upcoming"
             self.cultivation_registry_message = f"Previewed {len(self.cultivation_schedule_preview)} crops. Review them before saving."
         except Exception as error:
             self.cultivation_registry_error = str(error)
@@ -5694,7 +5742,11 @@ class DashboardState(rx.State):
             self._cultivation_registry = load_registry()
             self.cultivation_registry_revision += 1
             self.cultivation_schedule_preview = []
-            self.cultivation_registry_message = f"Saved {count} cultivation schedule records."
+            self.cultivation_registry_message = (
+                f"Saved {count} cultivation schedule records. They now appear in "
+                "the Saved Schedule table below. Saving does not change the current "
+                "Clone Allocation crop; select a record above when it becomes current."
+            )
             self.cultivation_registry_error = ""
         except Exception as error:
             self.cultivation_registry_error = str(error)
@@ -5704,16 +5756,52 @@ class DashboardState(rx.State):
     @rx.event
     def choose_current_schedule(self, schedule_id: str):
         try:
-            set_current_schedule(schedule_id, self.auth_name or self.auth_email or "QCC Reflex User")
+            selected_id = str(schedule_id).rsplit(" | ", 1)[-1].strip()
+            set_current_schedule(selected_id, self.auth_name or self.auth_email or "QCC Reflex User")
             self._cultivation_registry = load_registry()
             self.cultivation_registry_revision += 1
             period = self._current_clone_period()
+            self.cultivation_current_schedule_id = selected_id
+            self.cultivation_current_crop_draft = period["crop"]
             self.cultivation_flower_room = period["room"]
             self.cultivation_cycle_name = period["crop"]
             self.cultivation_flower_entry_date = period["flower_entry_date"]
             self.cultivation_bench_plans = self._registered_room_bench_plans(period["room"])
             self.cultivation_registry_message = f'{period["crop"]} is now the current Clone Allocation crop.'
             self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def save_current_crop_name(self):
+        self.cultivation_registry_error = ""
+        try:
+            schedule_id = self.cultivation_current_schedule_id
+            if not schedule_id:
+                current_crop = self._current_clone_period()["crop"]
+                current = next(
+                    (row for row in self._registry_payload().get("schedule", [])
+                     if str(row.get("crop", "")) == current_crop),
+                    None,
+                )
+                schedule_id = str((current or {}).get("schedule_id", ""))
+            if not schedule_id:
+                raise ValueError("Select a saved schedule crop before renaming it.")
+            crop = rename_schedule_crop(
+                schedule_id,
+                self.cultivation_current_crop_draft,
+                self.auth_name or self.auth_email or "QCC Reflex User",
+            )
+            self._cultivation_registry = load_registry()
+            self.cultivation_registry_revision += 1
+            self.cultivation_cycle_name = crop
+            self.cultivation_current_crop_draft = crop
+            self.cultivation_clone_plan_history = load_clone_plans()
+            self.cultivation_clone_plan_entry_version += 1
+            self.cultivation_registry_message = (
+                f"Current crop renamed to {crop}. Linked clone plans, room layouts, "
+                "Fresh Frozen adjustments, and manual yield records were kept attached."
+            )
         except Exception as error:
             self.cultivation_registry_error = str(error)
 
@@ -5931,6 +6019,17 @@ class DashboardState(rx.State):
                 )
             self.cultivation_registry_loaded = True
             self.cultivation_registry_revision += 1
+        if value in {"clone_planning", "clone_allocation", "schedule"}:
+            selected_period = self._current_clone_period()
+            current = next(
+                (row for row in self._registry_payload().get("schedule", [])
+                 if str(row.get("crop", "")) == selected_period["crop"]),
+                None,
+            )
+            self.cultivation_current_schedule_id = str(
+                (current or {}).get("schedule_id", "")
+            )
+            self.cultivation_current_crop_draft = selected_period["crop"]
         if value == "clone_allocation":
             period = self._current_clone_period()
             was_current_plan = (
@@ -6426,6 +6525,9 @@ class DashboardState(rx.State):
         self.cultivation_clone_plan_demand_model = self._normalized_clone_demand_model(
             value
         )
+        self.cultivation_clone_plan_demand_revision += 1
+        self.cultivation_clone_plan_status = "Draft"
+        self.cultivation_clone_plan_dirty = True
 
     @staticmethod
     def _normalized_clone_demand_model(value: Any) -> str:
@@ -7492,7 +7594,9 @@ class DashboardState(rx.State):
                 selected_window = self.velocity
             demand_rows = selected_window
         else:
-            demand_rows = self.velocity
+            # Keep this model independent from the SKU Planning screen's own
+            # timeframe/toggle selection. It is the unadjusted all-time series.
+            demand_rows = self.velocity_windows.get("All Time", self.velocity)
         for row in demand_rows:
             sku = str(row.get("SKU Type", "") or "")
             sku_lower = sku.casefold()
@@ -7750,6 +7854,12 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def cultivation_clone_plan_matrix_rows(self) -> list[ClonePlanMatrixRow]:
+        # These direct reads are intentional. Reflex cache dependency tracking
+        # cannot see state accessed only inside the private demand helper.
+        _ = self.cultivation_clone_plan_demand_revision
+        _ = self.cultivation_clone_plan_demand_model
+        _ = self.velocity
+        _ = self.availability_adjusted_velocity_windows
         periods = self.cultivation_clone_plan_periods
         current_breakdown = self._cultivation_current_inventory_breakdown_by_strain()
         current = {
@@ -16617,7 +16727,7 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     rx.spacer(),
                     rx.vstack(
                         rx.badge(
-                            "CURRENT CYCLE · F5.10",
+                            DashboardState.cultivation_current_crop_badge,
                             color_scheme="teal",
                             size="2",
                         ),
@@ -16633,6 +16743,25 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     align="center",
                     wrap="wrap",
                     gap="3",
+                ),
+                rx.flex(
+                    rx.box(
+                        rx.text("Current crop name", size="1", weight="bold", color=MUTED),
+                        rx.input(
+                            value=DashboardState.cultivation_current_crop_draft,
+                            on_change=DashboardState.set_cultivation_current_crop_draft,
+                            width="220px",
+                        ),
+                    ),
+                    rx.button(
+                        "Save Crop Name",
+                        on_click=DashboardState.save_current_crop_name,
+                        variant="outline",
+                    ),
+                    align="end",
+                    gap="3",
+                    wrap="wrap",
+                    width="100%",
                 ),
                 rx.grid(
                     rx.box(
@@ -16669,7 +16798,7 @@ def cultivation_clone_planning_panel() -> rx.Component:
                         "#0f766e",
                     ),
                     snapshot_stat_card(
-                        "F5 Room Capacity",
+                        DashboardState.cultivation_current_room_capacity_title,
                         DashboardState.cultivation_clone_plan_room_capacity,
                         "#2563eb",
                     ),
@@ -17585,7 +17714,7 @@ def cultivation_schedule_panel() -> rx.Component:
                 ),
                 rx.select(
                     DashboardState.cultivation_schedule_id_options,
-                    placeholder="Choose a schedule record to make current",
+                    placeholder="Crop | Room | Clone Cut | Schedule ID",
                     on_change=DashboardState.choose_current_schedule,
                     width="420px",
                 ),
@@ -17621,8 +17750,8 @@ def cultivation_schedule_panel() -> rx.Component:
                 rx.cond(
                     DashboardState.cultivation_schedule_preview.length() > 0,
                     data_grid(
-                        DashboardState.cultivation_schedule_preview,
-                        ["crop", "room", "clone_cut_date", "flower_entry_date", "harvest_date", "available_date", "status"],
+                        DashboardState.cultivation_schedule_preview_rows,
+                        ["Crop", "Room", "Clone Cut Date", "Flower Entry Date", "Harvest Date", "Available Date", "Status"],
                         height="360px", show_search=False, minimum_width=1250, page_size=26,
                     ),
                 ),
@@ -17632,7 +17761,12 @@ def cultivation_schedule_panel() -> rx.Component:
         ),
         rx.card(
             rx.vstack(
-                rx.heading("Saved schedule", size="4", color=DARK),
+                rx.heading("Saved Schedule", size="4", color=DARK),
+                rx.text(
+                    "Every saved preview appears here. A saved crop affects Clone Allocation only after it is selected in Current Clone Allocation crop above.",
+                    size="2",
+                    color=MUTED,
+                ),
                 data_grid(
                     DashboardState.cultivation_schedule_rows,
                     ["Crop", "Program", "Room", "Clone Cut", "Flower Entry", "Harvest", "Expected Available", "Status", "Source", "Schedule ID"],
