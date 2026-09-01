@@ -111,6 +111,29 @@ class CloneDemandModelTest(unittest.TestCase):
         self.assertAlmostEqual(all_time, round(2 * 10 * 3.5 / 453.59237, 1))
         self.assertAlmostEqual(thirty_day, round(2 * 20 * 3.5 / 453.59237, 1))
 
+    def test_cultivation_navigation_keeps_loaded_demand_windows(self):
+        self.state.workspace_view = "cultivation"
+        self.state.sales_loaded_views = []
+        expected_velocity = dict(self.state.velocity_windows)
+        expected_adjusted = dict(self.state.availability_adjusted_velocity_windows)
+
+        self.state._apply_sales_payload({
+            "loaded_at": "test",
+            "metrics": {
+                "units": 0, "value": 0, "customers": 0, "stockouts": 0,
+            },
+            "brands": [], "strains": [], "sku_types": [],
+            "business_pulse": [], "velocity": self.state.velocity,
+            "velocity_windows": expected_velocity,
+            "availability_adjusted_velocity_windows": expected_adjusted,
+        })
+
+        self.assertEqual(self.state.velocity_windows, expected_velocity)
+        self.assertEqual(
+            self.state.availability_adjusted_velocity_windows,
+            expected_adjusted,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

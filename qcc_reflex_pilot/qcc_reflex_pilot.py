@@ -169,7 +169,7 @@ from .plant_data import parse_metrc_plant_exports, plant_crop_reconciliation
 from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 
 
-PILOT_VERSION = "0.9.6.17-staging"
+PILOT_VERSION = "0.9.6.18-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -3341,6 +3341,10 @@ class DashboardState(rx.State):
         self.availability_adjusted_velocity_windows = payload.get(
             "availability_adjusted_velocity_windows", {}
         )
+        # Clone Allocation consumes these windows even while the user remains
+        # in Cultivation, so force its cached forecast to refresh when the
+        # background Sales payload arrives.
+        self.cultivation_clone_plan_demand_revision += 1
         self.velocity = self._selected_sku_velocity()
         self.availability_demand_summary = payload.get(
             "availability_demand_summary", []
@@ -3499,6 +3503,7 @@ class DashboardState(rx.State):
         self.availability_adjusted_velocity_windows = payload.get(
             "availability_adjusted_velocity_windows", {}
         )
+        self.cultivation_clone_plan_demand_revision += 1
         self.velocity = self._selected_sku_velocity()
         self.availability_demand_summary = payload.get(
             "availability_demand_summary", []
@@ -3732,8 +3737,9 @@ class DashboardState(rx.State):
             self.exception_packages = []
             self._transfer_data = []
             self.transfer_import_log = []
-            self.velocity_windows = {}
-            self.availability_adjusted_velocity_windows = {}
+            # Velocity windows are shared demand inputs for Clone Allocation,
+            # not optional Sales-tab presentation data. Keep them hydrated
+            # when Sales finishes loading while Cultivation is active.
 
         # The executive action queue and business pulse remain immediately
         # available. They are comparatively small and avoid a second load when
@@ -7854,6 +7860,7 @@ class DashboardState(rx.State):
         _ = self.cultivation_clone_plan_demand_revision
         _ = self.cultivation_clone_plan_demand_model
         _ = self.velocity
+        _ = self.velocity_windows
         _ = self.availability_adjusted_velocity_windows
         periods = self.cultivation_clone_plan_periods
         current_breakdown = self._cultivation_current_inventory_breakdown_by_strain()
