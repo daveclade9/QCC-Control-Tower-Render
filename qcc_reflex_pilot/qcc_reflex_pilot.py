@@ -142,11 +142,32 @@ from .historical_yield import (
     historical_strain_rows,
     historical_strain_table_data,
 )
+from .cultivation_registry import (
+    DEFAULT_FUTURE_CROPS,
+    OVERHEAD_LIGHTING_TYPES,
+    SUPPLEMENTAL_LIGHTING_TYPES,
+    calculate_bench_metrics,
+    calculate_lighting_total,
+    calculate_room_metrics,
+    default_bench_rows,
+    default_cycle_program,
+    default_room_rows,
+    default_schedule,
+    fresh_frozen_canopy,
+    generate_schedule,
+    load_registry,
+    save_bench,
+    save_cycle_program,
+    save_historical_yield,
+    save_room,
+    save_schedule_rows,
+    set_current_schedule,
+)
 from .plant_data import parse_metrc_plant_exports, plant_crop_reconciliation
 from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 
 
-PILOT_VERSION = "0.9.6.14-staging"
+PILOT_VERSION = "0.9.6.15-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -158,6 +179,25 @@ QA_ANALYTE_CATEGORIES = [
     "Heavy Metals", "Pesticides", "Microbials", "Water Activity",
     "Other / Needs Review",
 ]
+
+
+def _cultivation_registry_setter(field_name: str, numeric_kind: str = ""):
+    """Build small typed Reflex events for the registry editor controls."""
+    def setter(self, value: str):
+        if numeric_kind == "int":
+            try:
+                setattr(self, field_name, int(float(value or 0)))
+            except (TypeError, ValueError):
+                setattr(self, field_name, 0)
+        elif numeric_kind == "float":
+            try:
+                setattr(self, field_name, float(value or 0))
+            except (TypeError, ValueError):
+                setattr(self, field_name, 0.0)
+        else:
+            setattr(self, field_name, str(value or ""))
+    setter.__name__ = f"set_{field_name}"
+    return setter
 
 
 def _retail_map_document(
@@ -762,6 +802,71 @@ class DashboardState(rx.State):
     cultivation_allocations: list[CultivationAllocationRow] = []
     cultivation_message: str = ""
     cultivation_error: str = ""
+    _cultivation_registry: dict[str, list[dict[str, Any]]] = {}
+    cultivation_registry_loaded: bool = False
+    cultivation_registry_revision: int = 0
+    cultivation_registry_message: str = ""
+    cultivation_registry_error: str = ""
+    cultivation_schedule_program: str = "main-five-room"
+    cultivation_schedule_start_crop: str = CLONE_PLANNING_FIRST_CROP
+    cultivation_schedule_first_cut: str = CLONE_PLANNING_FIRST_CUT_DATE.isoformat()
+    cultivation_schedule_count: int = DEFAULT_FUTURE_CROPS
+    cultivation_schedule_preview: list[dict[str, Any]] = []
+    cultivation_schedule_saving: bool = False
+    cultivation_program_name: str = "Main F1-F5 Rotation"
+    cultivation_program_code_prefix: str = "F"
+    cultivation_program_cadence_days: int = 14
+    cultivation_program_rooting_days: int = 21
+    cultivation_program_veg_days: int = 19
+    cultivation_program_flowering_days: int = 68
+    cultivation_program_processing_days: int = 30
+    cultivation_program_target_crops: int = DEFAULT_FUTURE_CROPS
+    cultivation_program_room_rotation: str = "Flower Room 1, Flower Room 2, Flower Room 3, Flower Room 4, Flower Room 5"
+    cultivation_room_edit_id: str = ""
+    cultivation_room_code: str = ""
+    cultivation_room_name: str = ""
+    cultivation_room_building: str = "1A"
+    cultivation_room_program: str = "main-five-room"
+    cultivation_room_length: float = 0.0
+    cultivation_room_width: float = 0.0
+    cultivation_room_height: float = 0.0
+    cultivation_room_overhead_type: str = "LED"
+    cultivation_room_overhead_other: str = ""
+    cultivation_room_fixture_count: int = 0
+    cultivation_room_watts_fixture: float = 0.0
+    cultivation_room_watts_override: float = 0.0
+    cultivation_room_effective_date: str = ""
+    cultivation_room_notes: str = ""
+    cultivation_bench_edit_id: str = ""
+    cultivation_bench_room_id: str = "flower-room-1"
+    cultivation_bench_name: str = ""
+    cultivation_bench_length: float = 0.0
+    cultivation_bench_width: float = 0.0
+    cultivation_bench_density: float = 0.75
+    cultivation_bench_supplemental_type: str = "None"
+    cultivation_bench_supplemental_rows: int = 0
+    cultivation_bench_watts_row: float = 0.0
+    cultivation_bench_watts_override: float = 0.0
+    cultivation_bench_effective_date: str = ""
+    cultivation_bench_notes: str = ""
+    cultivation_yield_edit_id: str = ""
+    cultivation_yield_crop: str = ""
+    cultivation_yield_room: str = "Flower Room 1"
+    cultivation_yield_strain: str = ""
+    cultivation_yield_harvest_date: str = ""
+    cultivation_yield_physical_canopy: float = 0.0
+    cultivation_yield_planted_canopy: float = 0.0
+    cultivation_yield_planted_plants: int = 0
+    cultivation_yield_planned_ff_plants: int = 0
+    cultivation_yield_actual_ff_plants: int = 0
+    cultivation_yield_actual_ff_canopy: float = 0.0
+    cultivation_yield_wet_lbs: float = 0.0
+    cultivation_yield_dry_lbs: float = 0.0
+    cultivation_yield_ab_lbs: float = 0.0
+    cultivation_yield_c_lbs: float = 0.0
+    cultivation_yield_trim_lbs: float = 0.0
+    cultivation_yield_quality: float = 0.0
+    cultivation_yield_notes: str = ""
 
     units_metric: str = "0"
     value_metric: str = "$0"
@@ -835,6 +940,53 @@ class DashboardState(rx.State):
     calendar_view_mode: str = "Month"
     calendar_focus_date: str = date.today().isoformat()
     calendar_days: list[CalendarDay] = []
+
+    # Reflex 0.9 does not synthesize public setters.  Registry forms use these
+    # compact generated event handlers instead of dozens of repetitive methods.
+    for _registry_text_field in (
+        "cultivation_schedule_program", "cultivation_schedule_start_crop",
+        "cultivation_schedule_first_cut", "cultivation_program_name",
+        "cultivation_program_code_prefix", "cultivation_program_room_rotation",
+        "cultivation_room_edit_id", "cultivation_room_code", "cultivation_room_name",
+        "cultivation_room_building", "cultivation_room_program",
+        "cultivation_room_overhead_type", "cultivation_room_overhead_other",
+        "cultivation_room_effective_date", "cultivation_room_notes",
+        "cultivation_bench_edit_id", "cultivation_bench_room_id",
+        "cultivation_bench_name", "cultivation_bench_supplemental_type",
+        "cultivation_bench_effective_date", "cultivation_bench_notes",
+        "cultivation_yield_edit_id", "cultivation_yield_crop",
+        "cultivation_yield_room", "cultivation_yield_strain",
+        "cultivation_yield_harvest_date", "cultivation_yield_notes",
+    ):
+        locals()[f"set_{_registry_text_field}"] = rx.event(
+            _cultivation_registry_setter(_registry_text_field)
+        )
+    for _registry_int_field in (
+        "cultivation_schedule_count", "cultivation_program_cadence_days",
+        "cultivation_program_rooting_days", "cultivation_program_veg_days",
+        "cultivation_program_flowering_days", "cultivation_program_processing_days",
+        "cultivation_program_target_crops", "cultivation_room_fixture_count",
+        "cultivation_bench_supplemental_rows", "cultivation_yield_planted_plants",
+        "cultivation_yield_planned_ff_plants", "cultivation_yield_actual_ff_plants",
+    ):
+        locals()[f"set_{_registry_int_field}"] = rx.event(
+            _cultivation_registry_setter(_registry_int_field, "int")
+        )
+    for _registry_float_field in (
+        "cultivation_room_length", "cultivation_room_width", "cultivation_room_height",
+        "cultivation_room_watts_fixture", "cultivation_room_watts_override",
+        "cultivation_bench_length", "cultivation_bench_width", "cultivation_bench_density",
+        "cultivation_bench_watts_row", "cultivation_bench_watts_override",
+        "cultivation_yield_physical_canopy", "cultivation_yield_planted_canopy",
+        "cultivation_yield_actual_ff_canopy", "cultivation_yield_wet_lbs",
+        "cultivation_yield_dry_lbs", "cultivation_yield_ab_lbs",
+        "cultivation_yield_c_lbs", "cultivation_yield_trim_lbs",
+        "cultivation_yield_quality",
+    ):
+        locals()[f"set_{_registry_float_field}"] = rx.event(
+            _cultivation_registry_setter(_registry_float_field, "float")
+        )
+    del _registry_text_field, _registry_int_field, _registry_float_field
 
     def _apply_employee(self, employee: dict[str, Any]) -> None:
         self.authenticated = True
@@ -5320,11 +5472,467 @@ class DashboardState(rx.State):
             return
         yield DashboardState.load_sales_background
 
+    def _registry_payload(self) -> dict[str, list[dict[str, Any]]]:
+        if not self._cultivation_registry:
+            self._cultivation_registry = load_registry()
+            self.cultivation_registry_loaded = True
+            self.cultivation_registry_revision += 1
+        return self._cultivation_registry
+
+    def _current_clone_period(self) -> dict[str, str]:
+        """Return the selected schedule crop using the legacy anchor as fallback."""
+        rows = list(self._registry_payload().get("schedule", []))
+        current = next((row for row in rows if row.get("status") == "Planning"), None)
+        if current is None and rows:
+            today = date.today().isoformat()
+            current = next(
+                (row for row in rows if str(row.get("clone_cut_date", "")) >= today),
+                rows[-1],
+            )
+        if current:
+            return {
+                "crop": str(current.get("crop", "")),
+                "room": str(current.get("room", "")),
+                "clone_cut_date": str(current.get("clone_cut_date", "")),
+                "flower_entry_date": str(current.get("flower_entry_date", "")),
+                "harvest_date": str(current.get("harvest_date", "")),
+                "available_date": str(current.get("available_date", "")),
+            }
+        return clone_planning_periods(1)[0]
+
+    def _registered_room_bench_plans(
+        self, room: str, density: float | None = None
+    ) -> list[BenchPlan]:
+        benches = [
+            row for row in self._registry_payload().get("benches", [])
+            if str(row.get("room_name", "")) == room and bool(row.get("active", True))
+        ]
+        if not benches:
+            return room_bench_plans(room, density or self.cultivation_plant_density)
+        palette = (
+            ("#0f766e", "#f0fdfa"), ("#2563eb", "#eff6ff"),
+            ("#7c3aed", "#f5f3ff"), ("#ea580c", "#fff7ed"),
+            ("#db2777", "#fdf2f8"), ("#0891b2", "#ecfeff"),
+            ("#65a30d", "#f7fee7"), ("#ca8a04", "#fefce8"),
+        )
+        selected_density = density or self.cultivation_plant_density
+        plans: list[BenchPlan] = []
+        for index, bench in enumerate(benches):
+            metrics = calculate_bench_metrics(
+                bench.get("length_ft"), bench.get("width_ft"), selected_density
+            )
+            plans.append({
+                "bench": str(bench.get("bench", "")),
+                "length": float(bench.get("length_ft", 0) or 0),
+                "width": float(bench.get("width_ft", 0) or 0),
+                "square_feet": float(metrics["canopy_sqft"]),
+                "target_plants": int(metrics["target_plants"]),
+                "strain_count": 1, "strain_1": "", "percent_1": 100.0,
+                "strain_2": "", "percent_2": 0.0,
+                "strain_3": "", "percent_3": 0.0,
+                "accent": palette[index % len(palette)][0],
+                "tint": palette[index % len(palette)][1],
+            })
+        return plans
+
+    @rx.var(cache=True)
+    def cultivation_schedule_rows(self) -> list[dict[str, Any]]:
+        _ = self.cultivation_registry_revision
+        return [{
+            "Crop": row.get("crop", ""), "Program": row.get("program_id", ""),
+            "Room": row.get("room", ""), "Clone Cut": row.get("clone_cut_date", ""),
+            "Flower Entry": row.get("flower_entry_date", ""), "Harvest": row.get("harvest_date", ""),
+            "Expected Available": row.get("available_date", ""), "Status": row.get("status", ""),
+            "Source": row.get("source", ""), "Schedule ID": row.get("schedule_id", ""),
+        } for row in self._registry_payload().get("schedule", [])]
+
+    @rx.var(cache=True)
+    def cultivation_room_registry_rows(self) -> list[dict[str, Any]]:
+        _ = self.cultivation_registry_revision
+        return [{
+            "Room ID": row.get("room_id", ""), "Code": row.get("room_code", ""),
+            "Room": row.get("name", ""), "Building": row.get("building", ""),
+            "Program": row.get("program_id", ""), "L × W × H (ft)": f'{row.get("length_ft",0)} × {row.get("width_ft",0)} × {row.get("height_ft",0)}',
+            "Floor Area": row.get("floor_area_sqft", 0), "Volume": row.get("volume_cuft", 0),
+            "Physical Canopy": row.get("physical_canopy_sqft", 0), "Overhead": row.get("overhead_type", ""),
+            "Fixtures": row.get("fixture_count", 0), "Total Overhead W": row.get("total_overhead_watts", 0),
+            "Effective": row.get("effective_date", "") or "—", "Active": "Yes" if row.get("active", True) else "No",
+        } for row in self._registry_payload().get("rooms", [])]
+
+    @rx.var(cache=True)
+    def cultivation_bench_registry_rows(self) -> list[dict[str, Any]]:
+        _ = self.cultivation_registry_revision
+        return [{
+            "Bench ID": row.get("bench_id", ""), "Room": row.get("room_name", ""),
+            "Bench": row.get("bench", ""), "Length": row.get("length_ft", 0), "Width": row.get("width_ft", 0),
+            "Canopy sqft": row.get("canopy_sqft", 0), "Plants/sqft": row.get("default_density", 0),
+            "Target Plants": row.get("target_plants", 0), "Supplemental": row.get("supplemental_type", ""),
+            "Rows": row.get("supplemental_rows", 0), "Watts/Row": row.get("watts_per_row", 0),
+            "Total Supplemental W": row.get("total_supplemental_watts", 0),
+            "Effective": row.get("effective_date", "") or "—", "Active": "Yes" if row.get("active", True) else "No",
+        } for row in self._registry_payload().get("benches", [])]
+
+    @rx.var(cache=True)
+    def cultivation_historical_entry_rows(self) -> list[dict[str, Any]]:
+        _ = self.cultivation_registry_revision
+        output: list[dict[str, Any]] = []
+        for record in self._registry_payload().get("historical_yields", []):
+            ff = fresh_frozen_canopy(
+                planted_canopy_sqft=record.get("planted_canopy_sqft"),
+                planted_plants=record.get("planted_plants"),
+                fresh_frozen_plants=(record.get("actual_ff_plants") or record.get("planned_ff_plants")),
+                actual_fresh_frozen_canopy_sqft=record.get("actual_ff_canopy_sqft"),
+            )
+            dry = float(record.get("dry_flower_lbs", 0) or 0)
+            net_canopy = float(ff["net_dry_canopy_sqft"] or 0)
+            output.append({
+                "Record ID": record.get("harvest_id", ""),
+                "Crop": record.get("crop", ""), "Room": record.get("room", ""),
+                "Strain": record.get("strain", "") or "Room total",
+                "Harvest Date": record.get("harvest_date", ""),
+                "Planted Canopy": ff["planted_canopy_sqft"],
+                "Fresh Frozen Plants": ff["fresh_frozen_plants"],
+                "Fresh Frozen Canopy": ff["fresh_frozen_canopy_sqft"],
+                "Net Dry Canopy": ff["net_dry_canopy_sqft"],
+                "Dry Flower (lb)": round(dry, 2),
+                "Yield (g/sqft)": round(dry * 453.59237 / net_canopy, 1) if net_canopy else 0,
+                "Source": record.get("data_source", "Manual"),
+            })
+        return output
+
+    @rx.var(cache=True)
+    def cultivation_program_options(self) -> list[str]:
+        _ = self.cultivation_registry_revision
+        return [str(row.get("program_id", "")) for row in self._registry_payload().get("programs", [])]
+
+    @rx.var(cache=True)
+    def cultivation_registry_room_options(self) -> list[str]:
+        _ = self.cultivation_registry_revision
+        return [str(row.get("name", "")) for row in self._registry_payload().get("rooms", []) if row.get("active", True)]
+
+    @rx.var(cache=True)
+    def cultivation_registry_room_id_options(self) -> list[str]:
+        _ = self.cultivation_registry_revision
+        return [str(row.get("room_id", "")) for row in self._registry_payload().get("rooms", []) if row.get("active", True)]
+
+    @rx.var(cache=True)
+    def cultivation_registry_bench_id_options(self) -> list[str]:
+        _ = self.cultivation_registry_revision
+        return [str(row.get("bench_id", "")) for row in self._registry_payload().get("benches", []) if row.get("active", True)]
+
+    @rx.var(cache=True)
+    def cultivation_schedule_id_options(self) -> list[str]:
+        _ = self.cultivation_registry_revision
+        return [str(row.get("schedule_id", "")) for row in self._registry_payload().get("schedule", [])]
+
+    @rx.var(cache=True)
+    def cultivation_historical_yield_id_options(self) -> list[str]:
+        _ = self.cultivation_registry_revision
+        return [str(row.get("harvest_id", "")) for row in self._registry_payload().get("historical_yields", [])]
+
+    @rx.var(cache=True)
+    def cultivation_schedule_future_count(self) -> int:
+        _ = self.cultivation_registry_revision
+        today = date.today().isoformat()
+        return len([row for row in self._registry_payload().get("schedule", []) if str(row.get("clone_cut_date", "")) >= today])
+
+    @rx.event
+    def load_cultivation_registry(self):
+        self.cultivation_registry_error = ""
+        try:
+            self._cultivation_registry = load_registry()
+            self.cultivation_registry_loaded = True
+            self.cultivation_registry_revision += 1
+            self.cultivation_registry_message = "Cultivation schedule and facility registries loaded."
+        except Exception as error:
+            self.cultivation_registry_loaded = True
+            self.cultivation_registry_error = "The cultivation registry could not be loaded: " + str(error)
+
+    @rx.event
+    def preview_cultivation_schedule(self, form_data: dict[str, Any]):
+        self.cultivation_registry_error = ""
+        try:
+            registry = self._registry_payload()
+            program_id = str(form_data.get("program_id") or self.cultivation_schedule_program)
+            program = next((row for row in registry.get("programs", []) if str(row.get("program_id")) == program_id), registry.get("programs", [{}])[0])
+            self.cultivation_schedule_program = program_id
+            self.cultivation_schedule_start_crop = str(form_data.get("start_crop") or CLONE_PLANNING_FIRST_CROP)
+            self.cultivation_schedule_first_cut = str(form_data.get("first_cut") or CLONE_PLANNING_FIRST_CUT_DATE.isoformat())
+            self.cultivation_schedule_count = max(1, int(form_data.get("count") or DEFAULT_FUTURE_CROPS))
+            self.cultivation_schedule_preview = generate_schedule(program=program, rooms=registry.get("rooms", []), start_crop=self.cultivation_schedule_start_crop, first_clone_cut=self.cultivation_schedule_first_cut, count=self.cultivation_schedule_count)
+            self.cultivation_registry_message = f"Previewed {len(self.cultivation_schedule_preview)} crops. Review them before saving."
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def preview_cultivation_schedule_editor(self):
+        self.cultivation_registry_error = ""
+        try:
+            registry = self._registry_payload()
+            program = next(
+                (row for row in registry.get("programs", []) if str(row.get("program_id")) == self.cultivation_schedule_program),
+                registry.get("programs", [{}])[0],
+            )
+            self.cultivation_schedule_preview = generate_schedule(
+                program=program, rooms=registry.get("rooms", []),
+                start_crop=self.cultivation_schedule_start_crop,
+                first_clone_cut=self.cultivation_schedule_first_cut,
+                count=self.cultivation_schedule_count,
+            )
+            self.cultivation_registry_message = f"Previewed {len(self.cultivation_schedule_preview)} crops. Review them before saving."
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def save_cultivation_schedule_preview(self):
+        if not self.cultivation_schedule_preview:
+            self.cultivation_registry_error = "Preview the schedule before saving it."
+            return
+        self.cultivation_schedule_saving = True
+        try:
+            count = save_schedule_rows(self.cultivation_schedule_preview, self.auth_name or self.auth_email or "QCC Reflex User")
+            self._cultivation_registry = load_registry()
+            self.cultivation_registry_revision += 1
+            self.cultivation_schedule_preview = []
+            self.cultivation_registry_message = f"Saved {count} cultivation schedule records."
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+        finally:
+            self.cultivation_schedule_saving = False
+
+    @rx.event
+    def choose_current_schedule(self, schedule_id: str):
+        try:
+            set_current_schedule(schedule_id, self.auth_name or self.auth_email or "QCC Reflex User")
+            self._cultivation_registry = load_registry()
+            self.cultivation_registry_revision += 1
+            period = self._current_clone_period()
+            self.cultivation_flower_room = period["room"]
+            self.cultivation_cycle_name = period["crop"]
+            self.cultivation_flower_entry_date = period["flower_entry_date"]
+            self.cultivation_bench_plans = self._registered_room_bench_plans(period["room"])
+            self.cultivation_registry_message = f'{period["crop"]} is now the current Clone Allocation crop.'
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def submit_cycle_program(self, form_data: dict[str, Any]):
+        try:
+            rotation = [value.strip() for value in str(form_data.get("room_rotation", "")).split(",") if value.strip()]
+            program_id = save_cycle_program({
+                "program_id": form_data.get("program_id", ""), "name": form_data.get("name", ""),
+                "code_prefix": form_data.get("code_prefix", "F"), "cadence_days": form_data.get("cadence_days", 14),
+                "rooting_days": form_data.get("rooting_days", 21), "veg_days": form_data.get("veg_days", 19),
+                "flowering_days": form_data.get("flowering_days", 68), "processing_days": form_data.get("processing_days", 30),
+                "target_future_crops": form_data.get("target_future_crops", 26), "room_rotation": rotation, "active": True,
+            }, self.auth_name or self.auth_email or "QCC Reflex User")
+            self._cultivation_registry = load_registry(); self.cultivation_registry_revision += 1
+            self.cultivation_registry_message = f"Saved cycle program {program_id}."
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def save_cycle_program_editor(self):
+        try:
+            program_id = save_cycle_program({
+                "program_id": self.cultivation_schedule_program,
+                "name": self.cultivation_program_name,
+                "code_prefix": self.cultivation_program_code_prefix,
+                "cadence_days": self.cultivation_program_cadence_days,
+                "rooting_days": self.cultivation_program_rooting_days,
+                "veg_days": self.cultivation_program_veg_days,
+                "flowering_days": self.cultivation_program_flowering_days,
+                "processing_days": self.cultivation_program_processing_days,
+                "target_future_crops": self.cultivation_program_target_crops,
+                "room_rotation": [value.strip() for value in self.cultivation_program_room_rotation.split(",") if value.strip()],
+                "active": True,
+            }, self.auth_name or self.auth_email or "QCC Reflex User")
+            self._cultivation_registry = load_registry(); self.cultivation_registry_revision += 1
+            self.cultivation_registry_message = f"Saved cycle program {program_id}."
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def submit_cultivation_room(self, form_data: dict[str, Any]):
+        try:
+            room_id = save_room(dict(form_data), self.auth_name or self.auth_email or "QCC Reflex User")
+            self._cultivation_registry = load_registry(); self.cultivation_registry_revision += 1
+            self.cultivation_registry_message = f"Saved room {room_id}."
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def save_cultivation_room_editor(self):
+        try:
+            room_id = save_room({
+                "room_id": self.cultivation_room_edit_id, "room_code": self.cultivation_room_code,
+                "name": self.cultivation_room_name, "building": self.cultivation_room_building,
+                "program_id": self.cultivation_room_program, "length_ft": self.cultivation_room_length,
+                "width_ft": self.cultivation_room_width, "height_ft": self.cultivation_room_height,
+                "overhead_type": self.cultivation_room_overhead_type, "overhead_other": self.cultivation_room_overhead_other,
+                "fixture_count": self.cultivation_room_fixture_count, "watts_per_fixture": self.cultivation_room_watts_fixture,
+                "overhead_watts_override": self.cultivation_room_watts_override,
+                "effective_date": self.cultivation_room_effective_date, "notes": self.cultivation_room_notes,
+                "active": True,
+            }, self.auth_name or self.auth_email or "QCC Reflex User")
+            self._cultivation_registry = load_registry(); self.cultivation_registry_revision += 1
+            self.cultivation_registry_message = f"Saved room {room_id}."
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def load_cultivation_room_editor(self, room_id: str):
+        row = next((item for item in self._registry_payload().get("rooms", []) if str(item.get("room_id")) == room_id), None)
+        if not row:
+            return
+        self.cultivation_room_edit_id = room_id
+        self.cultivation_room_code = str(row.get("room_code", ""))
+        self.cultivation_room_name = str(row.get("name", ""))
+        self.cultivation_room_building = str(row.get("building", ""))
+        self.cultivation_room_program = str(row.get("program_id", ""))
+        self.cultivation_room_length = float(row.get("length_ft", 0) or 0)
+        self.cultivation_room_width = float(row.get("width_ft", 0) or 0)
+        self.cultivation_room_height = float(row.get("height_ft", 0) or 0)
+        self.cultivation_room_overhead_type = str(row.get("overhead_type", "Other"))
+        self.cultivation_room_overhead_other = str(row.get("overhead_other", ""))
+        self.cultivation_room_fixture_count = int(row.get("fixture_count", 0) or 0)
+        self.cultivation_room_watts_fixture = float(row.get("watts_per_fixture", 0) or 0)
+        self.cultivation_room_watts_override = float(row.get("overhead_watts_override", 0) or 0)
+        self.cultivation_room_effective_date = str(row.get("effective_date", "") or "")
+        self.cultivation_room_notes = str(row.get("notes", ""))
+
+    @rx.event
+    def submit_cultivation_bench(self, form_data: dict[str, Any]):
+        try:
+            bench_id = save_bench(dict(form_data), self.auth_name or self.auth_email or "QCC Reflex User")
+            self._cultivation_registry = load_registry(); self.cultivation_registry_revision += 1
+            self.cultivation_registry_message = f"Saved bench {bench_id}."
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def save_cultivation_bench_editor(self):
+        try:
+            bench_id = save_bench({
+                "bench_id": self.cultivation_bench_edit_id, "room_id": self.cultivation_bench_room_id,
+                "bench": self.cultivation_bench_name, "length_ft": self.cultivation_bench_length,
+                "width_ft": self.cultivation_bench_width, "default_density": self.cultivation_bench_density,
+                "supplemental_type": self.cultivation_bench_supplemental_type,
+                "supplemental_rows": self.cultivation_bench_supplemental_rows,
+                "watts_per_row": self.cultivation_bench_watts_row,
+                "supplemental_watts_override": self.cultivation_bench_watts_override,
+                "effective_date": self.cultivation_bench_effective_date, "notes": self.cultivation_bench_notes,
+                "active": True,
+            }, self.auth_name or self.auth_email or "QCC Reflex User")
+            self._cultivation_registry = load_registry(); self.cultivation_registry_revision += 1
+            self.cultivation_registry_message = f"Saved bench {bench_id}."
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def load_cultivation_bench_editor(self, bench_id: str):
+        row = next((item for item in self._registry_payload().get("benches", []) if str(item.get("bench_id")) == bench_id), None)
+        if not row:
+            return
+        self.cultivation_bench_edit_id = bench_id
+        self.cultivation_bench_room_id = str(row.get("room_id", ""))
+        self.cultivation_bench_name = str(row.get("bench", ""))
+        self.cultivation_bench_length = float(row.get("length_ft", 0) or 0)
+        self.cultivation_bench_width = float(row.get("width_ft", 0) or 0)
+        self.cultivation_bench_density = float(row.get("default_density", 0.75) or 0.75)
+        self.cultivation_bench_supplemental_type = str(row.get("supplemental_type", "None"))
+        self.cultivation_bench_supplemental_rows = int(row.get("supplemental_rows", 0) or 0)
+        self.cultivation_bench_watts_row = float(row.get("watts_per_row", 0) or 0)
+        self.cultivation_bench_watts_override = float(row.get("supplemental_watts_override", 0) or 0)
+        self.cultivation_bench_effective_date = str(row.get("effective_date", "") or "")
+        self.cultivation_bench_notes = str(row.get("notes", ""))
+
+    @rx.event
+    def submit_historical_yield(self, form_data: dict[str, Any]):
+        try:
+            harvest_id = save_historical_yield(dict(form_data), self.auth_name or self.auth_email or "QCC Reflex User")
+            self._cultivation_registry = load_registry(); self.cultivation_registry_revision += 1
+            self.cultivation_registry_message = f"Saved historical yield {harvest_id}."
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def load_historical_yield_editor(self, harvest_id: str):
+        row = next((item for item in self._registry_payload().get("historical_yields", []) if str(item.get("harvest_id")) == harvest_id), None)
+        if not row:
+            return
+        self.cultivation_yield_edit_id = harvest_id
+        self.cultivation_yield_crop = str(row.get("crop", ""))
+        self.cultivation_yield_room = str(row.get("room", ""))
+        self.cultivation_yield_strain = str(row.get("strain", ""))
+        self.cultivation_yield_harvest_date = str(row.get("harvest_date", "") or "")
+        self.cultivation_yield_physical_canopy = float(row.get("physical_canopy_sqft", 0) or 0)
+        self.cultivation_yield_planted_canopy = float(row.get("planted_canopy_sqft", 0) or 0)
+        self.cultivation_yield_planted_plants = int(row.get("planted_plants", 0) or 0)
+        self.cultivation_yield_planned_ff_plants = int(row.get("planned_ff_plants", 0) or 0)
+        self.cultivation_yield_actual_ff_plants = int(row.get("actual_ff_plants", 0) or 0)
+        self.cultivation_yield_actual_ff_canopy = float(row.get("actual_ff_canopy_sqft", 0) or 0)
+        self.cultivation_yield_wet_lbs = float(row.get("wet_yield_lbs", 0) or 0)
+        self.cultivation_yield_dry_lbs = float(row.get("dry_flower_lbs", 0) or 0)
+        self.cultivation_yield_ab_lbs = float(row.get("ab_flower_lbs", 0) or 0)
+        self.cultivation_yield_c_lbs = float(row.get("c_flower_lbs", 0) or 0)
+        self.cultivation_yield_trim_lbs = float(row.get("trim_lbs", 0) or 0)
+        self.cultivation_yield_quality = float(row.get("quality_score", 0) or 0)
+        self.cultivation_yield_notes = str(row.get("notes", ""))
+
+    @rx.event
+    def save_historical_yield_editor(self):
+        try:
+            harvest_id = save_historical_yield({
+                "harvest_id": self.cultivation_yield_edit_id, "crop": self.cultivation_yield_crop,
+                "room": self.cultivation_yield_room, "strain": self.cultivation_yield_strain,
+                "harvest_date": self.cultivation_yield_harvest_date,
+                "physical_canopy_sqft": self.cultivation_yield_physical_canopy,
+                "planted_canopy_sqft": self.cultivation_yield_planted_canopy,
+                "planted_plants": self.cultivation_yield_planted_plants,
+                "planned_ff_plants": self.cultivation_yield_planned_ff_plants,
+                "actual_ff_plants": self.cultivation_yield_actual_ff_plants,
+                "actual_ff_canopy_sqft": self.cultivation_yield_actual_ff_canopy,
+                "wet_yield_lbs": self.cultivation_yield_wet_lbs, "dry_flower_lbs": self.cultivation_yield_dry_lbs,
+                "ab_flower_lbs": self.cultivation_yield_ab_lbs, "c_flower_lbs": self.cultivation_yield_c_lbs,
+                "trim_lbs": self.cultivation_yield_trim_lbs, "quality_score": self.cultivation_yield_quality,
+                "data_source": "Manual", "notes": self.cultivation_yield_notes,
+            }, self.auth_name or self.auth_email or "QCC Reflex User")
+            self._cultivation_registry = load_registry(); self.cultivation_registry_revision += 1
+            self.cultivation_registry_message = f"Saved historical yield {harvest_id}."
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
     @rx.event
     def change_cultivation_view(self, value: str):
         self.cultivation_view = value
+        if value in {"clone_planning", "clone_allocation", "schedule", "rooms_benches", "historical_yield"} and not self.cultivation_registry_loaded:
+            try:
+                self._cultivation_registry = load_registry()
+            except Exception as error:
+                self._cultivation_registry = {
+                    "programs": [default_cycle_program()],
+                    "rooms": default_room_rows(), "benches": default_bench_rows(),
+                    "schedule": default_schedule(), "historical_yields": [],
+                }
+                self.cultivation_registry_error = (
+                    "Shared cultivation registry is unavailable; legacy schedule defaults remain active. "
+                    + str(error)
+                )
+            self.cultivation_registry_loaded = True
+            self.cultivation_registry_revision += 1
         if value == "clone_allocation":
-            period = clone_planning_periods(1)[0]
+            period = self._current_clone_period()
             was_current_plan = (
                 self.cultivation_flower_room == period["room"]
                 and self.cultivation_cycle_name == period["crop"]
@@ -5334,7 +5942,7 @@ class DashboardState(rx.State):
             self.cultivation_cycle_name = period["crop"]
             self.cultivation_flower_entry_date = period["flower_entry_date"]
             if not was_current_plan:
-                self.cultivation_bench_plans = room_bench_plans(
+                self.cultivation_bench_plans = self._registered_room_bench_plans(
                     period["room"], self.cultivation_plant_density
                 )
         if value == "clone_planning" and not self.cultivation_clone_plan_history_loaded:
@@ -5860,10 +6468,10 @@ class DashboardState(rx.State):
         self.cultivation_clone_plan_override = not self.cultivation_clone_plan_override
 
     def _clone_plan_capacity_error(self) -> str:
-        period = clone_planning_periods(1)[0]
+        period = self._current_clone_period()
         available = sum(
             float(row.get("square_feet", 0) or 0)
-            for row in room_bench_plans(period["room"])
+            for row in self._registered_room_bench_plans(period["room"])
         ) / 185.0
         planned = sum(
             float(value or 0)
@@ -5903,7 +6511,7 @@ class DashboardState(rx.State):
 
     def _restore_approved_current_clone_plan(self) -> bool:
         """Hydrate the Rolling Planner from its saved approved current crop."""
-        period = clone_planning_periods(1)[0]
+        period = self._current_clone_period()
         plan = approved_clone_plan_for_crop(
             self.cultivation_clone_plan_history, period["crop"]
         )
@@ -6136,7 +6744,7 @@ class DashboardState(rx.State):
         room_capacity = round(
             sum(
                 float(row.get("square_feet", 0) or 0)
-                for row in room_bench_plans(period["room"])
+                for row in self._registered_room_bench_plans(period["room"])
             ) / 185.0,
             1,
         )
@@ -6186,7 +6794,7 @@ class DashboardState(rx.State):
             self.cultivation_historical_plan_saving = False
 
     def _clone_plan_save(self, status: str) -> str:
-        period = clone_planning_periods(1)[0]
+        period = self._current_clone_period()
         return save_clone_plan(
             crop=period["crop"],
             flower_room=period["room"],
@@ -6238,11 +6846,11 @@ class DashboardState(rx.State):
         if capacity_error:
             self.cultivation_clone_plan_error = capacity_error
             return
-        period = clone_planning_periods(1)[0]
+        period = self._current_clone_period()
         self.cultivation_flower_room = period["room"]
         self.cultivation_cycle_name = period["crop"]
         self.cultivation_flower_entry_date = period["flower_entry_date"]
-        self.cultivation_bench_plans = room_bench_plans(
+        self.cultivation_bench_plans = self._registered_room_bench_plans(
             period["room"], self.cultivation_plant_density
         )
         self.cultivation_view = "clone_allocation"
@@ -6287,7 +6895,7 @@ class DashboardState(rx.State):
 
     @rx.event
     def load_current_clone_plan(self, plan_id: str):
-        period = clone_planning_periods(1)[0]
+        period = self._current_clone_period()
         plan = next(
             (
                 row for row in self.cultivation_clone_plan_history
@@ -6374,7 +6982,7 @@ class DashboardState(rx.State):
             )
         defaults = {
             str(row.get("bench", "")): dict(row)
-            for row in room_bench_plans(
+            for row in self._registered_room_bench_plans(
                 self.cultivation_flower_room, self.cultivation_plant_density
             )
         }
@@ -6467,7 +7075,7 @@ class DashboardState(rx.State):
     @rx.event
     def change_cultivation_flower_room(self, value: str):
         self.cultivation_flower_room = value
-        self.cultivation_bench_plans = room_bench_plans(
+        self.cultivation_bench_plans = self._registered_room_bench_plans(
             value, self.cultivation_plant_density
         )
         self.cultivation_allocations = []
@@ -6499,7 +7107,7 @@ class DashboardState(rx.State):
 
     @rx.event
     def reset_cultivation_room_layout(self):
-        self.cultivation_bench_plans = room_bench_plans(
+        self.cultivation_bench_plans = self._registered_room_bench_plans(
             self.cultivation_flower_room, self.cultivation_plant_density
         )
         self.cultivation_allocations = []
@@ -6706,7 +7314,7 @@ class DashboardState(rx.State):
         stored_benches = plan.get("bench_plans") or []
         defaults = {
             str(row.get("bench", "")): row
-            for row in room_bench_plans(
+            for row in self._registered_room_bench_plans(
                 self.cultivation_flower_room, self.cultivation_plant_density
             )
         }
@@ -6803,9 +7411,24 @@ class DashboardState(rx.State):
             "Last 4 Crops": 4,
             "Last 8 Crops": 8,
         }.get(self.cultivation_clone_plan_lookback, 0)
-        historical_periods = list(reversed(prior_clone_planning_periods(history_count))) \
-            if history_count else []
-        periods = [*historical_periods, *clone_planning_periods(13)]
+        registered = sorted(
+            [dict(row) for row in self._registry_payload().get("schedule", [])],
+            key=lambda row: str(row.get("clone_cut_date", "")),
+        )
+        current_period = self._current_clone_period()
+        current_index = next(
+            (index for index, row in enumerate(registered)
+             if str(row.get("crop")) == current_period["crop"]),
+            0,
+        )
+        if registered:
+            start = max(0, current_index - history_count)
+            periods = registered[start:current_index + 13]
+            actual_history_count = current_index - start
+        else:
+            historical_periods = list(reversed(prior_clone_planning_periods(history_count))) if history_count else []
+            periods = [*historical_periods, *clone_planning_periods(13)]
+            actual_history_count = history_count
         for index, period in enumerate(periods):
             cut = date.fromisoformat(period["clone_cut_date"])
             harvest = date.fromisoformat(period["harvest_date"])
@@ -6817,14 +7440,14 @@ class DashboardState(rx.State):
                     f"{harvest.strftime('%B')} {harvest.day}, {harvest.year}"
                 ),
                 "header": f"{period['crop']} · {cut.strftime('%b')} {cut.day}",
-                "is_current": index == history_count,
-                "is_historical": index < history_count,
+                "is_current": index == actual_history_count,
+                "is_historical": index < actual_history_count,
             })
         return rows
 
     @rx.var(cache=True)
     def cultivation_clone_plan_editable(self) -> bool:
-        period = clone_planning_periods(1)[0]
+        period = self._current_clone_period()
         override_allowed = (
             self.cultivation_clone_plan_override
             and bool(self.cultivation_clone_plan_override_reason.strip())
@@ -6836,7 +7459,7 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def cultivation_clone_plan_edit_window_label(self) -> str:
-        period = clone_planning_periods(1)[0]
+        period = self._current_clone_period()
         start, end = clone_plan_edit_window(period["clone_cut_date"])
         return (
             f"Editable through {end.strftime('%b')} {end.day}, {end.year} "
@@ -7019,7 +7642,7 @@ class DashboardState(rx.State):
         for crop_name, allocations in self._clone_plan_allocations_by_crop().items():
             if (
                 crop_name.casefold() in known_crops
-                or crop_name == clone_planning_periods(1)[0]["crop"]
+                or crop_name == self._current_clone_period()["crop"]
             ):
                 continue
             plan = saved_by_crop.get(crop_name, {})
@@ -7052,7 +7675,7 @@ class DashboardState(rx.State):
         if self.cultivation_clone_plan_lookback == "No Historical Crops":
             return []
         limit = 8 if self.cultivation_clone_plan_lookback == "Last 8 Crops" else 4
-        current_crop = clone_planning_periods(1)[0]["crop"]
+        current_crop = self._current_clone_period()["crop"]
         historical = [
             row for row in self.cultivation_clone_plan_history
             if str(row.get("crop", "")) != current_crop
@@ -7061,7 +7684,7 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def cultivation_current_plan_history_rows(self) -> list[dict[str, Any]]:
-        current_crop = clone_planning_periods(1)[0]["crop"]
+        current_crop = self._current_clone_period()["crop"]
         return [
             row for row in self.cultivation_clone_plan_history
             if str(row.get("crop", "")) == current_crop
@@ -7069,7 +7692,7 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def cultivation_approved_current_plan_rows(self) -> list[dict[str, Any]]:
-        current_crop = clone_planning_periods(1)[0]["crop"]
+        current_crop = self._current_clone_period()["crop"]
         rows: list[dict[str, Any]] = []
         for plan in self.cultivation_clone_plan_history:
             if (
@@ -7092,7 +7715,7 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def cultivation_current_clone_plan_title(self) -> str:
-        crop = self.cultivation_cycle_name.strip() or clone_planning_periods(1)[0]["crop"]
+        crop = self.cultivation_cycle_name.strip() or self._current_clone_period()["crop"]
         return f"{crop} Clone Allocation Plan"
 
     @rx.var(cache=True)
@@ -7137,7 +7760,7 @@ class DashboardState(rx.State):
         scheduled, scheduled_details = self._clone_plan_scheduled_by_period(periods)
         historical_allocations = self._clone_plan_allocations_by_crop()
         actual_crop_lbs = self._clone_plan_actual_crop_lbs()
-        plan_period = clone_planning_periods(1)[0]
+        plan_period = self._current_clone_period()
         plan_available = date.fromisoformat(plan_period["available_date"])
         plan_bucket = min(
             range(len(periods)),
@@ -7328,10 +7951,10 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def cultivation_clone_plan_room_capacity(self) -> str:
-        period = clone_planning_periods(1)[0]
+        period = self._current_clone_period()
         equivalents = sum(
             float(row.get("square_feet", 0) or 0)
-            for row in room_bench_plans(period["room"])
+            for row in self._registered_room_bench_plans(period["room"])
         ) / 185.0
         return f"{equivalents:.1f} benches"
 
@@ -7767,7 +8390,7 @@ class DashboardState(rx.State):
 
         # The on-screen plan should be represented immediately, including
         # unsaved edits, and should replace any older saved F5.10 draft.
-        current_period = clone_planning_periods(1)[0]
+        current_period = self._current_clone_period()
         current_crop = str(current_period["crop"])
         current_key = current_crop.casefold()
         for key in [key for key in grouped if key[0].casefold() == current_key]:
@@ -8593,6 +9216,7 @@ class DashboardState(rx.State):
             "QA Status", "Metrc Tag",
         ]
         if view_name == "all":
+            columns.insert(columns.index("Location"), "Packaged Date")
             columns.insert(columns.index("QA Status"), "Source Harvest")
         return columns
 
@@ -9107,6 +9731,7 @@ class DashboardState(rx.State):
                     "units": 0.0,
                     "weight": 0.0,
                     "oldest_age": 0.0,
+                    "packaged_dates": set(),
                     "locations": set(),
                     "source_harvests": set(),
                     "qa_statuses": set(),
@@ -9118,6 +9743,9 @@ class DashboardState(rx.State):
                 )
                 group["oldest_age"] = max(
                     group["oldest_age"], self._number(row, "Age")
+                )
+                group["packaged_dates"].add(
+                    str(row.get("Packaged Date", "") or "")
                 )
                 group["locations"].add(str(row.get("Location", "") or ""))
                 group["source_harvests"].add(
@@ -9133,6 +9761,13 @@ class DashboardState(rx.State):
                     *key, round(group["units"], 2),
                     self._inventory_weight_value(group["weight"]),
                     round(group["oldest_age"], 1),
+                    ]
+                    + (
+                        [self._mixed_label(group["packaged_dates"])]
+                        if selected_view == "all"
+                        else []
+                    )
+                    + [
                     self._mixed_label(group["locations"]),
                     ]
                     + (
@@ -9158,6 +9793,13 @@ class DashboardState(rx.State):
                         self._number(row, "Calculated Weight (g)")
                     ),
                     round(self._number(row, "Age"), 1),
+                ]
+                + (
+                    [str(row.get("Packaged Date", "") or "")]
+                    if selected_view == "all"
+                    else []
+                )
+                + [
                     str(row.get("Location", "") or ""),
                 ]
                 + (
@@ -16866,6 +17508,294 @@ def cultivation_clone_allocation_panel() -> rx.Component:
     )
 
 
+def cultivation_registry_field(
+    label: str,
+    value: rx.Var,
+    event: Any,
+    *,
+    input_type: str = "text",
+    step: str = "any",
+    placeholder: str = "",
+) -> rx.Component:
+    return rx.box(
+        rx.text(label, size="1", weight="bold", color=MUTED),
+        rx.input(
+            value=value,
+            on_change=event,
+            type=input_type,
+            step=step,
+            placeholder=placeholder,
+            width="100%",
+        ),
+        width="100%",
+    )
+
+
+def cultivation_schedule_panel() -> rx.Component:
+    """Editable multi-program cultivation calendar and current-crop selector."""
+    return rx.vstack(
+        rx.card(
+            rx.flex(
+                rx.box(
+                    rx.heading("Cultivation Schedule", size="5", color=DARK),
+                    rx.text(
+                        "Generate rotations from a cadence, run independent room programs, and select the crop that drives Clone Allocation.",
+                        color=MUTED,
+                    ),
+                ),
+                rx.spacer(),
+                rx.badge(
+                    DashboardState.cultivation_schedule_future_count.to_string()
+                    + " future crops",
+                    color_scheme="teal",
+                    size="2",
+                ),
+                align="center",
+                width="100%",
+                gap="3",
+                wrap="wrap",
+            ),
+            border_left=f"5px solid {ACCENT}",
+            width="100%",
+        ),
+        rx.cond(
+            DashboardState.cultivation_schedule_future_count < 26,
+            rx.callout(
+                "The active schedule has fewer than 26 future crops. Generate and save an extension to restore the planning horizon.",
+                icon="calendar-plus",
+                color_scheme="orange",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            DashboardState.cultivation_registry_error != "",
+            rx.callout(DashboardState.cultivation_registry_error, icon="triangle-alert", color_scheme="red", width="100%"),
+        ),
+        rx.cond(
+            DashboardState.cultivation_registry_message != "",
+            rx.callout(DashboardState.cultivation_registry_message, icon="circle-check", color_scheme="green", width="100%"),
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("Current Clone Allocation crop", size="4", color=DARK),
+                rx.text(
+                    "Selecting a schedule record immediately redirects the existing Rolling Clone Planner and Room Layout to that room and crop.",
+                    size="2",
+                    color=MUTED,
+                ),
+                rx.select(
+                    DashboardState.cultivation_schedule_id_options,
+                    placeholder="Choose a schedule record to make current",
+                    on_change=DashboardState.choose_current_schedule,
+                    width="420px",
+                ),
+                spacing="3",
+                align="start",
+                width="100%",
+            ),
+            width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("Generate schedule", size="4", color=DARK),
+                rx.grid(
+                    rx.box(
+                        rx.text("Cycle program", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            DashboardState.cultivation_program_options,
+                            value=DashboardState.cultivation_schedule_program,
+                            on_change=DashboardState.set_cultivation_schedule_program,
+                            width="100%",
+                        ),
+                    ),
+                    cultivation_registry_field("Starting crop", DashboardState.cultivation_schedule_start_crop, DashboardState.set_cultivation_schedule_start_crop, placeholder="F5.10"),
+                    cultivation_registry_field("First clone cut", DashboardState.cultivation_schedule_first_cut, DashboardState.set_cultivation_schedule_first_cut, input_type="date"),
+                    cultivation_registry_field("Crops to generate", DashboardState.cultivation_schedule_count, DashboardState.set_cultivation_schedule_count, input_type="number", step="1"),
+                    columns=rx.breakpoints(initial="1", md="4"), gap="3", width="100%",
+                ),
+                rx.hstack(
+                    rx.button("Preview Schedule", on_click=DashboardState.preview_cultivation_schedule_editor, variant="outline"),
+                    rx.button("Save Preview", on_click=DashboardState.save_cultivation_schedule_preview, background=ACCENT, color="white", loading=DashboardState.cultivation_schedule_saving),
+                    gap="3",
+                ),
+                rx.cond(
+                    DashboardState.cultivation_schedule_preview.length() > 0,
+                    data_grid(
+                        DashboardState.cultivation_schedule_preview,
+                        ["crop", "room", "clone_cut_date", "flower_entry_date", "harvest_date", "available_date", "status"],
+                        height="360px", show_search=False, minimum_width=1250, page_size=26,
+                    ),
+                ),
+                width="100%", spacing="3",
+            ),
+            width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("Saved schedule", size="4", color=DARK),
+                data_grid(
+                    DashboardState.cultivation_schedule_rows,
+                    ["Crop", "Program", "Room", "Clone Cut", "Flower Entry", "Harvest", "Expected Available", "Status", "Source", "Schedule ID"],
+                    height="600px", show_search=True, minimum_width=1850, page_size=25,
+                ),
+                width="100%", spacing="3",
+            ),
+            width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("Cycle Program Editor", size="4", color=DARK),
+                rx.text("Create an independent cycle for an expansion room by giving it its own program ID and room rotation.", size="2", color=MUTED),
+                rx.grid(
+                    cultivation_registry_field("Program ID", DashboardState.cultivation_schedule_program, DashboardState.set_cultivation_schedule_program, placeholder="expansion-room-6"),
+                    cultivation_registry_field("Program name", DashboardState.cultivation_program_name, DashboardState.set_cultivation_program_name),
+                    cultivation_registry_field("Crop prefix", DashboardState.cultivation_program_code_prefix, DashboardState.set_cultivation_program_code_prefix),
+                    cultivation_registry_field("Cadence days", DashboardState.cultivation_program_cadence_days, DashboardState.set_cultivation_program_cadence_days, input_type="number", step="1"),
+                    cultivation_registry_field("Rooting days", DashboardState.cultivation_program_rooting_days, DashboardState.set_cultivation_program_rooting_days, input_type="number", step="1"),
+                    cultivation_registry_field("Veg days", DashboardState.cultivation_program_veg_days, DashboardState.set_cultivation_program_veg_days, input_type="number", step="1"),
+                    cultivation_registry_field("Flowering days", DashboardState.cultivation_program_flowering_days, DashboardState.set_cultivation_program_flowering_days, input_type="number", step="1"),
+                    cultivation_registry_field("Processing days", DashboardState.cultivation_program_processing_days, DashboardState.set_cultivation_program_processing_days, input_type="number", step="1"),
+                    cultivation_registry_field("Future crop target", DashboardState.cultivation_program_target_crops, DashboardState.set_cultivation_program_target_crops, input_type="number", step="1"),
+                    columns=rx.breakpoints(initial="1", md="3"), gap="3", width="100%",
+                ),
+                cultivation_registry_field(
+                    "Room rotation (comma separated, in order)",
+                    DashboardState.cultivation_program_room_rotation,
+                    DashboardState.set_cultivation_program_room_rotation,
+                    placeholder="Flower Room 6",
+                ),
+                rx.button("Save Cycle Program", on_click=DashboardState.save_cycle_program_editor, background=ACCENT, color="white"),
+                width="100%", spacing="3",
+            ),
+            width="100%",
+        ),
+        width="100%", spacing="4", on_mount=DashboardState.load_cultivation_registry,
+    )
+
+
+def cultivation_rooms_benches_panel() -> rx.Component:
+    return rx.vstack(
+        rx.card(
+            rx.vstack(
+                rx.heading("Room & Bench Registry", size="5", color=DARK),
+                rx.text(
+                    "Physical dimensions and lighting are effective-dated master data. Bench canopy is calculated and locked; crop records carry temporary canopy overrides.",
+                    color=MUTED,
+                ),
+                width="100%", spacing="2",
+            ),
+            border_left=f"5px solid {ACCENT}", width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("Room Registry", size="4", color=DARK),
+                rx.hstack(
+                    rx.text("Edit existing room", size="1", weight="bold", color=MUTED),
+                    rx.select(DashboardState.cultivation_registry_room_id_options, placeholder="Select room ID", on_change=DashboardState.load_cultivation_room_editor, width="260px"),
+                    gap="3", align="center",
+                ),
+                rx.grid(
+                    cultivation_registry_field("Room ID", DashboardState.cultivation_room_edit_id, DashboardState.set_cultivation_room_edit_id, placeholder="blank creates from name"),
+                    cultivation_registry_field("Room code", DashboardState.cultivation_room_code, DashboardState.set_cultivation_room_code, placeholder="F6"),
+                    cultivation_registry_field("Room name", DashboardState.cultivation_room_name, DashboardState.set_cultivation_room_name, placeholder="Flower Room 6"),
+                    cultivation_registry_field("Building", DashboardState.cultivation_room_building, DashboardState.set_cultivation_room_building),
+                    rx.box(rx.text("Cycle program", size="1", weight="bold", color=MUTED), rx.select(DashboardState.cultivation_program_options, value=DashboardState.cultivation_room_program, on_change=DashboardState.set_cultivation_room_program, width="100%"), width="100%"),
+                    cultivation_registry_field("Length (ft)", DashboardState.cultivation_room_length, DashboardState.set_cultivation_room_length, input_type="number"),
+                    cultivation_registry_field("Width (ft)", DashboardState.cultivation_room_width, DashboardState.set_cultivation_room_width, input_type="number"),
+                    cultivation_registry_field("Height (ft)", DashboardState.cultivation_room_height, DashboardState.set_cultivation_room_height, input_type="number"),
+                    rx.box(rx.text("Overhead lighting", size="1", weight="bold", color=MUTED), rx.select(list(OVERHEAD_LIGHTING_TYPES), value=DashboardState.cultivation_room_overhead_type, on_change=DashboardState.set_cultivation_room_overhead_type, width="100%"), width="100%"),
+                    cultivation_registry_field("Other lighting", DashboardState.cultivation_room_overhead_other, DashboardState.set_cultivation_room_overhead_other),
+                    cultivation_registry_field("Fixture count", DashboardState.cultivation_room_fixture_count, DashboardState.set_cultivation_room_fixture_count, input_type="number", step="1"),
+                    cultivation_registry_field("Watts / fixture", DashboardState.cultivation_room_watts_fixture, DashboardState.set_cultivation_room_watts_fixture, input_type="number"),
+                    cultivation_registry_field("Total watt override", DashboardState.cultivation_room_watts_override, DashboardState.set_cultivation_room_watts_override, input_type="number"),
+                    cultivation_registry_field("Effective date", DashboardState.cultivation_room_effective_date, DashboardState.set_cultivation_room_effective_date, input_type="date"),
+                    columns=rx.breakpoints(initial="1", md="2", xl="4"), gap="3", width="100%",
+                ),
+                cultivation_registry_field("Room notes", DashboardState.cultivation_room_notes, DashboardState.set_cultivation_room_notes),
+                rx.button("Save Room", on_click=DashboardState.save_cultivation_room_editor, background=ACCENT, color="white"),
+                data_grid(DashboardState.cultivation_room_registry_rows, ["Room ID", "Code", "Room", "Building", "Program", "L × W × H (ft)", "Floor Area", "Volume", "Physical Canopy", "Overhead", "Fixtures", "Total Overhead W", "Effective", "Active"], height="470px", minimum_width=2100, page_size=10),
+                width="100%", spacing="3",
+            ), width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.heading("Bench Registry", size="4", color=DARK),
+                rx.text("Supplemental wattage is calculated from rows × watts per row unless a total override is entered.", size="2", color=MUTED),
+                rx.hstack(rx.text("Edit existing bench", size="1", weight="bold", color=MUTED), rx.select(DashboardState.cultivation_registry_bench_id_options, placeholder="Select bench ID", on_change=DashboardState.load_cultivation_bench_editor, width="300px"), gap="3", align="center"),
+                rx.grid(
+                    cultivation_registry_field("Bench ID", DashboardState.cultivation_bench_edit_id, DashboardState.set_cultivation_bench_edit_id, placeholder="blank creates one"),
+                    rx.box(rx.text("Room ID", size="1", weight="bold", color=MUTED), rx.select(DashboardState.cultivation_registry_room_id_options, value=DashboardState.cultivation_bench_room_id, on_change=DashboardState.set_cultivation_bench_room_id, width="100%"), width="100%"),
+                    cultivation_registry_field("Bench name", DashboardState.cultivation_bench_name, DashboardState.set_cultivation_bench_name),
+                    cultivation_registry_field("Length (ft)", DashboardState.cultivation_bench_length, DashboardState.set_cultivation_bench_length, input_type="number"),
+                    cultivation_registry_field("Width (ft)", DashboardState.cultivation_bench_width, DashboardState.set_cultivation_bench_width, input_type="number"),
+                    cultivation_registry_field("Plants / sqft", DashboardState.cultivation_bench_density, DashboardState.set_cultivation_bench_density, input_type="number", step="0.05"),
+                    rx.box(rx.text("Supplemental lighting", size="1", weight="bold", color=MUTED), rx.select(list(SUPPLEMENTAL_LIGHTING_TYPES), value=DashboardState.cultivation_bench_supplemental_type, on_change=DashboardState.set_cultivation_bench_supplemental_type, width="100%"), width="100%"),
+                    cultivation_registry_field("Lighting rows", DashboardState.cultivation_bench_supplemental_rows, DashboardState.set_cultivation_bench_supplemental_rows, input_type="number", step="1"),
+                    cultivation_registry_field("Watts / row", DashboardState.cultivation_bench_watts_row, DashboardState.set_cultivation_bench_watts_row, input_type="number"),
+                    cultivation_registry_field("Total watt override", DashboardState.cultivation_bench_watts_override, DashboardState.set_cultivation_bench_watts_override, input_type="number"),
+                    cultivation_registry_field("Effective date", DashboardState.cultivation_bench_effective_date, DashboardState.set_cultivation_bench_effective_date, input_type="date"),
+                    columns=rx.breakpoints(initial="1", md="2", xl="4"), gap="3", width="100%",
+                ),
+                cultivation_registry_field("Bench notes", DashboardState.cultivation_bench_notes, DashboardState.set_cultivation_bench_notes),
+                rx.button("Save Bench", on_click=DashboardState.save_cultivation_bench_editor, background=ACCENT, color="white"),
+                data_grid(DashboardState.cultivation_bench_registry_rows, ["Bench ID", "Room", "Bench", "Length", "Width", "Canopy sqft", "Plants/sqft", "Target Plants", "Supplemental", "Rows", "Watts/Row", "Total Supplemental W", "Effective", "Active"], height="620px", minimum_width=2000, page_size=25),
+                width="100%", spacing="3",
+            ), width="100%",
+        ),
+        width="100%", spacing="4", on_mount=DashboardState.load_cultivation_registry,
+    )
+
+
+def cultivation_historical_yield_entry_panel() -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.heading("Historical Yield Entry", size="4", color=DARK),
+            rx.text("Enter room totals or strain-level results. Actual Fresh Frozen canopy overrides the planned plant proportion without changing the physical bench registry.", size="2", color=MUTED),
+            rx.cond(
+                DashboardState.cultivation_historical_yield_id_options.length() > 0,
+                rx.hstack(
+                    rx.text("Edit existing yield", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        DashboardState.cultivation_historical_yield_id_options,
+                        placeholder="Select record ID",
+                        on_change=DashboardState.load_historical_yield_editor,
+                        width="360px",
+                    ),
+                    gap="3", align="center",
+                ),
+            ),
+            rx.grid(
+                cultivation_registry_field("Record ID (blank creates)", DashboardState.cultivation_yield_edit_id, DashboardState.set_cultivation_yield_edit_id),
+                cultivation_registry_field("Crop", DashboardState.cultivation_yield_crop, DashboardState.set_cultivation_yield_crop, placeholder="F5.10"),
+                rx.box(rx.text("Room", size="1", weight="bold", color=MUTED), rx.select(DashboardState.cultivation_registry_room_options, value=DashboardState.cultivation_yield_room, on_change=DashboardState.set_cultivation_yield_room, width="100%"), width="100%"),
+                cultivation_registry_field("Strain (blank for room total)", DashboardState.cultivation_yield_strain, DashboardState.set_cultivation_yield_strain),
+                cultivation_registry_field("Harvest date", DashboardState.cultivation_yield_harvest_date, DashboardState.set_cultivation_yield_harvest_date, input_type="date"),
+                cultivation_registry_field("Physical canopy sqft", DashboardState.cultivation_yield_physical_canopy, DashboardState.set_cultivation_yield_physical_canopy, input_type="number"),
+                cultivation_registry_field("Planted canopy sqft", DashboardState.cultivation_yield_planted_canopy, DashboardState.set_cultivation_yield_planted_canopy, input_type="number"),
+                cultivation_registry_field("Planted plants", DashboardState.cultivation_yield_planted_plants, DashboardState.set_cultivation_yield_planted_plants, input_type="number", step="1"),
+                cultivation_registry_field("Planned FF plants", DashboardState.cultivation_yield_planned_ff_plants, DashboardState.set_cultivation_yield_planned_ff_plants, input_type="number", step="1"),
+                cultivation_registry_field("Actual FF plants", DashboardState.cultivation_yield_actual_ff_plants, DashboardState.set_cultivation_yield_actual_ff_plants, input_type="number", step="1"),
+                cultivation_registry_field("Actual FF canopy sqft", DashboardState.cultivation_yield_actual_ff_canopy, DashboardState.set_cultivation_yield_actual_ff_canopy, input_type="number"),
+                cultivation_registry_field("Wet yield lb", DashboardState.cultivation_yield_wet_lbs, DashboardState.set_cultivation_yield_wet_lbs, input_type="number"),
+                cultivation_registry_field("Dry flower lb", DashboardState.cultivation_yield_dry_lbs, DashboardState.set_cultivation_yield_dry_lbs, input_type="number"),
+                cultivation_registry_field("AB flower lb", DashboardState.cultivation_yield_ab_lbs, DashboardState.set_cultivation_yield_ab_lbs, input_type="number"),
+                cultivation_registry_field("C flower lb", DashboardState.cultivation_yield_c_lbs, DashboardState.set_cultivation_yield_c_lbs, input_type="number"),
+                cultivation_registry_field("Trim lb", DashboardState.cultivation_yield_trim_lbs, DashboardState.set_cultivation_yield_trim_lbs, input_type="number"),
+                cultivation_registry_field("Quality score", DashboardState.cultivation_yield_quality, DashboardState.set_cultivation_yield_quality, input_type="number"),
+                columns=rx.breakpoints(initial="1", md="3", xl="5"), gap="3", width="100%",
+            ),
+            cultivation_registry_field("Notes", DashboardState.cultivation_yield_notes, DashboardState.set_cultivation_yield_notes),
+            rx.button("Save Historical Yield", on_click=DashboardState.save_historical_yield_editor, background=ACCENT, color="white"),
+            rx.cond(
+                DashboardState.cultivation_historical_entry_rows.length() > 0,
+                data_grid(DashboardState.cultivation_historical_entry_rows, ["Record ID", "Crop", "Room", "Strain", "Harvest Date", "Planted Canopy", "Fresh Frozen Plants", "Fresh Frozen Canopy", "Net Dry Canopy", "Dry Flower (lb)", "Yield (g/sqft)", "Source"], height="440px", minimum_width=1900, page_size=10),
+            ),
+            width="100%", spacing="3",
+        ),
+        width="100%",
+    )
+
+
 def cultivation_foundation_panel() -> rx.Component:
     return rx.grid(
         rx.card(
@@ -17072,6 +18002,7 @@ def cultivation_demand_availability_panel() -> rx.Component:
 def cultivation_historical_yield_panel() -> rx.Component:
     """Historical room, cycle, and strain performance from the yield workbook."""
     return rx.vstack(
+        cultivation_historical_yield_entry_panel(),
         rx.card(
             rx.flex(
                 rx.box(
@@ -17690,6 +18621,8 @@ def cultivation_panel() -> rx.Component:
             rx.tabs.list(
                 rx.tabs.trigger("Clone Allocation", value="clone_planning"),
                 rx.tabs.trigger("Room Layout & Clone Plan", value="clone_allocation"),
+                rx.tabs.trigger("Cultivation Schedule", value="schedule"),
+                rx.tabs.trigger("Rooms & Benches", value="rooms_benches"),
                 rx.tabs.trigger("Historical Yield", value="historical_yield"),
                 rx.tabs.trigger("Demand & Availability", value="demand_availability"),
                 rx.tabs.trigger("Metrc Plant Data", value="metrc_plants"),
@@ -17704,6 +18637,16 @@ def cultivation_panel() -> rx.Component:
             rx.tabs.content(
                 cultivation_clone_allocation_panel(),
                 value="clone_allocation",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                cultivation_schedule_panel(),
+                value="schedule",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                cultivation_rooms_benches_panel(),
+                value="rooms_benches",
                 padding_top="1rem",
             ),
             rx.tabs.content(

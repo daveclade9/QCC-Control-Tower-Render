@@ -4272,6 +4272,7 @@ def build_inventory_views(
         result = frame[[
             "brand", "strain", "sku_type", "quantity", "unit",
             "calculated_weight_grams", "inventory_age_days",
+            "packaged_date",
             "days_remaining_in_sale_window", "production_stage", "qa_status",
             "category", "location", "current_facility", "facility",
             "source_harvest", "ownership_status",
@@ -4281,7 +4282,8 @@ def build_inventory_views(
             "brand": "Brand", "strain": "Strain", "sku_type": "SKU Type",
             "quantity": "Quantity", "unit": "Unit",
             "calculated_weight_grams": "Calculated Weight (g)",
-            "inventory_age_days": "Age", "days_remaining_in_sale_window": "Days to Spoil",
+            "inventory_age_days": "Age", "packaged_date": "Packaged Date",
+            "days_remaining_in_sale_window": "Days to Spoil",
             "production_stage": "Production Stage", "qa_status": "QA Status",
             "category": "Category", "location": "Location",
             "current_facility": "Current Facility", "facility": "Facility",

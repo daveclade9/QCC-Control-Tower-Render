@@ -13,4 +13,5 @@ reflex.log
 reflex.lock/
 .render-build/
 .codex-temp/
+.bun-cache/
 

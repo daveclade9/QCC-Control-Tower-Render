@@ -20,6 +20,14 @@ class InventoryNavigationCacheTest(unittest.TestCase):
             all_columns[all_columns.index("QA Status") + 1],
             "Metrc Tag",
         )
+        self.assertEqual(
+            all_columns[all_columns.index("Age (Days)") + 1],
+            "Packaged Date",
+        )
+        self.assertEqual(
+            all_columns[all_columns.index("Packaged Date") + 1],
+            "Location",
+        )
 
         for view_name in (
             "cpg", "bulk", "wip", "aging_cpg", "aging_bulk", "review"
@@ -27,6 +35,9 @@ class InventoryNavigationCacheTest(unittest.TestCase):
             with self.subTest(view_name=view_name):
                 self.assertNotIn(
                     "Source Harvest", columns_for_view(state, view_name)
+                )
+                self.assertNotIn(
+                    "Packaged Date", columns_for_view(state, view_name)
                 )
 
     def test_active_view_reuses_its_cached_row_matrix(self):
