@@ -1648,15 +1648,39 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
             WHERE lab_license = 'LAB-DIRECT'
         )
     """
+    lab_direct_summary_query = """
+        SELECT direct.package_tag,
+               MAX(direct.source_package_labels) AS parent_package,
+               MAX(direct.item) AS product,
+               MAX(direct.lab_testing_status) AS result_status,
+               MAX(direct.test_date) AS test_date,
+               MAX(direct.source_filename) AS source_filename,
+               MAX(direct.imported_at) AS imported_at,
+               MAX(CASE WHEN direct.test_name ~* '^Total THC\\s*\\(%%\\)'
+                        THEN direct.result END) AS total_thc,
+               MAX(CASE WHEN direct.test_name ~* '^Total Terpenes\\s*\\(%%\\)'
+                        THEN direct.result END) AS total_terpenes,
+               CASE WHEN EXISTS (
+                    SELECT 1 FROM lab_result_records metrc
+                    WHERE metrc.package_tag = direct.package_tag
+                      AND COALESCE(metrc.lab_license, '') <> 'LAB-DIRECT'
+               ) THEN 'Metrc' ELSE 'Lab Direct' END AS active_source
+        FROM lab_result_records direct
+        WHERE direct.lab_license = 'LAB-DIRECT'
+        GROUP BY direct.package_tag
+        ORDER BY MAX(direct.imported_at) DESC
+        LIMIT 250
+    """
     # These reads share one remote connection. The queries are compact, and
     # avoiding separate simultaneous pooler handshakes materially improves the
     # first user's QA load without changing the cached second-user path.
-    labs, import_log, templates, source_comparison = query_frames(
+    labs, import_log, templates, source_comparison, lab_direct_summary = query_frames(
         [
             (qa_query, ()),
             (import_query, ()),
             (template_query, ()),
             (comparison_query, ()),
+            (lab_direct_summary_query, ()),
         ],
         statement_timeout_seconds=90,
     )
@@ -1691,6 +1715,18 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
         "updated_rows": "Updated", "test_min": "Test Min",
         "test_max": "Test Max", "imported_at": "Imported At",
     })
+    lab_direct_summary = lab_direct_summary.rename(columns={
+        "package_tag": "Sample Tag",
+        "parent_package": "Parent Package",
+        "product": "Product",
+        "result_status": "Result Status",
+        "test_date": "Test Date",
+        "source_filename": "File",
+        "imported_at": "Imported At",
+        "total_thc": "Total THC %",
+        "total_terpenes": "Total Terpenes %",
+        "active_source": "Active Source",
+    })
     template_rows: list[dict[str, Any]] = []
     for row in templates.to_dict("records"):
         try:
@@ -1715,6 +1751,7 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
         "packages": _qa_record_list(prepared),
         "templates": template_rows,
         "import_log": _qa_record_list(import_log.head(100)),
+        "lab_direct_summary": _qa_record_list(lab_direct_summary),
         "record_count": int(len(prepared)),
         "analyte_count": int(len(labs)),
     }

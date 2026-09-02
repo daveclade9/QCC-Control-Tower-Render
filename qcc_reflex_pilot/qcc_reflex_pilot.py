@@ -551,6 +551,7 @@ class DashboardState(rx.State):
     _qa_packages: list[dict[str, Any]] = []
     qa_templates: list[dict[str, Any]] = []
     qa_import_log: list[dict[str, Any]] = []
+    qa_lab_direct_summary: list[dict[str, Any]] = []
     qa_record_count: int = 0
     qa_analyte_count: int = 0
     qa_cultivation_test_type: str = "All Test Types"
@@ -1389,6 +1390,7 @@ class DashboardState(rx.State):
         self._qa_packages = payload.get("packages", [])
         self.qa_templates = payload.get("templates", [])
         self.qa_import_log = payload.get("import_log", [])
+        self.qa_lab_direct_summary = payload.get("lab_direct_summary", [])
         self.qa_record_count = int(payload.get("record_count", 0) or 0)
         self.qa_analyte_count = int(payload.get("analyte_count", 0) or 0)
         self.brands = sorted(set(self.brands).union(
@@ -14382,9 +14384,9 @@ def qa_import_panel() -> rx.Component:
             value="qa-import",
             header=rx.flex(
                 rx.box(
-                    rx.text("Import Metrc Lab Result CSV Files", weight="bold", color=DARK),
+                    rx.text("Import Lab Results", weight="bold", color=DARK),
                     rx.text(
-                        "Cultivation and Manufacturing files share one duplicate-safe Supabase history.",
+                        "Upload Lab Direct Excel summaries or Metrc Lab Result CSV files.",
                         size="1", color=MUTED,
                     ),
                 ),
@@ -14497,6 +14499,33 @@ def qa_import_panel() -> rx.Component:
             ),
         ),
         type="single", collapsible=True, width="100%", variant="soft",
+    )
+
+
+def qa_lab_direct_summary_panel() -> rx.Component:
+    columns = [
+        "Imported At", "File", "Sample Tag", "Parent Package", "Product",
+        "Result Status", "Active Source", "Total THC %", "Total Terpenes %",
+    ]
+    return rx.cond(
+        DashboardState.qa_lab_direct_summary.length() > 0,
+        rx.box(
+            rx.heading("Recent Lab Direct Uploads", size="4", color=DARK),
+            rx.text(
+                "This audit remains visible after refresh. Active Source changes to Metrc "
+                "when matching Metrc lab results arrive.",
+                size="2", color=MUTED,
+            ),
+            readable_grid(
+                DashboardState.qa_lab_direct_summary,
+                columns,
+                "190px",
+            ),
+            width="100%",
+            padding="1rem",
+            border="1px solid #d8dee8",
+            border_radius="12px",
+        ),
     )
 
 
@@ -15238,6 +15267,7 @@ def quality_compliance_panel() -> rx.Component:
             ),
         ),
         qa_import_panel(),
+        qa_lab_direct_summary_panel(),
         rx.text(
             "The global Brand and Strain filters above apply to lab and label views where relevant.",
             size="1", color=MUTED,
