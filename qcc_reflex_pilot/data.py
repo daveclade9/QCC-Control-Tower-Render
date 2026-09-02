@@ -1582,6 +1582,65 @@ def _lab_source_discrepancies(frame: pd.DataFrame) -> dict[str, str]:
     return messages
 
 
+def _lab_direct_upload_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    """Build a persistent package-level audit from source comparison rows."""
+    columns = [
+        "Imported At", "File", "Sample Tag", "Parent Package", "Product",
+        "Result Status", "Active Source", "Total THC %", "Total Terpenes %",
+    ]
+    if frame.empty or "source_kind" not in frame:
+        return pd.DataFrame(columns=columns)
+    summaries: list[dict[str, Any]] = []
+    for package_tag, package_rows in frame.groupby("package_tag", dropna=False):
+        direct = package_rows[package_rows["source_kind"].eq("Lab Direct")].copy()
+        if direct.empty:
+            continue
+        for column in ["imported_at", "test_date"]:
+            if column not in direct:
+                direct[column] = ""
+            direct[column] = direct[column].fillna("").astype(str)
+        latest = direct.sort_values(["imported_at", "test_date"]).iloc[-1]
+        latest_rows = direct[
+            direct["imported_at"].eq(str(latest.get("imported_at", "") or ""))
+            & direct["test_date"].eq(str(latest.get("test_date", "") or ""))
+        ]
+
+        def analyte(pattern: str) -> Any:
+            matches = latest_rows[
+                latest_rows["test_name"].astype(str).str.match(
+                    pattern, case=False, na=False
+                )
+            ]
+            if matches.empty:
+                return None
+            value = pd.to_numeric(matches.iloc[-1].get("result"), errors="coerce")
+            return None if pd.isna(value) else round(float(value), 4)
+
+        status_key = re.sub(
+            r"[^a-z]", "", str(latest.get("lab_testing_status", "") or "").lower()
+        )
+        summaries.append({
+            "Imported At": str(latest.get("imported_at", "") or ""),
+            "File": str(latest.get("source_filename", "") or ""),
+            "Sample Tag": str(package_tag or ""),
+            "Parent Package": str(latest.get("source_package_labels", "") or ""),
+            "Product": str(latest.get("item", "") or ""),
+            "Result Status": {
+                "testpassed": "Passed", "retestpassed": "Passed",
+                "testfailed": "Failed", "retestfailed": "Failed",
+            }.get(status_key, "Pending"),
+            "Active Source": (
+                "Metrc" if package_rows["source_kind"].eq("Metrc").any()
+                else "Lab Direct"
+            ),
+            "Total THC %": analyte(r"^Total THC\s*\(%\)$"),
+            "Total Terpenes %": analyte(r"^Total Terpenes\s*\(%\)$"),
+        })
+    return pd.DataFrame(summaries, columns=columns).sort_values(
+        "Imported At", ascending=False
+    )
+
+
 def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
     """Load compact QA package records, templates, and import history."""
     now = time.monotonic()
@@ -1639,7 +1698,8 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
         "ORDER BY template_name"
     )
     comparison_query = """
-        SELECT package_tag, test_name, result,
+        SELECT package_tag, source_package_labels, item, lab_testing_status,
+               test_date, source_filename, imported_at, test_name, result,
                CASE WHEN lab_license = 'LAB-DIRECT'
                     THEN 'Lab Direct' ELSE 'Metrc' END AS source_kind
         FROM lab_result_records
@@ -1648,39 +1708,15 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
             WHERE lab_license = 'LAB-DIRECT'
         )
     """
-    lab_direct_summary_query = """
-        SELECT direct.package_tag,
-               MAX(direct.source_package_labels) AS parent_package,
-               MAX(direct.item) AS product,
-               MAX(direct.lab_testing_status) AS result_status,
-               MAX(direct.test_date) AS test_date,
-               MAX(direct.source_filename) AS source_filename,
-               MAX(direct.imported_at) AS imported_at,
-               MAX(CASE WHEN direct.test_name ~* '^Total THC\\s*\\(%%\\)'
-                        THEN direct.result END) AS total_thc,
-               MAX(CASE WHEN direct.test_name ~* '^Total Terpenes\\s*\\(%%\\)'
-                        THEN direct.result END) AS total_terpenes,
-               CASE WHEN EXISTS (
-                    SELECT 1 FROM lab_result_records metrc
-                    WHERE metrc.package_tag = direct.package_tag
-                      AND COALESCE(metrc.lab_license, '') <> 'LAB-DIRECT'
-               ) THEN 'Metrc' ELSE 'Lab Direct' END AS active_source
-        FROM lab_result_records direct
-        WHERE direct.lab_license = 'LAB-DIRECT'
-        GROUP BY direct.package_tag
-        ORDER BY MAX(direct.imported_at) DESC
-        LIMIT 250
-    """
     # These reads share one remote connection. The queries are compact, and
     # avoiding separate simultaneous pooler handshakes materially improves the
     # first user's QA load without changing the cached second-user path.
-    labs, import_log, templates, source_comparison, lab_direct_summary = query_frames(
+    labs, import_log, templates, source_comparison = query_frames(
         [
             (qa_query, ()),
             (import_query, ()),
             (template_query, ()),
             (comparison_query, ()),
-            (lab_direct_summary_query, ()),
         ],
         statement_timeout_seconds=90,
     )
@@ -1701,6 +1737,7 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
         packages = load_operational_context()["inventory_packages"]
     prepared = _prepare_qa_packages(labs, packages)
     comparisons = _lab_source_discrepancies(source_comparison)
+    lab_direct_summary = _lab_direct_upload_summary(source_comparison)
     if not prepared.empty:
         prepared["source_discrepancy"] = prepared["package_tag"].map(
             comparisons
@@ -1714,18 +1751,6 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
         "stored_rows": "Stored Rows", "inserted_rows": "Inserted",
         "updated_rows": "Updated", "test_min": "Test Min",
         "test_max": "Test Max", "imported_at": "Imported At",
-    })
-    lab_direct_summary = lab_direct_summary.rename(columns={
-        "package_tag": "Sample Tag",
-        "parent_package": "Parent Package",
-        "product": "Product",
-        "result_status": "Result Status",
-        "test_date": "Test Date",
-        "source_filename": "File",
-        "imported_at": "Imported At",
-        "total_thc": "Total THC %",
-        "total_terpenes": "Total Terpenes %",
-        "active_source": "Active Source",
     })
     template_rows: list[dict[str, Any]] = []
     for row in templates.to_dict("records"):

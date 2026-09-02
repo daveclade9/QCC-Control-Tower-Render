@@ -2144,9 +2144,16 @@ class DashboardState(rx.State):
                     "Inserted": 0, "Updated": 0, "Details": str(error),
                 })
         self.qa_import_results = results
-        self.qa_importing = False
-        self._load_qa_payload(force_refresh=True)
-        self.qa_message = "Lab import finished. Duplicate files were skipped safely."
+        try:
+            payload = await rx.run_in_thread(
+                lambda: load_qa_module_data(force_refresh=True)
+            )
+            self._apply_qa_payload(payload)
+            self.qa_message = "Lab import finished. Duplicate files were skipped safely."
+        except Exception as error:
+            self.qa_error = f"The files were processed, but QA could not refresh: {error}"
+        finally:
+            self.qa_importing = False
         yield rx.clear_selected_files("qa_lab_upload")
 
     @rx.event
@@ -2173,12 +2180,19 @@ class DashboardState(rx.State):
                     "Inserted": 0, "Updated": 0, "Details": str(error),
                 })
         self.qa_import_results = results
-        self.qa_importing = False
-        self._load_qa_payload(force_refresh=True)
-        self.qa_message = (
-            "Lab Direct import finished. Only records explicitly marked PASSED "
-            "are authorized for label printing."
-        )
+        try:
+            payload = await rx.run_in_thread(
+                lambda: load_qa_module_data(force_refresh=True)
+            )
+            self._apply_qa_payload(payload)
+            self.qa_message = (
+                "Lab Direct import finished. Only records explicitly marked PASSED "
+                "are authorized for label printing."
+            )
+        except Exception as error:
+            self.qa_error = f"The files were processed, but QA could not refresh: {error}"
+        finally:
+            self.qa_importing = False
         yield rx.clear_selected_files("qa_lab_summary_upload")
 
     def _qa_scope_rows(self, operation: str, test_type: str) -> list[dict[str, Any]]:
