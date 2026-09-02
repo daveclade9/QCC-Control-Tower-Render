@@ -17662,6 +17662,7 @@ def cultivation_registry_field(
     value: rx.Var,
     event: Any,
     *,
+    name: str = "",
     input_type: str = "text",
     step: str = "any",
     placeholder: str = "",
@@ -17675,6 +17676,7 @@ def cultivation_registry_field(
             step=step,
             placeholder=placeholder,
             width="100%",
+            **({"name": name} if name else {}),
         ),
         width="100%",
     )
@@ -17725,37 +17727,69 @@ def cultivation_schedule_panel() -> rx.Component:
             rx.callout(DashboardState.cultivation_registry_message, icon="circle-check", color_scheme="green", width="100%"),
         ),
         rx.card(
-            rx.vstack(
-                rx.heading("Generate schedule", size="4", color=DARK),
-                rx.grid(
-                    rx.box(
-                        rx.text("Cycle program", size="1", weight="bold", color=MUTED),
-                        rx.select(
-                            DashboardState.cultivation_program_options,
-                            value=DashboardState.cultivation_schedule_program,
-                            on_change=DashboardState.set_cultivation_schedule_program,
-                            width="100%",
+            rx.form(
+                rx.vstack(
+                    rx.heading("Generate schedule", size="4", color=DARK),
+                    rx.grid(
+                        rx.box(
+                            rx.text("Cycle program", size="1", weight="bold", color=MUTED),
+                            rx.select(
+                                DashboardState.cultivation_program_options,
+                                value=DashboardState.cultivation_schedule_program,
+                                on_change=DashboardState.set_cultivation_schedule_program,
+                                name="program_id",
+                                width="100%",
+                            ),
+                        ),
+                        cultivation_registry_field(
+                            "Starting crop",
+                            DashboardState.cultivation_schedule_start_crop,
+                            DashboardState.set_cultivation_schedule_start_crop,
+                            name="start_crop",
+                            placeholder="F5.10",
+                        ),
+                        cultivation_registry_field(
+                            "First clone cut",
+                            DashboardState.cultivation_schedule_first_cut,
+                            DashboardState.set_cultivation_schedule_first_cut,
+                            name="first_cut",
+                            input_type="date",
+                        ),
+                        cultivation_registry_field(
+                            "Crops to generate",
+                            DashboardState.cultivation_schedule_count,
+                            DashboardState.set_cultivation_schedule_count,
+                            name="count",
+                            input_type="number",
+                            step="1",
+                        ),
+                        columns=rx.breakpoints(initial="1", md="4"), gap="3", width="100%",
+                    ),
+                    rx.hstack(
+                        rx.button("Preview Schedule", type="submit", variant="outline"),
+                        rx.button(
+                            "Save Preview",
+                            type="button",
+                            on_click=DashboardState.save_cultivation_schedule_preview,
+                            background=ACCENT,
+                            color="white",
+                            loading=DashboardState.cultivation_schedule_saving,
+                        ),
+                        gap="3",
+                    ),
+                    rx.cond(
+                        DashboardState.cultivation_schedule_preview.length() > 0,
+                        historical_yield_table(
+                            DashboardState.cultivation_schedule_preview_rows,
+                            ["Crop", "Room", "Clone Cut Date", "Flower Entry Date", "Harvest Date", "Available Date", "Status"],
+                            height="360px",
                         ),
                     ),
-                    cultivation_registry_field("Starting crop", DashboardState.cultivation_schedule_start_crop, DashboardState.set_cultivation_schedule_start_crop, placeholder="F5.10"),
-                    cultivation_registry_field("First clone cut", DashboardState.cultivation_schedule_first_cut, DashboardState.set_cultivation_schedule_first_cut, input_type="date"),
-                    cultivation_registry_field("Crops to generate", DashboardState.cultivation_schedule_count, DashboardState.set_cultivation_schedule_count, input_type="number", step="1"),
-                    columns=rx.breakpoints(initial="1", md="4"), gap="3", width="100%",
+                    width="100%", spacing="3",
                 ),
-                rx.hstack(
-                    rx.button("Preview Schedule", on_click=DashboardState.preview_cultivation_schedule_editor, variant="outline"),
-                    rx.button("Save Preview", on_click=DashboardState.save_cultivation_schedule_preview, background=ACCENT, color="white", loading=DashboardState.cultivation_schedule_saving),
-                    gap="3",
-                ),
-                rx.cond(
-                    DashboardState.cultivation_schedule_preview.length() > 0,
-                    historical_yield_table(
-                        DashboardState.cultivation_schedule_preview_rows,
-                        ["Crop", "Room", "Clone Cut Date", "Flower Entry Date", "Harvest Date", "Available Date", "Status"],
-                        height="360px",
-                    ),
-                ),
-                width="100%", spacing="3",
+                on_submit=DashboardState.preview_cultivation_schedule,
+                reset_on_submit=False,
+                width="100%",
             ),
             width="100%",
         ),

@@ -37,6 +37,34 @@ class CultivationSchedulePreviewTests(unittest.TestCase):
         )
         self.assertEqual(state.cultivation_registry_error, "")
 
+    def test_preview_form_accepts_less_than_default_horizon(self):
+        state = DashboardState(_reflex_internal_init=True)
+        state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": [],
+            "schedule": default_schedule(),
+            "historical_yields": [],
+        }
+
+        state.preview_cultivation_schedule(
+            {
+                "program_id": "main-five-room",
+                "start_crop": "F5.10",
+                "first_cut": "2026-08-28",
+                "count": "5",
+            }
+        )
+
+        self.assertEqual(state.cultivation_schedule_count, 5)
+        self.assertEqual(len(state.cultivation_schedule_preview), 5)
+        self.assertEqual(len(state.cultivation_schedule_preview_rows), 5)
+        self.assertEqual(
+            state.cultivation_registry_message,
+            "Previewed 5 crops. Review them before saving.",
+        )
+        self.assertEqual(state.cultivation_registry_error, "")
+
 
 if __name__ == "__main__":
     unittest.main()
