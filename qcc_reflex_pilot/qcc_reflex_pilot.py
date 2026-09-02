@@ -5745,8 +5745,8 @@ class DashboardState(rx.State):
             self.cultivation_schedule_preview = []
             self.cultivation_registry_message = (
                 f"Saved {count} cultivation schedule records. They now appear in "
-                "the Saved Schedule table below. Saving does not change the current "
-                "Clone Allocation crop; select a record above when it becomes current."
+                "the Saved Schedule table below. Clone Allocation automatically follows "
+                "the most recent crop whose clone-cut date has arrived."
             )
             self.cultivation_registry_error = ""
         except Exception as error:
@@ -17681,7 +17681,7 @@ def cultivation_registry_field(
 
 
 def cultivation_schedule_panel() -> rx.Component:
-    """Editable multi-program cultivation calendar and current-crop selector."""
+    """Editable multi-program cultivation calendar with automatic crop selection."""
     return rx.vstack(
         rx.card(
             rx.flex(
@@ -17726,26 +17726,6 @@ def cultivation_schedule_panel() -> rx.Component:
         ),
         rx.card(
             rx.vstack(
-                rx.heading("Current Clone Allocation crop", size="4", color=DARK),
-                rx.text(
-                    "Selecting a schedule record immediately redirects the existing Rolling Clone Planner and Room Layout to that room and crop.",
-                    size="2",
-                    color=MUTED,
-                ),
-                rx.select(
-                    DashboardState.cultivation_schedule_id_options,
-                    placeholder="Crop | Room | Clone Cut | Schedule ID",
-                    on_change=DashboardState.choose_current_schedule,
-                    width="420px",
-                ),
-                spacing="3",
-                align="start",
-                width="100%",
-            ),
-            width="100%",
-        ),
-        rx.card(
-            rx.vstack(
                 rx.heading("Generate schedule", size="4", color=DARK),
                 rx.grid(
                     rx.box(
@@ -17769,10 +17749,10 @@ def cultivation_schedule_panel() -> rx.Component:
                 ),
                 rx.cond(
                     DashboardState.cultivation_schedule_preview.length() > 0,
-                    data_grid(
+                    historical_yield_table(
                         DashboardState.cultivation_schedule_preview_rows,
                         ["Crop", "Room", "Clone Cut Date", "Flower Entry Date", "Harvest Date", "Available Date", "Status"],
-                        height="360px", show_search=False, minimum_width=1250, page_size=26,
+                        height="360px",
                     ),
                 ),
                 width="100%", spacing="3",
@@ -17783,7 +17763,7 @@ def cultivation_schedule_panel() -> rx.Component:
             rx.vstack(
                 rx.heading("Saved Schedule", size="4", color=DARK),
                 rx.text(
-                    "Every saved preview appears here. A saved crop affects Clone Allocation only after it is selected in Current Clone Allocation crop above.",
+                    "Every saved preview appears here. Clone Allocation automatically follows the most recent crop whose clone-cut date has arrived.",
                     size="2",
                     color=MUTED,
                 ),
