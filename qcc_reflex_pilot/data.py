@@ -2364,6 +2364,10 @@ def _ensure_clone_planning_table(cursor: Any) -> None:
         )
         """
     )
+    cursor.execute(
+        "ALTER TABLE qcc_clone_plans ADD COLUMN IF NOT EXISTS "
+        "demand_product_scope TEXT NOT NULL DEFAULT 'Flower + Pre-Rolls'"
+    )
 
 
 def _ensure_fresh_frozen_adjustments_table(cursor: Any) -> None:
@@ -2585,6 +2589,7 @@ def save_clone_plan(
     flower_room: str,
     clone_cut_date: str,
     demand_model: str,
+    demand_product_scope: str = "Flower + Pre-Rolls",
     status: str,
     allocations: dict[str, float],
     bench_assignments: list[dict[str, Any]] | None = None,
@@ -2607,18 +2612,19 @@ def save_clone_plan(
             _ensure_clone_planning_table(cursor)
             cursor.execute(
                 "INSERT INTO qcc_clone_plans (plan_id, crop, flower_room, "
-                "clone_cut_date, demand_model, status, allocations, "
+                "clone_cut_date, demand_model, demand_product_scope, status, allocations, "
                 "bench_assignments, override_reason, updated_by, updated_at) "
-                "VALUES (" + ", ".join(["%s"] * 11) + ") "
+                "VALUES (" + ", ".join(["%s"] * 12) + ") "
                 "ON CONFLICT (plan_id) DO UPDATE SET flower_room=EXCLUDED.flower_room, "
                 "clone_cut_date=EXCLUDED.clone_cut_date, demand_model=EXCLUDED.demand_model, "
+                "demand_product_scope=EXCLUDED.demand_product_scope, "
                 "status=EXCLUDED.status, allocations=EXCLUDED.allocations, "
                 "bench_assignments=EXCLUDED.bench_assignments, "
                 "override_reason=EXCLUDED.override_reason, updated_by=EXCLUDED.updated_by, "
                 "updated_at=EXCLUDED.updated_at",
                 (
                     plan_id, crop_text, str(flower_room), str(clone_cut_date),
-                    str(demand_model), status_text,
+                    str(demand_model), str(demand_product_scope), status_text,
                     json.dumps(allocations, default=str),
                     json.dumps(bench_assignments or [], default=str),
                     str(override_reason or ""), str(updated_by or "QCC Reflex User"),
@@ -2638,6 +2644,7 @@ def load_clone_plans() -> list[dict[str, Any]]:
             _ensure_clone_planning_table(cursor)
             cursor.execute(
                 "SELECT plan_id, crop, flower_room, clone_cut_date, demand_model, "
+                "demand_product_scope, "
                 "status, allocations, bench_assignments, override_reason, "
                 "updated_by, updated_at FROM qcc_clone_plans "
                 "ORDER BY clone_cut_date DESC, updated_at DESC"
@@ -2661,6 +2668,10 @@ def load_clone_plans() -> list[dict[str, Any]]:
                 "flower_room": str(record.get("flower_room", "")),
                 "clone_cut_date": str(record.get("clone_cut_date", "")),
                 "demand_model": str(record.get("demand_model", "")),
+                "demand_product_scope": str(
+                    record.get("demand_product_scope", "Flower + Pre-Rolls")
+                    or "Flower + Pre-Rolls"
+                ),
                 "status": str(record.get("status", "Draft")),
                 "allocations": dict(allocations),
                 "bench_assignments": list(bench_assignments),

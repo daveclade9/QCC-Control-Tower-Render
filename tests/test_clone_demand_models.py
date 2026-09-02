@@ -70,6 +70,65 @@ class CloneDemandModelTest(unittest.TestCase):
             expected_lbs = units * 3.5 / 453.59237
             self.assertAlmostEqual(demand["diamond bar"], expected_lbs)
 
+    def test_product_scope_filters_demand_without_filtering_supply(self):
+        rows = [
+            {
+                "Strain": "Diamond Bar",
+                "SKU Type": "3.5g Flower",
+                "Avg Weekly Units": 20.0,
+            },
+            {
+                "Strain": "Diamond Bar",
+                "SKU Type": "1g Pre-Roll",
+                "Avg Weekly Units": 100.0,
+            },
+        ]
+        self.state.availability_adjusted_velocity_windows = {
+            "All Time": rows,
+            "30 Days": rows,
+            "60 Days": rows,
+        }
+        self.state.cultivation_clone_plan_demand_model = "Availability-Adjusted"
+
+        self.state.cultivation_clone_plan_product_scope = "Flower + Pre-Rolls"
+        combined = self.state._clone_plan_weekly_demand_by_strain()["diamond bar"]
+        self.state.cultivation_clone_plan_product_scope = "Flower Only"
+        flower = self.state._clone_plan_weekly_demand_by_strain()["diamond bar"]
+        self.state.cultivation_clone_plan_product_scope = "Pre-Rolls Only"
+        preroll = self.state._clone_plan_weekly_demand_by_strain()["diamond bar"]
+
+        self.assertAlmostEqual(combined, flower + preroll)
+        self.assertAlmostEqual(flower, 20 * 3.5 / 453.59237)
+        self.assertAlmostEqual(preroll, 100 / 453.59237)
+
+    def test_current_pounds_breakdown_groups_cpg_and_wip(self):
+        self.state.all_inventory = [
+            {
+                "Strain": "Diamond Bar",
+                "Production Stage": "Packaged Goods",
+                "Category": "Bud/Flower",
+                "QA Status": "Test Passed",
+                "License": "Manufacturing",
+                "Calculated Weight (g)": 453.59237,
+            },
+            {
+                "Strain": "Diamond Bar",
+                "Production Stage": "Bulk Flower",
+                "Category": "Bud/Flower",
+                "QA Status": "Not Submitted",
+                "License": "Cultivation",
+                "Calculated Weight (g)": 907.18474,
+            },
+        ]
+
+        breakdown = self.state._cultivation_current_inventory_breakdown_by_strain()[
+            "diamond bar"
+        ]
+
+        self.assertAlmostEqual(breakdown["cpg_lbs"], 1.0)
+        self.assertAlmostEqual(breakdown["wip_lbs"], 2.0)
+        self.assertAlmostEqual(breakdown["total_lbs"], 3.0)
+
     def test_missing_adjusted_window_does_not_zero_all_demand(self):
         self.state.availability_adjusted_velocity_windows = {
             "All Time": self.state.availability_adjusted_velocity_windows["All Time"]

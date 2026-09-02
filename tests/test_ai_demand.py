@@ -71,6 +71,32 @@ class AiDemandForecastTests(unittest.TestCase):
         expected = 2 * 20 * 3.5 / 453.59237
         self.assertAlmostEqual(result, expected)
 
+    def test_product_scope_applies_to_ai_ensemble(self):
+        period = [{"clone_cut_date": "2026-09-01", "is_historical": False}]
+        rows = [
+            {"Strain": "J1", "SKU Type": "3.5g Flower", "Avg Weekly Units": 20},
+            {"Strain": "J1", "SKU Type": "1g Pre-Roll", "Avg Weekly Units": 100},
+        ]
+        windows = {label: rows for label in ("30 Days", "60 Days", "All Time")}
+
+        flower = ai_two_week_demand_forecast(
+            periods=period,
+            adjusted_windows=windows,
+            weekly_rows=[],
+            fallback_rows=[],
+            product_scope="Flower Only",
+        )["j1"][0]
+        preroll = ai_two_week_demand_forecast(
+            periods=period,
+            adjusted_windows=windows,
+            weekly_rows=[],
+            fallback_rows=[],
+            product_scope="Pre-Rolls Only",
+        )["j1"][0]
+
+        self.assertAlmostEqual(flower, 2 * 20 * 3.5 / 453.59237)
+        self.assertAlmostEqual(preroll, 2 * 100 / 453.59237)
+
 
 if __name__ == "__main__":
     unittest.main()

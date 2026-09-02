@@ -21,11 +21,15 @@ FLOWER_SKU_MARKERS = ("1g flower", "3.5g flower", "7g flower")
 WINDOW_WEIGHTS = {"30 Days": 0.45, "60 Days": 0.35, "All Time": 0.20}
 
 
-def _is_demand_sku(value: Any) -> bool:
+def _is_demand_sku(value: Any, product_scope: str) -> bool:
     label = str(value or "").casefold()
-    return any(marker in label for marker in FLOWER_SKU_MARKERS) or (
-        "pre-roll" in label or "preroll" in label
-    )
+    is_flower = any(marker in label for marker in FLOWER_SKU_MARKERS)
+    is_preroll = "pre-roll" in label or "preroll" in label
+    if product_scope == "Pre-Rolls Only":
+        return is_preroll
+    if product_scope == "Flower Only":
+        return is_flower
+    return is_flower or is_preroll
 
 
 def _number(value: Any) -> float:
@@ -35,11 +39,13 @@ def _number(value: Any) -> float:
         return 0.0
 
 
-def _window_weekly_lbs(rows: list[dict[str, Any]]) -> dict[str, float]:
+def _window_weekly_lbs(
+    rows: list[dict[str, Any]], product_scope: str
+) -> dict[str, float]:
     totals: dict[str, float] = defaultdict(float)
     for row in rows:
         sku = row.get("SKU Type", "")
-        if not _is_demand_sku(sku):
+        if not _is_demand_sku(sku, product_scope):
             continue
         strain = normalized_strain(row.get("Strain", ""))
         grams = sku_fill_grams(sku)
@@ -55,12 +61,15 @@ def _window_weekly_lbs(rows: list[dict[str, Any]]) -> dict[str, float]:
 def _blended_baselines(
     adjusted_windows: dict[str, list[dict[str, Any]]],
     fallback_rows: list[dict[str, Any]],
+    product_scope: str,
 ) -> dict[str, float]:
     window_values = {
-        label: _window_weekly_lbs(adjusted_windows.get(label, []))
+        label: _window_weekly_lbs(
+            adjusted_windows.get(label, []), product_scope
+        )
         for label in WINDOW_WEIGHTS
     }
-    fallback = _window_weekly_lbs(fallback_rows)
+    fallback = _window_weekly_lbs(fallback_rows, product_scope)
     strains = set(fallback)
     for values in window_values.values():
         strains.update(values)
@@ -82,7 +91,7 @@ def _blended_baselines(
 
 
 def _weekly_lbs_history(
-    weekly_rows: list[dict[str, Any]],
+    weekly_rows: list[dict[str, Any]], product_scope: str,
 ) -> dict[str, list[tuple[date, float]]]:
     # A strain/week can contain several package sizes.  Zero weeks identified
     # as likely OOS are omitted only when every observed SKU in that strain-week
@@ -90,7 +99,7 @@ def _weekly_lbs_history(
     grouped: dict[tuple[str, date], dict[str, Any]] = {}
     for row in weekly_rows:
         sku = row.get("SKU Type", "")
-        if not _is_demand_sku(sku):
+        if not _is_demand_sku(sku, product_scope):
             continue
         strain = normalized_strain(row.get("Strain", ""))
         try:
@@ -159,10 +168,13 @@ def ai_two_week_demand_forecast(
     adjusted_windows: dict[str, list[dict[str, Any]]],
     weekly_rows: list[dict[str, Any]],
     fallback_rows: list[dict[str, Any]],
+    product_scope: str = "Flower + Pre-Rolls",
 ) -> dict[str, list[float]]:
     """Return a two-week pounds forecast for every strain and period."""
-    baselines = _blended_baselines(adjusted_windows, fallback_rows)
-    histories = _weekly_lbs_history(weekly_rows)
+    baselines = _blended_baselines(
+        adjusted_windows, fallback_rows, product_scope
+    )
+    histories = _weekly_lbs_history(weekly_rows, product_scope)
     forecasts: dict[str, list[float]] = {}
     for strain, baseline in baselines.items():
         history = histories.get(strain, [])
@@ -183,4 +195,3 @@ def ai_two_week_demand_forecast(
             future_index += 1
         forecasts[strain] = values
     return forecasts
-

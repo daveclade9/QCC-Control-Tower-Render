@@ -467,9 +467,8 @@ ClonePlanMatrixValue = TypedDict(
         "value": float,
         "highlight": bool,
         "show_breakdown": bool,
-        "tested_lbs": float,
-        "untested_lbs": float,
-        "passed_quarantine_lbs": float,
+        "cpg_lbs": float,
+        "wip_lbs": float,
         "current_total_lbs": float,
         "available": bool,
         "editable_allocation": bool,
@@ -747,6 +746,7 @@ class DashboardState(rx.State):
     cultivation_new_strain_message: str = ""
     cultivation_new_strain_error: str = ""
     cultivation_clone_plan_demand_model: str = "Availability-Adjusted"
+    cultivation_clone_plan_product_scope: str = "Flower + Pre-Rolls"
     cultivation_clone_plan_demand_revision: int = 0
     cultivation_clone_plan_allocations: dict[str, float] = {}
     cultivation_clone_plan_entry_version: int = 0
@@ -6531,6 +6531,15 @@ class DashboardState(rx.State):
         self.cultivation_clone_plan_status = "Draft"
         self.cultivation_clone_plan_dirty = True
 
+    @rx.event
+    def change_cultivation_clone_plan_product_scope(self, value: str):
+        self.cultivation_clone_plan_product_scope = (
+            self._normalized_clone_demand_product_scope(value)
+        )
+        self.cultivation_clone_plan_demand_revision += 1
+        self.cultivation_clone_plan_status = "Draft"
+        self.cultivation_clone_plan_dirty = True
+
     @staticmethod
     def _normalized_clone_demand_model(value: Any) -> str:
         """Normalize current choices and legacy saved-plan labels."""
@@ -6546,6 +6555,13 @@ class DashboardState(rx.State):
         }:
             return label
         return "Availability-Adjusted"
+
+    @staticmethod
+    def _normalized_clone_demand_product_scope(value: Any) -> str:
+        label = str(value or "").strip()
+        if label in {"Flower + Pre-Rolls", "Pre-Rolls Only", "Flower Only"}:
+            return label
+        return "Flower + Pre-Rolls"
 
     @rx.event
     def change_cultivation_clone_plan_allocation(self, strain: str, value: str):
@@ -6629,6 +6645,11 @@ class DashboardState(rx.State):
         }
         self.cultivation_clone_plan_demand_model = self._normalized_clone_demand_model(
             plan.get("demand_model", "Availability-Adjusted")
+        )
+        self.cultivation_clone_plan_product_scope = (
+            self._normalized_clone_demand_product_scope(
+                plan.get("demand_product_scope", "Flower + Pre-Rolls")
+            )
         )
         self.cultivation_clone_plan_status = "Approved"
         self.cultivation_clone_plan_dirty = False
@@ -6868,6 +6889,7 @@ class DashboardState(rx.State):
                 flower_room=period["room"],
                 clone_cut_date=period["clone_cut_date"],
                 demand_model=self.cultivation_clone_plan_demand_model,
+                demand_product_scope=self.cultivation_clone_plan_product_scope,
                 status=(
                     self.cultivation_historical_plan_edit_status
                     if existing_plan is not None else "Approved"
@@ -6905,6 +6927,7 @@ class DashboardState(rx.State):
             flower_room=period["room"],
             clone_cut_date=period["clone_cut_date"],
             demand_model=self.cultivation_clone_plan_demand_model,
+            demand_product_scope=self.cultivation_clone_plan_product_scope,
             status=status,
             allocations=dict(self.cultivation_clone_plan_allocations),
             bench_assignments=[],
@@ -7020,6 +7043,11 @@ class DashboardState(rx.State):
         self.cultivation_clone_plan_demand_model = self._normalized_clone_demand_model(
             plan.get("demand_model", "Availability-Adjusted")
         )
+        self.cultivation_clone_plan_product_scope = (
+            self._normalized_clone_demand_product_scope(
+                plan.get("demand_product_scope", "Flower + Pre-Rolls")
+            )
+        )
         self.cultivation_clone_plan_status = str(plan.get("status", "Approved"))
         self.cultivation_clone_plan_dirty = False
         self.cultivation_clone_plan_entry_version += 1
@@ -7050,6 +7078,11 @@ class DashboardState(rx.State):
         }
         self.cultivation_clone_plan_demand_model = self._normalized_clone_demand_model(
             plan.get("demand_model", "Availability-Adjusted")
+        )
+        self.cultivation_clone_plan_product_scope = (
+            self._normalized_clone_demand_product_scope(
+                plan.get("demand_product_scope", "Flower + Pre-Rolls")
+            )
         )
         self.cultivation_clone_plan_status = "Approved"
         self.cultivation_clone_plan_dirty = False
@@ -7149,6 +7182,7 @@ class DashboardState(rx.State):
                 flower_room=self.cultivation_flower_room,
                 clone_cut_date=self.cultivation_cut_date,
                 demand_model=self.cultivation_clone_plan_demand_model,
+                demand_product_scope=self.cultivation_clone_plan_product_scope,
                 status="Approved",
                 allocations=allocations,
                 bench_assignments=saved_benches,
@@ -7636,7 +7670,13 @@ class DashboardState(rx.State):
             sku_lower = sku.casefold()
             is_flower = any(size in sku_lower for size in ("1g flower", "3.5g flower", "7g flower"))
             is_preroll = "pre-roll" in sku_lower or "preroll" in sku_lower
-            if not (is_flower or is_preroll):
+            if self.cultivation_clone_plan_product_scope == "Pre-Rolls Only":
+                included = is_preroll
+            elif self.cultivation_clone_plan_product_scope == "Flower Only":
+                included = is_flower
+            else:
+                included = is_flower or is_preroll
+            if not included:
                 continue
             key = normalized_strain(row.get("Strain", ""))
             grams_per_unit = sku_fill_grams(sku)
@@ -7660,6 +7700,7 @@ class DashboardState(rx.State):
                     or self.velocity_windows.get("All Time")
                     or self.velocity
                 ),
+                product_scope=self.cultivation_clone_plan_product_scope,
             )
             if forecast:
                 return forecast
@@ -7918,6 +7959,7 @@ class DashboardState(rx.State):
         # cannot see state accessed only inside the private demand helper.
         _ = self.cultivation_clone_plan_demand_revision
         _ = self.cultivation_clone_plan_demand_model
+        _ = self.cultivation_clone_plan_product_scope
         _ = self.velocity
         _ = self.velocity_windows
         _ = self.availability_adjusted_velocity_windows
@@ -7964,11 +8006,8 @@ class DashboardState(rx.State):
                 "value": value,
                 "highlight": highlight,
                 "show_breakdown": show_breakdown,
-                "tested_lbs": round(float(detail.get("tested_lbs", 0) or 0), 1),
-                "untested_lbs": round(float(detail.get("untested_lbs", 0) or 0), 1),
-                "passed_quarantine_lbs": round(
-                    float(detail.get("passed_quarantine_lbs", 0) or 0), 1
-                ),
+                "cpg_lbs": round(float(detail.get("cpg_lbs", 0) or 0), 1),
+                "wip_lbs": round(float(detail.get("wip_lbs", 0) or 0), 1),
                 "current_total_lbs": round(float(detail.get("total_lbs", 0) or 0), 1),
                 "available": available,
                 "editable_allocation": editable_allocation,
@@ -8285,16 +8324,12 @@ class DashboardState(rx.State):
                 0.0, self._number(row, "Calculated Weight (g)")
             ) / 453.59237
             detail = totals.setdefault(key, {
-                "tested_lbs": 0.0,
-                "untested_lbs": 0.0,
-                "passed_quarantine_lbs": 0.0,
+                "cpg_lbs": 0.0,
+                "wip_lbs": 0.0,
                 "total_lbs": 0.0,
             })
-            field = {
-                "Tested Flower": "tested_lbs",
-                "Untested Flower": "untested_lbs",
-                "Passed Quarantine Flower": "passed_quarantine_lbs",
-            }[bucket]
+            stage = str(row.get("Production Stage", "") or "").strip().casefold()
+            field = "cpg_lbs" if stage == "packaged goods" else "wip_lbs"
             detail[field] += pounds
             detail["total_lbs"] += pounds
         return totals
@@ -16299,36 +16334,26 @@ def cultivation_clone_plan_value_cell(
                     rx.box(
                         rx.text("Current Pounds Breakdown", weight="bold", color=DARK),
                         rx.text(
-                            "Net flower and flower-equivalent pre-rolls",
+                            "Usable net-flower supply by production stage",
                             size="1",
                             color=MUTED,
                         ),
                     ),
                     rx.hstack(
-                        rx.text("Tested flower", size="2"),
+                        rx.text("CPG · packaged flower/pre-rolls", size="2"),
                         rx.spacer(),
                         rx.text(
-                            cell["tested_lbs"].to_string() + " lb",
+                            cell["cpg_lbs"].to_string() + " lb",
                             weight="bold",
                             size="2",
                         ),
                         width="100%",
                     ),
                     rx.hstack(
-                        rx.text("Untested flower", size="2"),
+                        rx.text("WIP · usable cultivation bulk", size="2"),
                         rx.spacer(),
                         rx.text(
-                            cell["untested_lbs"].to_string() + " lb",
-                            weight="bold",
-                            size="2",
-                        ),
-                        width="100%",
-                    ),
-                    rx.hstack(
-                        rx.text("Passed quarantine flower", size="2"),
-                        rx.spacer(),
-                        rx.text(
-                            cell["passed_quarantine_lbs"].to_string() + " lb",
+                            cell["wip_lbs"].to_string() + " lb",
                             weight="bold",
                             size="2",
                         ),
@@ -16346,7 +16371,7 @@ def cultivation_clone_plan_value_cell(
                         width="100%",
                     ),
                     spacing="2",
-                    width="270px",
+                    width="330px",
                 ),
                 side="top",
                 align="center",
@@ -16864,6 +16889,19 @@ def cultivation_clone_planning_panel() -> rx.Component:
                             width="100%",
                         ),
                     ),
+                    rx.box(
+                        rx.text("Demand products", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            [
+                                "Flower + Pre-Rolls",
+                                "Pre-Rolls Only",
+                                "Flower Only",
+                            ],
+                            value=DashboardState.cultivation_clone_plan_product_scope,
+                            on_change=DashboardState.change_cultivation_clone_plan_product_scope,
+                            width="100%",
+                        ),
+                    ),
                     snapshot_stat_card(
                         "Planned Bench Equivalents",
                         DashboardState.cultivation_clone_plan_total_benches,
@@ -16879,7 +16917,7 @@ def cultivation_clone_planning_panel() -> rx.Component:
                         DashboardState.cultivation_clone_plan_room_capacity,
                         "#2563eb",
                     ),
-                    columns=rx.breakpoints(initial="1", md="2", xl="5"),
+                    columns=rx.breakpoints(initial="1", md="2", xl="6"),
                     gap="3",
                     width="100%",
                 ),
@@ -16895,7 +16933,7 @@ def cultivation_clone_planning_panel() -> rx.Component:
                 ),
                 cultivation_new_strain_control(),
                 rx.callout(
-                    "Current Pounds excludes trim, retention, samples, quarantine, and unusable material. Scheduled pounds are expected 30 days after harvest, stop counting when crop-matched actual inventory appears, and expire 45 days after harvest. Click a Scheduled value to review Fresh Frozen or Creative Use reductions.",
+                    "Current Pounds combines CPG and usable cultivation WIP while excluding trim, retention, samples, failed quarantine, and unusable material. Demand products affect demand only; Current Pounds remains total usable flower-equivalent supply. Scheduled pounds are expected 30 days after harvest, stop counting when crop-matched actual inventory appears, and expire 45 days after harvest. Click a Scheduled value to review Fresh Frozen or Creative Use reductions.",
                     icon="info",
                     color_scheme="blue",
                     width="100%",
