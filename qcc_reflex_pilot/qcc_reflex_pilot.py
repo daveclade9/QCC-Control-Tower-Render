@@ -31,6 +31,7 @@ from .data import (
     get_distribution_operations_data,
     get_sales_dashboard_data,
     import_lab_results_bytes,
+    import_lab_summary_bytes,
     load_adjusted_coa,
     load_qa_analytes,
     load_qa_module_data,
@@ -1700,7 +1701,12 @@ class DashboardState(rx.State):
                 )
                 self.qa_analyte_message = "No associated laboratory analytes were found."
             else:
-                self.qa_message = "Compliance record found and printable summary prepared."
+                self.qa_message = (
+                    "Lab Direct passed result found. Verify the printed label against "
+                    "the final COA; Metrc will replace this source automatically."
+                    if str(selected.get("record_origin", "")).startswith("Lab Direct")
+                    else "Compliance record found and printable summary prepared."
+                )
                 self.qa_analyte_message = "Loading the complete analyte history..."
         except Exception as error:
             self.qa_error = f"That compliance record could not be prepared: {error}"
@@ -2140,6 +2146,38 @@ class DashboardState(rx.State):
         self._load_qa_payload(force_refresh=True)
         self.qa_message = "Lab import finished. Duplicate files were skipped safely."
         yield rx.clear_selected_files("qa_lab_upload")
+
+    @rx.event
+    async def import_qa_lab_summary_files(self, files: list[rx.UploadFile]):
+        self.qa_error = ""
+        self.qa_message = ""
+        self.qa_import_results = []
+        if not self._require_active_session():
+            self.qa_error = "Your session expired. Sign in again to import lab data."
+            return
+        if not files:
+            self.qa_error = "Choose at least one Preliminary Results Summary .xlsx file."
+            return
+        self.qa_importing = True
+        yield
+        results: list[dict[str, Any]] = []
+        for file in files:
+            try:
+                results.append(import_lab_summary_bytes(file.name, await file.read()))
+            except Exception as error:
+                results.append({
+                    "File": file.name, "Status": "Error",
+                    "Source Rows": 0, "Stored Rows": 0,
+                    "Inserted": 0, "Updated": 0, "Details": str(error),
+                })
+        self.qa_import_results = results
+        self.qa_importing = False
+        self._load_qa_payload(force_refresh=True)
+        self.qa_message = (
+            "Lab Direct import finished. Only records explicitly marked PASSED "
+            "are authorized for label printing."
+        )
+        yield rx.clear_selected_files("qa_lab_summary_upload")
 
     def _qa_scope_rows(self, operation: str, test_type: str) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -2708,11 +2746,11 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def qa_adjusted_coa_status(self) -> str:
-        return (
-            "Adjusted COA — verified"
-            if self.qa_adjusted_coa
-            else "Metrc data — estimated"
-        )
+        if self.qa_adjusted_coa:
+            return "Adjusted COA — verified"
+        if str(self.qa_selected_package.get("record_origin", "")).startswith("Lab Direct"):
+            return "Lab Direct — passed / awaiting Metrc"
+        return "Metrc data — estimated"
 
     @rx.var(cache=True)
     def qa_adjusted_other_preview(self) -> str:
@@ -2850,7 +2888,7 @@ class DashboardState(rx.State):
         coa_status = (
             "No associated COA found — general inventory summary"
             if str(record.get("record_origin", "")).startswith("Current Inventory")
-            else "Associated lab/COA record found"
+            else str(record.get("record_origin", "") or "Associated lab/COA record found")
         )
         values = [
             ("Metrc Tag", record.get("package_tag", "")),
@@ -2860,6 +2898,8 @@ class DashboardState(rx.State):
             ("Item", record.get("item", "")),
             ("Source Harvest", record.get("source_harvest_names", "")),
             ("QA Status", record.get("lab_testing_status", "")),
+            ("Record Source", record.get("record_origin", "")),
+            ("Source Comparison", record.get("source_discrepancy", "")),
             ("COA Status", coa_status),
             ("Test Date", record.get("test_date", "")),
             ("Expiration Date", record.get("expiration_date", "")),
@@ -14356,6 +14396,53 @@ def qa_import_panel() -> rx.Component:
                 align="center", width="100%",
             ),
             content=rx.vstack(
+                rx.heading("Lab Direct Preliminary Summary", size="3", color=DARK),
+                rx.callout(
+                    "Use the laboratory's passed Results Summary while Metrc is delayed. "
+                    "Only rows explicitly marked PASSED can print; an exact Metrc sample "
+                    "tag automatically becomes the active source when imported.",
+                    icon="shield-check", color_scheme="purple", width="100%",
+                ),
+                rx.upload(
+                    rx.vstack(
+                        rx.icon("file-spreadsheet", size=28, color="#7c3aed"),
+                        rx.text("Drag Preliminary Results Summary Excel files here"),
+                        rx.button("Choose Excel Files", variant="outline"),
+                        spacing="2", align="center",
+                    ),
+                    id="qa_lab_summary_upload",
+                    accept={
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"]
+                    },
+                    multiple=True,
+                    max_files=20,
+                    border="2px dashed #8b5cf6",
+                    border_radius="12px",
+                    padding="2rem",
+                    width="100%",
+                ),
+                rx.flex(
+                    rx.foreach(rx.selected_files("qa_lab_summary_upload"), rx.badge),
+                    gap="2", wrap="wrap", width="100%",
+                ),
+                rx.flex(
+                    rx.button(
+                        "Import Lab Direct Summary",
+                        on_click=DashboardState.import_qa_lab_summary_files(
+                            rx.upload_files(upload_id="qa_lab_summary_upload")
+                        ),
+                        loading=DashboardState.qa_importing,
+                        background="#7c3aed", color="white",
+                    ),
+                    rx.button(
+                        "Clear Selection",
+                        on_click=rx.clear_selected_files("qa_lab_summary_upload"),
+                        variant="outline",
+                    ),
+                    gap="3",
+                ),
+                rx.divider(),
+                rx.heading("Metrc Lab Results", size="3", color=DARK),
                 rx.upload(
                     rx.vstack(
                         rx.icon("upload", size=28, color=ACCENT),
@@ -14420,6 +14507,14 @@ def qa_lookup_result_row(row: rx.Var) -> rx.Component:
         rx.table.cell(row["strain"], min_width="170px"),
         rx.table.cell(row["sku_type"], min_width="190px"),
         rx.table.cell(row["lab_testing_status"], min_width="130px"),
+        rx.table.cell(
+            rx.badge(
+                row["record_origin"],
+                color_scheme="purple",
+                variant="soft",
+            ),
+            min_width="210px",
+        ),
         rx.table.cell(
             rx.button(
                 "Select",
@@ -14937,7 +15032,7 @@ def qa_label_panel() -> rx.Component:
                             rx.table.header(
                                 rx.table.row(*[
                                     rx.table.column_header_cell(column)
-                                    for column in ["Package Tag", "Brand", "Strain", "SKU Type", "QA Status", "Action"]
+                                    for column in ["Package Tag", "Brand", "Strain", "SKU Type", "QA Status", "Source", "Action"]
                                 ])
                             ),
                             rx.table.body(rx.foreach(DashboardState.qa_lookup_matches, qa_lookup_result_row)),

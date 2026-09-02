@@ -39,7 +39,7 @@ from .rules import (
     prepare_transfer_analysis,
 )
 from .retailer_directory import CLADE9_LOCATIONS
-from .zebra_labels import expiration_from_harvest, extract_metrc_tags
+from .zebra_labels import expiration_from_harvest, extract_metrc_tags, label_analytes
 from .availability_demand import build_availability_demand_analysis
 
 
@@ -183,6 +183,13 @@ LAB_DB_COLUMNS = [
     "test_date", "overall_pass", "test_name", "test_passed", "result",
     "lte_date", "record_date", "notes", "source_filename",
     "source_file_hash", "imported_at",
+]
+
+LAB_SUMMARY_REQUIRED_COLUMNS = [
+    "Customer Lot", "Parent Package ID", "METRC #", "Strain",
+    "Passed Test?", "Final Total Cannabinoids", "Final Total THC",
+    "Final THCA", "Final Total CBD", "Final d9-THC", "Final Total CBG",
+    "Total Terpenes",
 ]
 QA_LABEL_FIELDS = {
     "package_tag": "Package Tag",
@@ -806,6 +813,189 @@ def normalize_lab_results(
     return data.drop_duplicates("record_key", keep="last")[LAB_DB_COLUMNS]
 
 
+def _lab_summary_report_date(filename: str, value: Any = None) -> str:
+    """Return the lab-supplied date or the YYYYMMDD report filename date."""
+    parsed = pd.to_datetime(value, errors="coerce")
+    if not pd.isna(parsed):
+        return pd.Timestamp(parsed).strftime("%Y-%m-%dT00:00:00")
+    match = re.search(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)", filename)
+    if not match:
+        return ""
+    try:
+        return datetime.strptime("".join(match.groups()), "%Y%m%d").strftime(
+            "%Y-%m-%dT00:00:00"
+        )
+    except ValueError:
+        return ""
+
+
+def _lab_summary_analyte_name(column: str) -> str:
+    name = re.sub(r"^Final\s+", "", str(column or "").strip(), flags=re.I)
+    return f"{name} (%)"
+
+
+def normalize_lab_summary(
+    source_data: pd.DataFrame, filename: str, file_hash: str
+) -> pd.DataFrame:
+    """Convert one wide laboratory-direct summary into Metrc-shaped analytes."""
+    source = source_data.copy()
+    source.columns = [str(column).strip() for column in source.columns]
+    missing = [name for name in LAB_SUMMARY_REQUIRED_COLUMNS if name not in source]
+    if missing:
+        raise ValueError(
+            "Missing required preliminary lab columns: " + ", ".join(missing)
+        )
+
+    columns = list(source.columns)
+    cannabinoid_start = (
+        columns.index("Final CBDVA")
+        if "Final CBDVA" in columns else columns.index("Final Total Cannabinoids")
+    )
+    cannabinoid_end = (
+        columns.index("Final Total CBDV")
+        if "Final Total CBDV" in columns else columns.index("Final Total CBG")
+    )
+    if "Alpha-Pinene" not in columns:
+        raise ValueError("Missing required preliminary lab column: Alpha-Pinene")
+    terpene_start = columns.index("Alpha-Pinene")
+    terpene_end = columns.index("Total Terpenes")
+    analyte_columns = [
+        *columns[cannabinoid_start:cannabinoid_end + 1],
+        *columns[terpene_start:terpene_end + 1],
+    ]
+
+    imported_at = datetime.now().astimezone().isoformat()
+    records: list[dict[str, Any]] = []
+    skipped_identity = 0
+    for _, row in source.iterrows():
+        sample_tags = extract_metrc_tags(row.get("METRC #", ""))
+        parent_tags = extract_metrc_tags(row.get("Parent Package ID", ""))
+        if len(sample_tags) != 1 or len(parent_tags) != 1:
+            skipped_identity += 1
+            continue
+        sample_tag, parent_tag = sample_tags[0], parent_tags[0]
+        report_date = _lab_summary_report_date(filename, row.get("Upload Date"))
+        if not report_date:
+            raise ValueError(
+                "The workbook needs an Upload Date or a YYYYMMDD date at the "
+                "start of its filename."
+            )
+        status = str(row.get("Passed Test?", "") or "").strip().upper()
+        if status == "PASSED":
+            lab_status, passed = "TestPassed", 1
+        elif status == "FAILED":
+            lab_status, passed = "TestFailed", 0
+        else:
+            lab_status, passed = "Pending", 0
+        item = str(row.get("Strain", "") or "").strip()
+        item_key = item.lower()
+        if "vape" in item_key:
+            category = "Vape"
+        elif "pre-roll" in item_key or "preroll" in item_key:
+            category = "Pre-Rolls"
+        elif "flower" in item_key:
+            category = "Buds/Flower"
+        else:
+            category = "Lab Sample"
+
+        row_records = 0
+        for column in analyte_columns:
+            result = pd.to_numeric(row.get(column), errors="coerce")
+            if pd.isna(result):
+                continue
+            test_name = _lab_summary_analyte_name(column)
+            identity = f"lab-direct|{sample_tag}|{report_date}|{test_name}"
+            records.append({
+                "record_key": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+                "lab_license": "LAB-DIRECT",
+                "lab_facility": "Laboratory Direct Summary",
+                "packaged_license": "",
+                "packaged_facility": "The QCC Group LLC",
+                "package_tag": sample_tag,
+                "source_harvest_names": str(row.get("Customer Lot", "") or "").strip(),
+                "source_package_labels": parent_tag,
+                "item": item,
+                "category": category,
+                "lab_testing_status": lab_status,
+                "test_date": report_date,
+                "overall_pass": passed,
+                "test_name": test_name,
+                "test_passed": passed,
+                "result": float(result),
+                "lte_date": "",
+                "record_date": report_date,
+                "notes": (
+                    "Lab Direct — Passed / Awaiting Metrc"
+                    if passed else "Lab Direct — Not authorized for printing"
+                ),
+                "source_filename": filename,
+                "source_file_hash": file_hash,
+                "imported_at": imported_at,
+            })
+            row_records += 1
+        if not row_records:
+            identity = f"lab-direct|{sample_tag}|{report_date}|status"
+            records.append({
+                "record_key": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+                "lab_license": "LAB-DIRECT",
+                "lab_facility": "Laboratory Direct Summary",
+                "packaged_license": "",
+                "packaged_facility": "The QCC Group LLC",
+                "package_tag": sample_tag,
+                "source_harvest_names": str(row.get("Customer Lot", "") or "").strip(),
+                "source_package_labels": parent_tag,
+                "item": item,
+                "category": category,
+                "lab_testing_status": lab_status,
+                "test_date": report_date,
+                "overall_pass": passed,
+                "test_name": "Lab Direct Status",
+                "test_passed": passed,
+                "result": None,
+                "lte_date": "",
+                "record_date": report_date,
+                "notes": "Lab Direct — Not authorized for printing",
+                "source_filename": filename,
+                "source_file_hash": file_hash,
+                "imported_at": imported_at,
+            })
+    if not records:
+        detail = (
+            " The sample and parent package IDs must each contain one complete Metrc tag."
+            if skipped_identity else ""
+        )
+        raise ValueError("No valid laboratory summary rows were found." + detail)
+    return pd.DataFrame(records, columns=LAB_DB_COLUMNS).drop_duplicates(
+        "record_key", keep="last"
+    )
+
+
+def read_lab_summary_bytes(file_bytes: bytes) -> pd.DataFrame:
+    """Read the lab's two-level Results Report headers into one table."""
+    try:
+        raw = pd.read_excel(
+            io.BytesIO(file_bytes), sheet_name="Results Report", header=None,
+            dtype=object,
+        )
+    except ValueError:
+        raw = pd.read_excel(
+            io.BytesIO(file_bytes), sheet_name=0, header=None, dtype=object,
+        )
+    if len(raw) < 5:
+        raise ValueError("The laboratory summary does not contain its expected header rows.")
+    section_headers = raw.iloc[2]
+    detail_headers = raw.iloc[3]
+    headers: list[str] = []
+    for index in range(len(raw.columns)):
+        detail = detail_headers.iloc[index]
+        section = section_headers.iloc[index]
+        value = detail if not pd.isna(detail) and str(detail).strip() else section
+        headers.append(str(value).strip() if not pd.isna(value) else f"Column {index + 1}")
+    source = raw.iloc[4:].copy()
+    source.columns = headers
+    return source.dropna(how="all").reset_index(drop=True)
+
+
 def import_lab_results_bytes(filename: str, file_bytes: bytes) -> dict[str, Any]:
     """Duplicate-safe import of one Metrc LabResultsReport CSV."""
     initialize_qa_database()
@@ -879,6 +1069,78 @@ def import_lab_results_bytes(filename: str, file_bytes: bytes) -> dict[str, Any]
         "File": filename, "Status": "Imported",
         "Source Rows": len(source), "Stored Rows": len(normalized),
         "Inserted": len(incoming - existing), "Updated": len(incoming & existing),
+    }
+
+
+def import_lab_summary_bytes(filename: str, file_bytes: bytes) -> dict[str, Any]:
+    """Import a wide laboratory-direct .xlsx summary without replacing Metrc."""
+    if not str(filename or "").lower().endswith(".xlsx"):
+        raise ValueError("Choose the laboratory Preliminary Results Summary .xlsx file.")
+    initialize_qa_database()
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        previous = connection.execute(
+            "SELECT stored_rows FROM lab_import_log WHERE source_file_hash = %s",
+            (file_hash,),
+        ).fetchone()
+    if previous:
+        return {
+            "File": filename, "Status": "Already Imported",
+            "Source Rows": 0, "Stored Rows": int(previous[0]),
+            "Inserted": 0, "Updated": 0,
+            "Details": "Lab Direct summary already stored.",
+        }
+    source = read_lab_summary_bytes(file_bytes)
+    normalized = normalize_lab_summary(source, filename, file_hash)
+    records = [
+        tuple(_sql_value(value) for value in row)
+        for row in normalized.itertuples(index=False, name=None)
+    ]
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        existing = {
+            row[0] for row in connection.execute(
+                "SELECT record_key FROM lab_result_records"
+            ).fetchall()
+        }
+        incoming = set(normalized["record_key"])
+        placeholders = ", ".join("%s" for _ in LAB_DB_COLUMNS)
+        updates = ", ".join(
+            f"{column} = EXCLUDED.{column}"
+            for column in LAB_DB_COLUMNS if column != "record_key"
+        )
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO lab_result_records (" + ", ".join(LAB_DB_COLUMNS)
+                + ") VALUES (" + placeholders + ") ON CONFLICT(record_key) "
+                "DO UPDATE SET " + updates,
+                records,
+            )
+        dates = pd.to_datetime(normalized["test_date"], errors="coerce")
+        connection.execute(
+            """
+            INSERT INTO lab_import_log (
+                source_file_hash, source_filename, file_size_bytes,
+                source_rows, stored_rows, inserted_rows, updated_rows,
+                test_min, test_max, imported_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(source_file_hash) DO NOTHING
+            """,
+            (
+                file_hash, filename, len(file_bytes), len(source), len(normalized),
+                len(incoming - existing), len(incoming & existing),
+                dates.min().isoformat() if dates.notna().any() else None,
+                dates.max().isoformat() if dates.notna().any() else None,
+                datetime.now().astimezone().isoformat(),
+            ),
+        )
+        connection.commit()
+    with _QA_CACHE_LOCK:
+        _QA_CACHE.update({"loaded_at": 0.0, "payload": None})
+    return {
+        "File": filename, "Status": "Imported Lab Direct",
+        "Source Rows": len(source), "Stored Rows": len(normalized),
+        "Inserted": len(incoming - existing), "Updated": len(incoming & existing),
+        "Details": "Passed rows can print while awaiting the matching Metrc result.",
     }
 
 
@@ -995,6 +1257,10 @@ def _prepare_qa_packages(
     if lab_results.empty:
         return pd.DataFrame()
     data = lab_results.copy()
+    lab_license = data.get("lab_license", pd.Series("", index=data.index))
+    data["source_kind"] = lab_license.fillna("").astype(str).map(
+        lambda value: "Lab Direct" if value == "LAB-DIRECT" else "Metrc"
+    )
     data["test_date"] = pd.to_datetime(data["test_date"], errors="coerce")
     data["result"] = pd.to_numeric(data["result"], errors="coerce")
     data["operation"] = data["packaged_license"].astype(str).str[0].map(
@@ -1014,7 +1280,7 @@ def _prepare_qa_packages(
             "packaged_license", "packaged_facility", "package_tag",
             "source_harvest_names", "source_package_labels", "item",
             "category", "lab_testing_status", "test_date", "lab_facility",
-            "operation",
+            "operation", "source_kind",
         ]]
         .copy()
     )
@@ -1179,6 +1445,13 @@ def _prepare_qa_packages(
     current["sku_type"] = current["inventory_sku_type"].fillna(
         fallback_rows.apply(classify_sku_type, axis=1)
     )
+    unresolved_operation = current["operation"].eq("Other")
+    manufacturing_type = current["sku_type"].astype(str).str.contains(
+        r"vape|cartridge|disposable|edible|gumm|concentrate|rosin|badder|infused",
+        case=False, na=False,
+    )
+    current.loc[unresolved_operation & manufacturing_type, "operation"] = "Manufacturing"
+    current.loc[unresolved_operation & ~manufacturing_type, "operation"] = "Cultivation"
     current["strain"] = current.apply(_infer_qa_strain, axis=1)
     current["strain"] = current["strain"].map(normalize_strain_name)
     current["brand"] = current["inventory_brand"]
@@ -1194,6 +1467,10 @@ def _prepare_qa_packages(
         axis=1,
     )
     current["qa_test_type"] = current.apply(_classify_qa_test_type, axis=1)
+    current["record_origin"] = current["source_kind"].map({
+        "Lab Direct": "Lab Direct — Passed / Awaiting Metrc",
+        "Metrc": "Metrc Lab Results",
+    }).fillna("Lab Results / COA")
     current["expiration_date"] = pd.to_datetime(
         current["inventory_expiration_date"], errors="coerce"
     )
@@ -1249,6 +1526,62 @@ def _qa_record_list(frame: pd.DataFrame) -> list[dict[str, Any]]:
     return result.to_dict("records")
 
 
+def _lab_source_discrepancies(frame: pd.DataFrame) -> dict[str, str]:
+    """Compare Lab Direct label values with their later Metrc replacements."""
+    if frame.empty:
+        return {}
+    messages: dict[str, str] = {}
+    labels = {
+        "total_cannabinoids": "Total Cannabinoids",
+        "total_thc": "Total THC",
+        "thca": "THCA",
+        "total_cbd": "Total CBD",
+        "d9_thc": "D9-THC",
+        "total_cbg": "Total CBG",
+        "total_terpenes": "Total Terpenes",
+    }
+    for package_tag, package_rows in frame.groupby("package_tag"):
+        sources = set(package_rows["source_kind"].astype(str))
+        if not {"Lab Direct", "Metrc"}.issubset(sources):
+            continue
+        values: dict[str, dict[str, Any]] = {}
+        for source_kind in ("Lab Direct", "Metrc"):
+            rows = package_rows[package_rows["source_kind"].eq(source_kind)].rename(
+                columns={"test_name": "Test", "result": "Result"}
+            )
+            values[source_kind] = label_analytes(rows.to_dict("records"))
+        differences: list[str] = []
+        for key, label in labels.items():
+            direct = values["Lab Direct"].get(key)
+            metrc = values["Metrc"].get(key)
+            tolerance = 0.011 if key == "total_terpenes" else 0.021
+            if (
+                direct is not None and metrc is not None
+                and abs(float(direct) - float(metrc)) > tolerance
+            ):
+                differences.append(label)
+        direct_terpenes = {
+            str(name).lower(): float(value)
+            for name, value in values["Lab Direct"].get("top_terpenes", [])
+        }
+        metrc_terpenes = {
+            str(name).lower(): float(value)
+            for name, value in values["Metrc"].get("top_terpenes", [])
+        }
+        if set(direct_terpenes) != set(metrc_terpenes):
+            differences.append("Top-three terpene names")
+        elif any(
+            abs(value - metrc_terpenes[name]) > 0.011
+            for name, value in direct_terpenes.items()
+        ):
+            differences.append("Top-three terpene values")
+        messages[str(package_tag)] = (
+            "Review differences: " + ", ".join(differences)
+            if differences else "Metrc replacement matches the Lab Direct result."
+        )
+    return messages
+
+
 def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
     """Load compact QA package records, templates, and import history."""
     now = time.monotonic()
@@ -1263,13 +1596,27 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
     # analytes used by the dashboard. Downloading every historical analyte was
     # blocking the Reflex event queue for several minutes.
     qa_query = """
-        WITH compliance AS (
+        WITH compliance_all AS (
             SELECT packaged_license, packaged_facility, package_tag,
                    source_harvest_names, source_package_labels, item,
                    category, lab_testing_status, test_date, lab_facility,
-                   test_name, result
+                   test_name, result,
+                   CASE WHEN lab_license = 'LAB-DIRECT'
+                        THEN 'Lab Direct' ELSE 'Metrc' END AS source_kind
             FROM lab_result_records
             WHERE COALESCE(test_name, '') !~* 'R\\s*&\\s*D|research'
+        ), source_choice AS (
+            SELECT package_tag,
+                   CASE WHEN BOOL_OR(source_kind = 'Metrc')
+                        THEN 'Metrc' ELSE 'Lab Direct' END AS source_kind
+            FROM compliance_all
+            GROUP BY package_tag
+        ), compliance AS (
+            SELECT source.*
+            FROM compliance_all source
+            JOIN source_choice choice
+              ON choice.package_tag = source.package_tag
+             AND choice.source_kind = source.source_kind
         ), latest_package AS (
             SELECT DISTINCT ON (packaged_license, package_tag) *
             FROM compliance
@@ -1291,14 +1638,25 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
         "SELECT * FROM qa_label_templates WHERE is_active = 1 "
         "ORDER BY template_name"
     )
+    comparison_query = """
+        SELECT package_tag, test_name, result,
+               CASE WHEN lab_license = 'LAB-DIRECT'
+                    THEN 'Lab Direct' ELSE 'Metrc' END AS source_kind
+        FROM lab_result_records
+        WHERE package_tag IN (
+            SELECT DISTINCT package_tag FROM lab_result_records
+            WHERE lab_license = 'LAB-DIRECT'
+        )
+    """
     # These reads share one remote connection. The queries are compact, and
-    # avoiding three simultaneous pooler handshakes materially improves the
+    # avoiding separate simultaneous pooler handshakes materially improves the
     # first user's QA load without changing the cached second-user path.
-    labs, import_log, templates = query_frames(
+    labs, import_log, templates, source_comparison = query_frames(
         [
             (qa_query, ()),
             (import_query, ()),
             (template_query, ()),
+            (comparison_query, ()),
         ],
         statement_timeout_seconds=90,
     )
@@ -1318,6 +1676,15 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
         # frame instead of issuing duplicate snapshot and package queries.
         packages = load_operational_context()["inventory_packages"]
     prepared = _prepare_qa_packages(labs, packages)
+    comparisons = _lab_source_discrepancies(source_comparison)
+    if not prepared.empty:
+        prepared["source_discrepancy"] = prepared["package_tag"].map(
+            comparisons
+        ).fillna("")
+        replaced = prepared["package_tag"].astype(str).isin(comparisons)
+        prepared.loc[
+            replaced & prepared["source_kind"].eq("Metrc"), "record_origin"
+        ] = "Metrc Lab Results — replaced Lab Direct"
     import_log = import_log.rename(columns={
         "source_filename": "File", "source_rows": "Source Rows",
         "stored_rows": "Stored Rows", "inserted_rows": "Inserted",
@@ -1367,7 +1734,9 @@ def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, 
     # contain a blank or differently formatted packaged-license value.
     if packaged_license:
         rows = safe_query_frame(
-            "SELECT test_date, test_name, result, test_passed "
+            "SELECT test_date, test_name, result, test_passed, "
+            "CASE WHEN lab_license = 'LAB-DIRECT' "
+            "THEN 'Lab Direct' ELSE 'Metrc' END AS source_kind "
             "FROM lab_result_records WHERE package_tag = %s "
             "AND packaged_license = %s ORDER BY test_date DESC, test_name",
             (package_tag, packaged_license),
@@ -1376,19 +1745,23 @@ def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, 
         rows = pd.DataFrame()
     if rows.empty:
         rows = safe_query_frame(
-            "SELECT test_date, test_name, result, test_passed "
+            "SELECT test_date, test_name, result, test_passed, "
+            "CASE WHEN lab_license = 'LAB-DIRECT' "
+            "THEN 'Lab Direct' ELSE 'Metrc' END AS source_kind "
             "FROM lab_result_records WHERE package_tag = %s "
             "ORDER BY test_date DESC, test_name",
             (package_tag,),
         )
     if rows.empty:
         return []
+    if rows["source_kind"].eq("Metrc").any():
+        rows = rows[rows["source_kind"].eq("Metrc")].copy()
     rows["test_date"] = pd.to_datetime(rows["test_date"], errors="coerce").dt.strftime("%Y-%m-%d")
     rows["result"] = pd.to_numeric(rows["result"], errors="coerce").round(4)
     rows["test_passed"] = rows["test_passed"].fillna(0).astype(bool).map({True: "Yes", False: "No"})
     rows = rows.rename(columns={
         "test_date": "Test Date", "test_name": "Test",
-        "result": "Result", "test_passed": "Passed",
+        "result": "Result", "test_passed": "Passed", "source_kind": "Source",
     })
     return _qa_record_list(rows)
 
