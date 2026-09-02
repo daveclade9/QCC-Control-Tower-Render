@@ -1,4 +1,5 @@
 import unittest
+from datetime import date, timedelta
 
 from qcc_reflex_pilot.cultivation_registry import (
     default_bench_rows,
@@ -50,6 +51,10 @@ class CloneDemandModelTest(unittest.TestCase):
                 "Experimental Availability-Adjusted"
             ),
             "Availability-Adjusted",
+        )
+        self.assertEqual(
+            self.state._normalized_clone_demand_model("AI-Adjusted"),
+            "AI-Adjusted",
         )
 
     def test_clone_demand_uses_selected_adjusted_timeframe(self):
@@ -110,6 +115,37 @@ class CloneDemandModelTest(unittest.TestCase):
         self.assertNotEqual(all_time, thirty_day)
         self.assertAlmostEqual(all_time, round(2 * 10 * 3.5 / 453.59237, 1))
         self.assertAlmostEqual(thirty_day, round(2 * 20 * 3.5 / 453.59237, 1))
+
+    def test_ai_adjusted_matrix_varies_two_week_demand_by_period(self):
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": default_schedule(13),
+            "historical_yields": [],
+        }
+        start = date(2026, 5, 4)
+        self.state.availability_demand_weekly = [
+            {
+                "Strain": "Diamond Bar",
+                "SKU Type": "3.5g Flower",
+                "Week Starting": (start + timedelta(days=7 * index)).isoformat(),
+                "Units Shipped": 40 if index >= 8 else 10,
+                "Availability Signal": "Shipping",
+            }
+            for index in range(12)
+        ]
+        self.state.cultivation_clone_plan_demand_model = "AI-Adjusted"
+        self.state.cultivation_clone_plan_demand_revision += 1
+
+        demand_row = next(
+            row for row in self.state.cultivation_clone_plan_matrix_rows
+            if row["strain"] == "Diamond Bar"
+            and row["metric"] == "Two-Week Demand"
+        )
+        values = [cell["value"] for cell in demand_row["values"]]
+        self.assertGreater(values[0], values[-1])
+        self.assertGreater(len(set(values)), 1)
 
     def test_cultivation_navigation_keeps_loaded_demand_windows(self):
         self.state.workspace_view = "cultivation"

@@ -167,6 +167,7 @@ from .cultivation_registry import (
 )
 from .plant_data import parse_metrc_plant_exports, plant_crop_reconciliation
 from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
+from .ai_demand import ai_two_week_demand_forecast
 
 
 PILOT_VERSION = "0.9.6.19-staging"
@@ -6537,6 +6538,7 @@ class DashboardState(rx.State):
         if label == "Experimental Availability-Adjusted":
             return "Availability-Adjusted"
         if label in {
+            "AI-Adjusted",
             "Availability-Adjusted",
             "30-Day Availability-Adjusted",
             "60-Day Availability-Adjusted",
@@ -7644,6 +7646,32 @@ class DashboardState(rx.State):
             totals[key] = totals.get(key, 0.0) + units * grams_per_unit / 453.59237
         return totals
 
+    def _clone_plan_two_week_demand_by_strain(
+        self, periods: list[dict[str, Any]]
+    ) -> dict[str, list[float]]:
+        """Return period-specific demand while preserving legacy flat models."""
+        if self.cultivation_clone_plan_demand_model == "AI-Adjusted":
+            forecast = ai_two_week_demand_forecast(
+                periods=periods,
+                adjusted_windows=self.availability_adjusted_velocity_windows,
+                weekly_rows=self.availability_demand_weekly,
+                fallback_rows=(
+                    self.availability_adjusted_velocity_windows.get("All Time")
+                    or self.velocity_windows.get("All Time")
+                    or self.velocity
+                ),
+            )
+            if forecast:
+                return forecast
+        weekly = self._clone_plan_weekly_demand_by_strain()
+        return {
+            strain: [
+                0.0 if bool(period.get("is_historical", False)) else 2.0 * value
+                for period in periods
+            ]
+            for strain, value in weekly.items()
+        }
+
     def _clone_plan_actual_crop_lbs(self) -> dict[tuple[str, str], float]:
         totals: dict[tuple[str, str], float] = {}
         crop_names = {
@@ -7893,13 +7921,14 @@ class DashboardState(rx.State):
         _ = self.velocity
         _ = self.velocity_windows
         _ = self.availability_adjusted_velocity_windows
+        _ = self.availability_demand_weekly
         periods = self.cultivation_clone_plan_periods
         current_breakdown = self._cultivation_current_inventory_breakdown_by_strain()
         current = {
             key: float(values.get("total_lbs", 0) or 0)
             for key, values in current_breakdown.items()
         }
-        demand = self._clone_plan_weekly_demand_by_strain()
+        two_week_demand = self._clone_plan_two_week_demand_by_strain(periods)
         scheduled, scheduled_details = self._clone_plan_scheduled_by_period(periods)
         historical_allocations = self._clone_plan_allocations_by_crop()
         actual_crop_lbs = self._clone_plan_actual_crop_lbs()
@@ -7952,7 +7981,19 @@ class DashboardState(rx.State):
         for strain in strains:
             key = normalized_strain(strain)
             breakdown = current_breakdown.get(key, {})
-            weekly = demand.get(key, 0.0)
+            demand_values = list(
+                two_week_demand.get(key, [0.0] * len(periods))
+            )
+            if len(demand_values) < len(periods):
+                demand_values.extend([0.0] * (len(periods) - len(demand_values)))
+            weekly = next(
+                (
+                    demand_values[index] / 2.0
+                    for index, period in enumerate(periods)
+                    if not bool(period.get("is_historical", False))
+                ),
+                0.0,
+            )
             scheduled_values = list(scheduled.get(key, [0.0] * len(periods)))
             strain_details = scheduled_details.get(key, [[] for _ in periods])
             allocation = float(self.cultivation_clone_plan_allocations.get(strain, 0.0) or 0.0)
@@ -8002,7 +8043,7 @@ class DashboardState(rx.State):
                     balance_values.append(0.0)
                     continue
                 balance_values.append(round(max(0.0, balance), 1))
-                balance = max(0.0, balance + supply - (2 * weekly))
+                balance = max(0.0, balance + supply - demand_values[index])
 
             allocation_values: list[dict[str, Any]] = []
             for period in periods:
@@ -8078,10 +8119,10 @@ class DashboardState(rx.State):
                     "weekly_demand": weekly,
                     "values": [
                         matrix_value(
-                            round(2 * weekly, 1),
+                            round(demand_values[index], 1),
                             available=not bool(period.get("is_historical", False)),
                         )
-                        for period in periods
+                        for index, period in enumerate(periods)
                     ],
                 },
             ])
@@ -16803,6 +16844,7 @@ def cultivation_clone_planning_panel() -> rx.Component:
                         rx.text("Demand model", size="1", weight="bold", color=MUTED),
                         rx.select(
                             [
+                                "AI-Adjusted",
                                 "Availability-Adjusted",
                                 "30-Day Availability-Adjusted",
                                 "60-Day Availability-Adjusted",
@@ -16840,6 +16882,16 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     columns=rx.breakpoints(initial="1", md="2", xl="5"),
                     gap="3",
                     width="100%",
+                ),
+                rx.cond(
+                    DashboardState.cultivation_clone_plan_demand_model
+                    == "AI-Adjusted",
+                    rx.callout(
+                        "AI-Adjusted is a first-pass shadow forecast: 45% 30-day, 35% 60-day, and 20% long-term availability-adjusted demand, plus a bounded recent trend that fades across future periods and conservative seasonality when enough history exists.",
+                        icon="sparkles",
+                        color_scheme="purple",
+                        width="100%",
+                    ),
                 ),
                 cultivation_new_strain_control(),
                 rx.callout(
