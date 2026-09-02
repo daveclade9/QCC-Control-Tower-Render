@@ -17801,10 +17801,10 @@ def cultivation_schedule_panel() -> rx.Component:
                     size="2",
                     color=MUTED,
                 ),
-                data_grid(
+                historical_yield_table(
                     DashboardState.cultivation_schedule_rows,
                     ["Crop", "Program", "Room", "Clone Cut", "Flower Entry", "Harvest", "Expected Available", "Status", "Source", "Schedule ID"],
-                    height="600px", show_search=True, minimum_width=1850, page_size=25,
+                    height="600px",
                 ),
                 width="100%", spacing="3",
             ),

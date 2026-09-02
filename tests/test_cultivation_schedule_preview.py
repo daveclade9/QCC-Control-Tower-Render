@@ -65,6 +65,25 @@ class CultivationSchedulePreviewTests(unittest.TestCase):
         )
         self.assertEqual(state.cultivation_registry_error, "")
 
+    def test_saved_schedule_rows_are_available_after_registry_reload(self):
+        state = DashboardState(_reflex_internal_init=True)
+        schedule = default_schedule(26)
+        state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": [],
+            "schedule": schedule,
+            "historical_yields": [],
+        }
+        state.cultivation_registry_revision += 1
+
+        rows = state.cultivation_schedule_rows
+
+        self.assertEqual(len(rows), 26)
+        self.assertEqual(rows[0]["Crop"], "F5.10")
+        self.assertEqual(rows[0]["Schedule ID"], "main-five-room-F5-10")
+        self.assertEqual(rows[-1]["Crop"], "F5.15")
+
 
 if __name__ == "__main__":
     unittest.main()
