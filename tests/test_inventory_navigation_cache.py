@@ -7,6 +7,29 @@ from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
 
 
 class InventoryNavigationCacheTest(unittest.TestCase):
+    def test_all_inventory_stage_summary_uses_only_the_requested_stage(self):
+        rows = [
+            {
+                "Production Stage": "Pre-WIP-Cultivation",
+                "Calculated Weight (g)": 453.59237,
+            },
+            {
+                "Production Stage": "Pre-WIP-Cultivation",
+                "Calculated Weight (g)": 226.796185,
+            },
+            {
+                "Production Stage": "WIP-Cultivation",
+                "Calculated Weight (g)": 4535.9237,
+            },
+        ]
+
+        self.assertEqual(
+            DashboardState._stage_package_weight_summary(
+                rows, "Pre-WIP-Cultivation"
+            ),
+            "2 pkg / 1.5 lb",
+        )
+
     def test_source_harvest_is_added_only_to_all_inventory(self):
         state = SimpleNamespace(inventory_weight_unit="Pounds")
         columns_for_view = DashboardState._inventory_columns_for_view

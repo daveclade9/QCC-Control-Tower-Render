@@ -171,7 +171,7 @@ from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 from .ai_demand import ai_two_week_demand_forecast
 
 
-PILOT_VERSION = "0.9.6.23-staging"
+PILOT_VERSION = "0.9.6.24-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -10332,12 +10332,23 @@ class DashboardState(rx.State):
             if row.get("Production Stage") == stage
         ]
 
-    def _inventory_stage_summary(self, stage: str) -> str:
-        rows = self._inventory_stage_rows(stage)
+    @staticmethod
+    def _stage_package_weight_summary(
+        rows: list[dict[str, Any]], stage: str
+    ) -> str:
+        stage_rows = [
+            row for row in rows if row.get("Production Stage") == stage
+        ]
         weight = sum(
-            self._number(row, "Calculated Weight (g)") for row in rows
+            DashboardState._number(row, "Calculated Weight (g)")
+            for row in stage_rows
         )
-        return f"{len(rows):,} pkg / {weight / 453.59237:,.1f} lb"
+        return f"{len(stage_rows):,} pkg / {weight / 453.59237:,.1f} lb"
+
+    def _inventory_stage_summary(self, stage: str) -> str:
+        return self._stage_package_weight_summary(
+            self.filtered_wip_inventory, stage
+        )
 
     @rx.var(cache=True)
     def cultivation_wip_summary(self) -> str:
@@ -10358,6 +10369,46 @@ class DashboardState(rx.State):
     def manufacturing_pre_wip_summary(self) -> str:
         _ = self.filtered_wip_inventory
         return self._inventory_stage_summary("Pre-WIP-Manufacturing")
+
+    @rx.var(cache=True)
+    def all_inventory_cultivation_pre_wip_summary(self) -> str:
+        return self._stage_package_weight_summary(
+            self.filtered_all_inventory, "Pre-WIP-Cultivation"
+        )
+
+    @rx.var(cache=True)
+    def all_inventory_cultivation_wip_summary(self) -> str:
+        return self._stage_package_weight_summary(
+            self.filtered_all_inventory, "WIP-Cultivation"
+        )
+
+    @rx.var(cache=True)
+    def all_inventory_manufacturing_pre_wip_summary(self) -> str:
+        return self._stage_package_weight_summary(
+            self.filtered_all_inventory, "Pre-WIP-Manufacturing"
+        )
+
+    @rx.var(cache=True)
+    def all_inventory_manufacturing_wip_summary(self) -> str:
+        return self._stage_package_weight_summary(
+            self.filtered_all_inventory, "WIP-Manufacturing"
+        )
+
+    @rx.var(cache=True)
+    def all_inventory_cpg_units_summary(self) -> str:
+        rows = [
+            row for row in self.filtered_all_inventory
+            if row.get("Production Stage") == "Packaged Goods"
+        ]
+        return self._filtered_unit_total(rows)
+
+    @rx.var(cache=True)
+    def all_inventory_cpg_weight_summary(self) -> str:
+        rows = [
+            row for row in self.filtered_all_inventory
+            if row.get("Production Stage") == "Packaged Goods"
+        ]
+        return self._filtered_weight_total(rows)
 
     @rx.var(cache=True)
     def pre_wip_inventory_count(self) -> str:
@@ -14169,26 +14220,63 @@ def active_inventory_context() -> rx.Component:
                 gap="4", width="100%",
             ),
             rx.cond(
-                DashboardState.inventory_view_name == "aging_cpg",
-                aging_distribution_card(
-                    "CPG Risk by Time Remaining",
-                    "Click a bar to filter packages by the product-specific expiration window.",
-                    DashboardState.aging_cpg_distribution,
-                    DashboardState.aging_cpg_band_filter,
-                    "All Risk Bands",
-                    DashboardState.change_aging_cpg_band,
+                DashboardState.inventory_view_name == "all",
+                rx.grid(
+                    metric_card(
+                        "Cultivation Pre-WIP",
+                        DashboardState.all_inventory_cultivation_pre_wip_summary,
+                        "Pending Building 33 flower",
+                    ),
+                    metric_card(
+                        "Cultivation WIP",
+                        DashboardState.all_inventory_cultivation_wip_summary,
+                        "Passed Building 33 flower",
+                    ),
+                    metric_card(
+                        "Manufacturing Pre-WIP",
+                        DashboardState.all_inventory_manufacturing_pre_wip_summary,
+                        "Pending manufacturing inputs",
+                    ),
+                    metric_card(
+                        "Manufacturing WIP",
+                        DashboardState.all_inventory_manufacturing_wip_summary,
+                        "Passed manufacturing inputs",
+                    ),
+                    metric_card(
+                        "CPG Units",
+                        DashboardState.all_inventory_cpg_units_summary,
+                        "Finished packaged units",
+                    ),
+                    metric_card(
+                        "CPG Weight",
+                        DashboardState.all_inventory_cpg_weight_summary,
+                        "Finished packaged weight",
+                    ),
+                    columns=rx.breakpoints(initial="1", sm="2", lg="3"),
+                    gap="4", width="100%",
                 ),
                 rx.cond(
-                    DashboardState.inventory_view_name == "aging_bulk",
+                    DashboardState.inventory_view_name == "aging_cpg",
                     aging_distribution_card(
-                        "Bulk Inventory by Age",
-                        "Click a bar to filter the table by absolute package age.",
-                        DashboardState.aging_bulk_distribution,
-                        DashboardState.aging_bulk_band_filter,
-                        "All Age Bands",
-                        DashboardState.change_aging_bulk_band,
+                        "CPG Risk by Time Remaining",
+                        "Click a bar to filter packages by the product-specific expiration window.",
+                        DashboardState.aging_cpg_distribution,
+                        DashboardState.aging_cpg_band_filter,
+                        "All Risk Bands",
+                        DashboardState.change_aging_cpg_band,
                     ),
-                    rx.box(),
+                    rx.cond(
+                        DashboardState.inventory_view_name == "aging_bulk",
+                        aging_distribution_card(
+                            "Bulk Inventory by Age",
+                            "Click a bar to filter the table by absolute package age.",
+                            DashboardState.aging_bulk_distribution,
+                            DashboardState.aging_bulk_band_filter,
+                            "All Age Bands",
+                            DashboardState.change_aging_bulk_band,
+                        ),
+                        rx.box(),
+                    ),
                 ),
             ),
         ),
