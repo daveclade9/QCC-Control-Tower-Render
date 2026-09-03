@@ -550,8 +550,8 @@ class DashboardState(rx.State):
     # is synchronized through the websocket.
     _qa_packages: list[dict[str, Any]] = []
     qa_templates: list[dict[str, Any]] = []
-    qa_import_log: list[dict[str, Any]] = []
-    qa_lab_direct_summary: list[dict[str, Any]] = []
+    qa_import_log: list[list[Any]] = []
+    qa_lab_direct_summary: list[list[Any]] = []
     qa_record_count: int = 0
     qa_analyte_count: int = 0
     qa_cultivation_test_type: str = "All Test Types"
@@ -580,7 +580,7 @@ class DashboardState(rx.State):
     qa_message: str = ""
     qa_error: str = ""
     qa_importing: bool = False
-    qa_import_results: list[dict[str, Any]] = []
+    qa_import_results: list[list[Any]] = []
     qa_loading: bool = False
     qa_loaded: bool = False
     qa_label_catalog: list[dict[str, Any]] = NICE_LABEL_CATALOG
@@ -1389,8 +1389,22 @@ class DashboardState(rx.State):
     def _apply_qa_payload(self, payload: dict[str, Any]) -> None:
         self._qa_packages = payload.get("packages", [])
         self.qa_templates = payload.get("templates", [])
-        self.qa_import_log = payload.get("import_log", [])
-        self.qa_lab_direct_summary = payload.get("lab_direct_summary", [])
+        import_columns = [
+            "File", "Source Rows", "Stored Rows", "Inserted", "Updated",
+            "Test Min", "Test Max", "Imported At",
+        ]
+        summary_columns = [
+            "Imported At", "File", "Sample Tag", "Parent Package", "Product",
+            "Result Status", "Active Source", "Total THC %", "Total Terpenes %",
+        ]
+        self.qa_import_log = [
+            [row.get(column, "") for column in import_columns]
+            for row in payload.get("import_log", [])
+        ]
+        self.qa_lab_direct_summary = [
+            [row.get(column, "") for column in summary_columns]
+            for row in payload.get("lab_direct_summary", [])
+        ]
         self.qa_record_count = int(payload.get("record_count", 0) or 0)
         self.qa_analyte_count = int(payload.get("analyte_count", 0) or 0)
         self.brands = sorted(set(self.brands).union(
@@ -2143,7 +2157,13 @@ class DashboardState(rx.State):
                     "Source Rows": 0, "Stored Rows": 0,
                     "Inserted": 0, "Updated": 0, "Details": str(error),
                 })
-        self.qa_import_results = results
+        result_columns = [
+            "File", "Status", "Source Rows", "Stored Rows", "Inserted",
+            "Updated", "Details",
+        ]
+        self.qa_import_results = [
+            [row.get(column, "") for column in result_columns] for row in results
+        ]
         try:
             payload = await rx.run_in_thread(
                 lambda: load_qa_module_data(force_refresh=True)
@@ -2179,7 +2199,13 @@ class DashboardState(rx.State):
                     "Source Rows": 0, "Stored Rows": 0,
                     "Inserted": 0, "Updated": 0, "Details": str(error),
                 })
-        self.qa_import_results = results
+        result_columns = [
+            "File", "Status", "Source Rows", "Stored Rows", "Inserted",
+            "Updated", "Details",
+        ]
+        self.qa_import_results = [
+            [row.get(column, "") for column in result_columns] for row in results
+        ]
         try:
             payload = await rx.run_in_thread(
                 lambda: load_qa_module_data(force_refresh=True)
