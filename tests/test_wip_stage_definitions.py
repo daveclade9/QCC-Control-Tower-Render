@@ -252,3 +252,29 @@ def test_cultivation_smalls_use_base_strain_and_follow_qa_readiness():
         "WIP-Cultivation",
         "Pre-WIP-Cultivation",
     ]
+
+
+def test_cultivation_vault_fresh_frozen_is_manufacturing_pre_wip():
+    shared = {
+        "production_stage": "Pre-WIP-Cultivation",
+        "source_license_type": "Cultivation",
+        "material_type": "Flower",
+        "strain": "Diamond Dust",
+        "item": "Fresh Frozen-Diamond Dust Bulk",
+        "category": "Bud/Flower - Bulk",
+        "facility": "Building 33 (C9)",
+        "current_facility": "Building 33 (C9)",
+        "ownership_status": "QCC-Owned / Clade9 Origin",
+        "location": "Vault - Pending Testing",
+    }
+    packages = pd.DataFrame([
+        {**shared, "qa_status": "Not Submitted"},
+        {**shared, "qa_status": "Test Passed"},
+    ])
+
+    result = normalize_cultivation_byproduct_stages(packages)
+
+    assert result["production_stage"].tolist() == [
+        "Pre-WIP-Manufacturing",
+        "Pre-WIP-Manufacturing",
+    ]

@@ -4801,6 +4801,25 @@ def normalize_cultivation_byproduct_stages(packages: pd.DataFrame) -> pd.DataFra
     license_type = result.get(
         "source_license_type", pd.Series("", index=result.index)
     ).fillna("").astype(str).str.casefold()
+    fresh_frozen = (item + " " + category).str.contains(
+        r"\bfresh[\s_-]*frozen\b|\bwpff\b",
+        case=False,
+        regex=True,
+    )
+    cultivation_fresh_frozen_transfer = (
+        unfinished
+        & license_type.str.contains("cultivation", regex=False)
+        & current.eq("building 33 (c9)")
+        & location.str.contains("vault", case=False, regex=False)
+        & fresh_frozen
+    )
+    # Fresh Frozen in the cultivation Vault is already committed to a
+    # manufacturing process. The cultivation license represents temporary
+    # custody, not the material's production destination.
+    result.loc[
+        cultivation_fresh_frozen_transfer, "production_stage"
+    ] = "Pre-WIP-Manufacturing"
+    unfinished = unfinished & ~cultivation_fresh_frozen_transfer
     manufacturing_license = license_type.str.contains("manufacturing", regex=False)
     result.loc[
         unfinished

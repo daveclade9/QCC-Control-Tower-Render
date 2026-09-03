@@ -166,12 +166,12 @@ from .cultivation_registry import (
     save_schedule_rows,
     set_current_schedule,
 )
-from .plant_data import parse_metrc_plant_exports, plant_crop_reconciliation
+from .plant_data import crop_code, parse_metrc_plant_exports, plant_crop_reconciliation
 from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 from .ai_demand import ai_two_week_demand_forecast
 
 
-PILOT_VERSION = "0.9.6.22-staging"
+PILOT_VERSION = "0.9.6.23-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -446,6 +446,12 @@ ScheduledSupplyDetail = TypedDict(
         "harvest_date": str,
         "available_date": str,
         "gross_projected_lbs": float,
+        "planned_fresh_frozen_plants": int,
+        "actual_fresh_frozen_plants": int,
+        "actual_fresh_frozen_detected": bool,
+        "actual_fresh_frozen_wet_lbs": float,
+        "actual_fresh_frozen_batches": str,
+        "fresh_frozen_source": str,
         "fresh_frozen_plants": int,
         "planted_plants": int,
         "fresh_frozen_percent": float,
@@ -7851,6 +7857,37 @@ class DashboardState(rx.State):
             ) / 453.59237
         return totals
 
+    def _clone_plan_actual_fresh_frozen(
+        self,
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """Return actual Fresh Frozen harvest plants keyed by crop and strain."""
+        totals: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in self._cultivation_plant_snapshot.get("harvests", []):
+            batch = str(row.get("harvest_batch", "") or "").strip()
+            is_fresh_frozen = bool(row.get("fresh_frozen")) or bool(
+                re.search(r"(?:WPFF|FRESH[ _-]*FROZEN)", batch, re.IGNORECASE)
+            )
+            if not is_fresh_frozen:
+                continue
+            crop = crop_code(batch)
+            strain = normalized_strain(row.get("strain", ""))
+            plants = max(0, int(row.get("plants", 0) or 0))
+            if not crop or not strain or plants <= 0:
+                continue
+            key = (crop.casefold(), strain)
+            detail = totals.setdefault(key, {
+                "plants": 0,
+                "wet_weight_lbs": 0.0,
+                "batches": [],
+            })
+            detail["plants"] += plants
+            detail["wet_weight_lbs"] += max(
+                0.0, float(row.get("wet_weight_lb", 0) or 0)
+            )
+            if batch and batch not in detail["batches"]:
+                detail["batches"].append(batch)
+        return totals
+
     def _clone_plan_allocations_by_crop(self) -> dict[str, dict[str, float]]:
         """Return workbook history with saved plans taking precedence."""
         allocations = {
@@ -7875,6 +7912,7 @@ class DashboardState(rx.State):
         result: dict[str, list[float]] = {}
         detail_result: dict[str, list[list[ScheduledSupplyDetail]]] = {}
         actual = self._clone_plan_actual_crop_lbs()
+        actual_fresh_frozen = self._clone_plan_actual_fresh_frozen()
         today = date.today()
 
         def add_projection(
@@ -7899,10 +7937,18 @@ class DashboardState(rx.State):
             gross = estimated_yield_pounds(square_feet, strain, room)
             planted_plants = bench_plant_capacity(square_feet)
             adjustment_key = f"{crop_name.casefold()}|{strain_key}"
+            planned_fresh_frozen = int(
+                self.cultivation_fresh_frozen_adjustments.get(
+                    adjustment_key, 0
+                ) or 0
+            )
+            actual_fresh_frozen_detail = actual_fresh_frozen.get(
+                (crop_name.casefold(), strain_key)
+            )
             reconciliation = scheduled_supply_reconciliation(
                 gross,
                 planted_plants,
-                int(self.cultivation_fresh_frozen_adjustments.get(adjustment_key, 0) or 0),
+                planned_fresh_frozen,
                 actual.get((crop_name.casefold(), strain_key), 0.0),
                 harvest,
                 today,
@@ -7911,6 +7957,11 @@ class DashboardState(rx.State):
                     self.cultivation_creative_use_adjustments.get(
                         adjustment_key, 0
                     ) or 0
+                ),
+                actual_fresh_frozen_plants=(
+                    int(actual_fresh_frozen_detail.get("plants", 0) or 0)
+                    if actual_fresh_frozen_detail is not None
+                    else None
                 ),
             )
             result.setdefault(strain_key, [0.0] * len(periods))[position] += (
@@ -7923,7 +7974,21 @@ class DashboardState(rx.State):
                 "harvest_date": harvest.isoformat(),
                 "available_date": available.isoformat(),
                 **reconciliation,
-                "can_edit_fresh_frozen": today <= harvest,
+                "actual_fresh_frozen_wet_lbs": round(
+                    float(
+                        (actual_fresh_frozen_detail or {}).get(
+                            "wet_weight_lbs", 0
+                        ) or 0
+                    ),
+                    1,
+                ),
+                "actual_fresh_frozen_batches": ", ".join(
+                    (actual_fresh_frozen_detail or {}).get("batches", [])
+                ),
+                "can_edit_fresh_frozen": (
+                    today <= harvest
+                    and not reconciliation["actual_fresh_frozen_detected"]
+                ),
                 "can_edit_creative_use": (
                     not reconciliation["expired"]
                     and not reconciliation["actual_detected"]
@@ -8083,6 +8148,7 @@ class DashboardState(rx.State):
         scheduled, scheduled_details = self._clone_plan_scheduled_by_period(periods)
         historical_allocations = self._clone_plan_allocations_by_crop()
         actual_crop_lbs = self._clone_plan_actual_crop_lbs()
+        actual_fresh_frozen = self._clone_plan_actual_fresh_frozen()
         plan_period = self._current_clone_period()
         plan_available = date.fromisoformat(plan_period["available_date"])
         plan_bucket = min(
@@ -8156,6 +8222,9 @@ class DashboardState(rx.State):
                 harvest = date.fromisoformat(plan_period["harvest_date"])
                 planted_plants = bench_plant_capacity(square_feet)
                 adjustment_key = f"{plan_period['crop'].casefold()}|{key}"
+                actual_fresh_frozen_detail = actual_fresh_frozen.get(
+                    (plan_period["crop"].casefold(), key)
+                )
                 reconciliation = scheduled_supply_reconciliation(
                     gross,
                     planted_plants,
@@ -8169,6 +8238,11 @@ class DashboardState(rx.State):
                             adjustment_key, 0
                         ) or 0
                     ),
+                    actual_fresh_frozen_plants=(
+                        int(actual_fresh_frozen_detail.get("plants", 0) or 0)
+                        if actual_fresh_frozen_detail is not None
+                        else None
+                    ),
                 )
                 scheduled_values[plan_bucket] += reconciliation["forecast_counted_lbs"]
                 strain_details[plan_bucket] = [
@@ -8180,7 +8254,21 @@ class DashboardState(rx.State):
                         "harvest_date": plan_period["harvest_date"],
                         "available_date": plan_period["available_date"],
                         **reconciliation,
-                        "can_edit_fresh_frozen": date.today() <= harvest,
+                        "actual_fresh_frozen_wet_lbs": round(
+                            float(
+                                (actual_fresh_frozen_detail or {}).get(
+                                    "wet_weight_lbs", 0
+                                ) or 0
+                            ),
+                            1,
+                        ),
+                        "actual_fresh_frozen_batches": ", ".join(
+                            (actual_fresh_frozen_detail or {}).get("batches", [])
+                        ),
+                        "can_edit_fresh_frozen": (
+                            date.today() <= harvest
+                            and not reconciliation["actual_fresh_frozen_detected"]
+                        ),
                         "can_edit_creative_use": (
                             not reconciliation["expired"]
                             and not reconciliation["actual_detected"]
@@ -16397,6 +16485,17 @@ def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
                 detail["fresh_frozen_reduction_lbs"].to_string() + " lb",
                 size="2", weight="bold", text_align="right",
             ),
+            rx.text("Fresh Frozen basis", size="2"),
+            rx.text(
+                detail["fresh_frozen_source"],
+                size="2", weight="bold", text_align="right",
+            ),
+            rx.text("Fresh Frozen plants used", size="2"),
+            rx.text(
+                detail["fresh_frozen_plants"].to_string()
+                + " of " + detail["planted_plants"].to_string(),
+                size="2", weight="bold", text_align="right",
+            ),
             rx.text("Creative Use reduction", size="2"),
             rx.text(
                 detail["creative_use_reduction_lbs"].to_string() + " lb",
@@ -16440,7 +16539,9 @@ def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
                         min="0",
                         max=detail["planted_plants"].to_string(),
                         step="1",
-                        default_value=detail["fresh_frozen_plants"].to_string(),
+                        default_value=detail[
+                            "planned_fresh_frozen_plants"
+                        ].to_string(),
                         on_blur=lambda value: DashboardState.save_cultivation_fresh_frozen_plants(
                             detail["crop"], detail["strain"],
                             detail["harvest_date"], detail["planted_plants"], value,
@@ -16459,9 +16560,27 @@ def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
                 ),
                 margin_top="10px",
             ),
-            rx.text(
-                "Fresh Frozen planning locked after harvest day.",
-                size="1", color=MUTED, margin_top="8px",
+            rx.cond(
+                detail["actual_fresh_frozen_detected"],
+                rx.box(
+                    rx.text(
+                        "Actual Metrc Fresh Frozen overrides the manual plan: "
+                        + detail["actual_fresh_frozen_plants"].to_string()
+                        + " plants · "
+                        + detail["actual_fresh_frozen_wet_lbs"].to_string()
+                        + " wet lb.",
+                        size="1", weight="bold", color="#7c3aed",
+                    ),
+                    rx.text(
+                        detail["actual_fresh_frozen_batches"],
+                        size="1", color=MUTED,
+                    ),
+                    margin_top="8px",
+                ),
+                rx.text(
+                    "Fresh Frozen planning locked after harvest day.",
+                    size="1", color=MUTED, margin_top="8px",
+                ),
             ),
         ),
         rx.cond(

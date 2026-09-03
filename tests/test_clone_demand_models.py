@@ -167,6 +167,34 @@ class CloneDemandModelTest(unittest.TestCase):
         self.assertAlmostEqual(breakdown["diamond bar"]["pre_wip_lbs"], 1.0)
         self.assertAlmostEqual(breakdown["diamond bar"]["total_lbs"], 1.0)
 
+    def test_actual_fresh_frozen_harvests_are_grouped_by_crop_and_strain(self):
+        self.state._cultivation_plant_snapshot = {
+            "harvests": [
+                {
+                    "harvest_batch": "Diamond Dust-F2.9-08.21.2026-WPFF",
+                    "strain": "Diamond Dust",
+                    "plants": 60,
+                    "wet_weight_lb": 127.28,
+                    "fresh_frozen": True,
+                },
+                {
+                    "harvest_batch": "Diamond Dust-F2.9-08.22.2026-WPFF",
+                    "strain": "Diamond Dust",
+                    "plants": 5,
+                    "wet_weight_lb": 10.0,
+                    "fresh_frozen": True,
+                },
+            ],
+        }
+
+        actual = self.state._clone_plan_actual_fresh_frozen()[
+            ("f2.9", "diamond dust")
+        ]
+
+        self.assertEqual(actual["plants"], 65)
+        self.assertAlmostEqual(actual["wet_weight_lbs"], 137.28)
+        self.assertEqual(len(actual["batches"]), 2)
+
     def test_missing_adjusted_window_does_not_zero_all_demand(self):
         self.state.availability_adjusted_velocity_windows = {
             "All Time": self.state.availability_adjusted_velocity_windows["All Time"]

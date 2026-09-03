@@ -187,6 +187,27 @@ def test_fresh_frozen_plants_reduce_scheduled_by_exact_crop_population():
     assert result["forecast_counted_lbs"] == 24.1
 
 
+def test_actual_fresh_frozen_plants_override_manual_plan_removal():
+    with_manual = scheduled_supply_reconciliation(
+        36.0, 139, 20, 0.0,
+        date(2026, 11, 6), date(2026, 10, 20),
+        actual_fresh_frozen_plants=46,
+    )
+    after_manual_removal = scheduled_supply_reconciliation(
+        36.0, 139, 0, 0.0,
+        date(2026, 11, 6), date(2026, 10, 20),
+        actual_fresh_frozen_plants=46,
+    )
+
+    assert with_manual["planned_fresh_frozen_plants"] == 20
+    assert after_manual_removal["planned_fresh_frozen_plants"] == 0
+    assert with_manual["actual_fresh_frozen_plants"] == 46
+    assert with_manual["fresh_frozen_source"] == "Actual Metrc harvest"
+    assert with_manual["fresh_frozen_reduction_lbs"] == 11.9
+    assert after_manual_removal["fresh_frozen_reduction_lbs"] == 11.9
+    assert after_manual_removal["net_projected_lbs"] == 24.1
+
+
 def test_creative_use_reduces_post_fresh_frozen_scheduled_pounds():
     result = scheduled_supply_reconciliation(
         36.0, 139, 46, 0.0,
@@ -311,6 +332,14 @@ def test_manufacturing_bulk_and_fresh_frozen_do_not_count_as_current_flower():
     assert cultivation_flower_supply_bucket(cultivation_bulk) == "WIP-Cultivation"
     assert cultivation_flower_supply_bucket(manufacturing_bulk) == ""
     assert cultivation_flower_supply_bucket(fresh_frozen) == ""
+    assert cultivation_flower_supply_bucket(
+        {
+            **cultivation_bulk,
+            "Production Stage": "Pre-WIP-Cultivation",
+            "Item": "Diamond Bar Fresh Frozen Bulk",
+        },
+        include_pre_wip=True,
+    ) == ""
 
 
 def test_clone_supply_excludes_purchased_1a_wip_and_its_pre_wip():

@@ -139,7 +139,7 @@ UNFINISHED_INVENTORY_STAGES = {
     "Sellable Bulk", "1A Sellable Bulk", "1A Pending Bulk Opportunity",
     "WIP-Cultivation", "Pre-WIP-Cultivation",
     "WIP-Purchased 1A", "Pre-WIP-Purchased 1A",
-    "WIP-Manufacturing", "Pre-WIP",
+    "WIP-Manufacturing", "Pre-WIP-Manufacturing", "Pre-WIP",
 }
 
 

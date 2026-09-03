@@ -62,6 +62,10 @@ class ScheduledCropAllocation(TypedDict):
 
 class ScheduledSupplyReconciliation(TypedDict):
     gross_projected_lbs: float
+    planned_fresh_frozen_plants: int
+    actual_fresh_frozen_plants: int
+    actual_fresh_frozen_detected: bool
+    fresh_frozen_source: str
     fresh_frozen_plants: int
     planted_plants: int
     fresh_frozen_percent: float
@@ -511,7 +515,12 @@ def cultivation_flower_supply_bucket(
     license_type = str(row.get("License", "") or "").strip().casefold()
     ownership = str(row.get("Ownership Status", "") or "").strip().casefold()
     excluded = " ".join((stage, location, item, package_type, sku_type))
-    if "retention" in excluded or "sample" in excluded:
+    if (
+        "retention" in excluded
+        or "sample" in excluded
+        or "fresh frozen" in excluded
+        or "fresh-frozen" in excluded
+    ):
         return ""
     byproduct_text = " ".join((stage, item, category, material_type))
     if "trim" in byproduct_text or "shake" in byproduct_text:
@@ -777,6 +786,7 @@ def scheduled_supply_reconciliation(
     today: date,
     expiry_days: int = SCHEDULED_SUPPLY_EXPIRY_DAYS,
     creative_use_reduction_lbs: float = 0.0,
+    actual_fresh_frozen_plants: int | None = None,
 ) -> ScheduledSupplyReconciliation:
     """Reconcile projected dry flower without counting uncertain remainder.
 
@@ -787,7 +797,16 @@ def scheduled_supply_reconciliation(
     """
     gross = max(0.0, float(gross_projected_lbs or 0))
     planted = max(0, int(planted_plants or 0))
-    frozen = max(0, min(int(fresh_frozen_plants or 0), planted))
+    planned_frozen = max(0, min(int(fresh_frozen_plants or 0), planted))
+    actual_frozen_detected = actual_fresh_frozen_plants is not None
+    actual_frozen = (
+        max(0, min(int(actual_fresh_frozen_plants or 0), planted))
+        if actual_frozen_detected
+        else 0
+    )
+    # Actual Metrc harvest evidence is authoritative. Planned plants remain
+    # visible for audit but can neither add to nor remove the actual reduction.
+    frozen = actual_frozen if actual_frozen_detected else planned_frozen
     frozen_percent = (frozen / planted * 100) if planted else 0.0
     frozen_reduction = gross * frozen_percent / 100
     creative_use = max(
@@ -818,6 +837,14 @@ def scheduled_supply_reconciliation(
         )
     return {
         "gross_projected_lbs": round(gross, 1),
+        "planned_fresh_frozen_plants": planned_frozen,
+        "actual_fresh_frozen_plants": actual_frozen,
+        "actual_fresh_frozen_detected": actual_frozen_detected,
+        "fresh_frozen_source": (
+            "Actual Metrc harvest"
+            if actual_frozen_detected
+            else "Planned Fresh Frozen"
+        ),
         "fresh_frozen_plants": frozen,
         "planted_plants": planted,
         "fresh_frozen_percent": round(frozen_percent, 1),
