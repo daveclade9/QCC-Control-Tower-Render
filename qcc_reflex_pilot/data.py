@@ -4758,7 +4758,8 @@ def normalize_cultivation_byproduct_stages(packages: pd.DataFrame) -> pd.DataFra
     unfinished_stages = {
         "Sellable Bulk", "1A Sellable Bulk", "1A Pending Bulk Opportunity",
         "WIP-Cultivation", "Pre-WIP-Cultivation", "WIP-Purchased 1A",
-        "Pre-WIP-Purchased 1A", "Pre-WIP",
+        "Pre-WIP-Purchased 1A", "WIP-Manufacturing",
+        "Pre-WIP-Manufacturing", "Pre-WIP",
     }
     unfinished = stage.isin(unfinished_stages)
     retention_flag = result.get(
@@ -4800,6 +4801,16 @@ def normalize_cultivation_byproduct_stages(packages: pd.DataFrame) -> pd.DataFra
     license_type = result.get(
         "source_license_type", pd.Series("", index=result.index)
     ).fillna("").astype(str).str.casefold()
+    manufacturing_license = license_type.str.contains("manufacturing", regex=False)
+    result.loc[
+        unfinished
+        & manufacturing_license
+        & stage.isin(["Pre-WIP", "Pre-WIP-Manufacturing"]),
+        "production_stage",
+    ] = "Pre-WIP-Manufacturing"
+    # Manufacturing records are now fully classified; the remaining rules in
+    # this function apply only to cultivation-origin unfinished inventory.
+    unfinished = unfinished & ~manufacturing_license
     location_key = location.apply(normalized_rule_text)
     approved_locations = {
         "vaultapprovedforsale", "vaultpendingtesting", "wipquarantineroom1",
@@ -4933,7 +4944,8 @@ def build_inventory_views(
     wip_and_pre_wip = pd.concat([
         physical_wip,
         data[data["production_stage"].isin([
-            "Pre-WIP-Cultivation", "Pre-WIP-Purchased 1A", "Pre-WIP",
+            "Pre-WIP-Cultivation", "Pre-WIP-Purchased 1A",
+            "Pre-WIP-Manufacturing",
         ])],
     ], ignore_index=True, sort=False)
     potential_wip_display = display(available_wip)
@@ -4953,7 +4965,7 @@ def build_inventory_views(
             "Sellable Bulk", "1A Sellable Bulk", "1A Pending Bulk Opportunity",
             "WIP-Cultivation", "Pre-WIP-Cultivation",
             "WIP-Purchased 1A", "Pre-WIP-Purchased 1A",
-            "WIP-Manufacturing", "Pre-WIP",
+            "WIP-Manufacturing", "Pre-WIP-Manufacturing",
         ])
         & data["quantity"].gt(0)
     )

@@ -181,3 +181,39 @@ def test_1a_byproducts_are_opportunities_until_purchased():
     result = normalize_cultivation_byproduct_stages(packages)
 
     assert result["production_stage"].tolist() == ["1A Sellable Bulk", "Shake"]
+
+
+def test_legacy_manufacturing_pre_wip_is_source_specific():
+    packages = pd.DataFrame([
+        {
+            "production_stage": "Pre-WIP",
+            "source_license_type": "Manufacturing",
+            "qa_status": "Not Submitted",
+            "material_type": "Concentrate",
+            "item": "Diamond Bar Bulk Concentrate",
+            "category": "Concentrate (weight)",
+            "location": "Secure Storage - Extraction WIP",
+            "facility": "Building 33 (C9)",
+            "current_facility": "Building 33 (C9)",
+            "ownership_status": "QCC-Owned / Clade9 Origin",
+        },
+        {
+            "production_stage": "Pre-WIP",
+            "source_license_type": "Cultivation",
+            "qa_status": "Not Submitted",
+            "material_type": "Flower",
+            "item": "Diamond Bar Bulk Flower",
+            "category": "Bud/Flower - Bulk",
+            "location": "Vault - Pending Testing",
+            "facility": "Building 33 (C9)",
+            "current_facility": "Building 33 (C9)",
+            "ownership_status": "QCC-Owned / Clade9 Origin",
+        },
+    ])
+
+    result = normalize_cultivation_byproduct_stages(packages)
+
+    assert result["production_stage"].tolist() == [
+        "Pre-WIP-Manufacturing",
+        "Pre-WIP-Cultivation",
+    ]

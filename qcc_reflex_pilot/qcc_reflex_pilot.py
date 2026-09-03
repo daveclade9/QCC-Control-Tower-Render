@@ -171,7 +171,7 @@ from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 from .ai_demand import ai_two_week_demand_forecast
 
 
-PILOT_VERSION = "0.9.6.20-staging"
+PILOT_VERSION = "0.9.6.21-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -10233,9 +10233,43 @@ class DashboardState(rx.State):
         return [
             row for row in self.filtered_wip_inventory
             if row.get("Production Stage") in {
-                "Pre-WIP-Cultivation", "Pre-WIP-Purchased 1A", "Pre-WIP",
+                "Pre-WIP-Cultivation", "Pre-WIP-Purchased 1A",
+                "Pre-WIP-Manufacturing",
             }
         ]
+
+    def _inventory_stage_rows(self, stage: str) -> list[dict[str, Any]]:
+        return [
+            row for row in self.filtered_wip_inventory
+            if row.get("Production Stage") == stage
+        ]
+
+    def _inventory_stage_summary(self, stage: str) -> str:
+        rows = self._inventory_stage_rows(stage)
+        weight = sum(
+            self._number(row, "Calculated Weight (g)") for row in rows
+        )
+        return f"{len(rows):,} pkg / {weight / 453.59237:,.1f} lb"
+
+    @rx.var(cache=True)
+    def cultivation_wip_summary(self) -> str:
+        _ = self.filtered_wip_inventory
+        return self._inventory_stage_summary("WIP-Cultivation")
+
+    @rx.var(cache=True)
+    def cultivation_pre_wip_summary(self) -> str:
+        _ = self.filtered_wip_inventory
+        return self._inventory_stage_summary("Pre-WIP-Cultivation")
+
+    @rx.var(cache=True)
+    def manufacturing_wip_summary(self) -> str:
+        _ = self.filtered_wip_inventory
+        return self._inventory_stage_summary("WIP-Manufacturing")
+
+    @rx.var(cache=True)
+    def manufacturing_pre_wip_summary(self) -> str:
+        _ = self.filtered_wip_inventory
+        return self._inventory_stage_summary("Pre-WIP-Manufacturing")
 
     @rx.var(cache=True)
     def pre_wip_inventory_count(self) -> str:
@@ -14026,14 +14060,24 @@ def active_inventory_context() -> rx.Component:
             DashboardState.inventory_view_name == "wip",
             rx.grid(
                 metric_card(
-                    "Pre-WIP Packages", DashboardState.pre_wip_inventory_count,
-                    "All source-specific pending WIP stages",
+                    "Cultivation WIP", DashboardState.cultivation_wip_summary,
+                    "Passed Building 33 flower used by Clone Allocation",
                 ),
                 metric_card(
-                    "Pre-WIP Weight", DashboardState.pre_wip_inventory_weight,
-                    "Filtered testing or pending material",
+                    "Cultivation Pre-WIP",
+                    DashboardState.cultivation_pre_wip_summary,
+                    "Pending Building 33 flower; optional in Clone Allocation",
                 ),
-                columns=rx.breakpoints(initial="1", sm="2"),
+                metric_card(
+                    "Manufacturing WIP", DashboardState.manufacturing_wip_summary,
+                    "Passed manufacturing input; excluded from Clone Allocation",
+                ),
+                metric_card(
+                    "Manufacturing Pre-WIP",
+                    DashboardState.manufacturing_pre_wip_summary,
+                    "Pending manufacturing input; excluded from Clone Allocation",
+                ),
+                columns=rx.breakpoints(initial="1", sm="2", lg="4"),
                 gap="4", width="100%",
             ),
             rx.cond(
