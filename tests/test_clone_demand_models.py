@@ -101,7 +101,7 @@ class CloneDemandModelTest(unittest.TestCase):
         self.assertAlmostEqual(flower, 20 * 3.5 / 453.59237)
         self.assertAlmostEqual(preroll, 100 / 453.59237)
 
-    def test_current_pounds_breakdown_groups_cpg_and_wip(self):
+    def test_current_pounds_breakdown_uses_formal_wip_and_optional_pre_wip(self):
         self.state.all_inventory = [
             {
                 "Strain": "Diamond Bar",
@@ -109,15 +109,26 @@ class CloneDemandModelTest(unittest.TestCase):
                 "Category": "Bud/Flower",
                 "QA Status": "Test Passed",
                 "License": "Manufacturing",
+                "Ownership Status": "QCC-Owned",
                 "Calculated Weight (g)": 453.59237,
             },
             {
                 "Strain": "Diamond Bar",
-                "Production Stage": "Bulk Flower",
-                "Category": "Bud/Flower",
+                "Production Stage": "WIP-Cultivation",
+                "Category": "Bud/Flower - Bulk",
+                "QA Status": "Test Passed",
+                "License": "Cultivation",
+                "Ownership Status": "QCC-Owned",
+                "Calculated Weight (g)": 907.18474,
+            },
+            {
+                "Strain": "Diamond Bar",
+                "Production Stage": "Pre-WIP-Cultivation",
+                "Category": "Bud/Flower - Bulk",
                 "QA Status": "Not Submitted",
                 "License": "Cultivation",
-                "Calculated Weight (g)": 907.18474,
+                "Ownership Status": "QCC-Owned",
+                "Calculated Weight (g)": 1360.77711,
             },
         ]
 
@@ -127,7 +138,14 @@ class CloneDemandModelTest(unittest.TestCase):
 
         self.assertAlmostEqual(breakdown["cpg_lbs"], 1.0)
         self.assertAlmostEqual(breakdown["wip_lbs"], 2.0)
+        self.assertAlmostEqual(breakdown["pre_wip_lbs"], 3.0)
         self.assertAlmostEqual(breakdown["total_lbs"], 3.0)
+
+        self.state.cultivation_clone_plan_include_pre_wip = True
+        included = self.state._cultivation_current_inventory_breakdown_by_strain()[
+            "diamond bar"
+        ]
+        self.assertAlmostEqual(included["total_lbs"], 6.0)
 
     def test_missing_adjusted_window_does_not_zero_all_demand(self):
         self.state.availability_adjusted_velocity_windows = {

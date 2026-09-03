@@ -487,15 +487,17 @@ def inventory_counts_as_current_cultivation_supply(row: dict[str, Any]) -> bool:
     return bool(cultivation_flower_supply_bucket(row))
 
 
-def cultivation_flower_supply_bucket(row: dict[str, Any]) -> str:
-    """Classify usable flower into the planner's visible supply buckets.
+def cultivation_flower_supply_bucket(
+    row: dict[str, Any], *, include_pre_wip: bool = False
+) -> str:
+    """Classify net-flower supply using Control Tower production stages.
 
-    Finished flower and flower-equivalent pre-rolls remain in net-flower
-    supply. Bulk and WIP flower count only when the Metrc source license is
-    Cultivation, which prevents manufacturing inputs such as Fresh Frozen from
-    inflating available flower. Concentrates, vapes, trim, shake, retention,
-    and samples do not count. Untested cultivation flower outside quarantine
-    remains visible; quarantined flower is included only after passing testing.
+    Packaged flower and flower-equivalent pre-rolls remain CPG. Cultivation
+    WIP must use the authoritative ``WIP-Cultivation`` stage and have passed
+    testing. ``Pre-WIP-Cultivation`` is separate and is returned only when
+    explicitly requested. Purchased Building 1A supply has its own stages and
+    is intentionally excluded. Trim, shake, retention, samples, manufacturing
+    inputs, and partner-owned material never contribute to Clone Allocation.
     """
     stage = str(row.get("Production Stage", "") or "").strip().casefold()
     location = str(row.get("Location", "") or "").strip().casefold()
@@ -503,24 +505,31 @@ def cultivation_flower_supply_bucket(row: dict[str, Any]) -> str:
     package_type = str(row.get("Package Type", "") or "").strip().casefold()
     sku_type = str(row.get("SKU Type", "") or "").strip().casefold()
     category = str(row.get("Category", "") or "").strip().casefold()
+    material_type = str(row.get("Material Type", "") or "").strip().casefold()
     qa_status = str(row.get("QA Status", "") or "").strip().casefold()
     license_type = str(row.get("License", "") or "").strip().casefold()
+    ownership = str(row.get("Ownership Status", "") or "").strip().casefold()
     excluded = " ".join((stage, location, item, package_type, sku_type))
     if "retention" in excluded or "sample" in excluded:
         return ""
-    if "quarantine" in location and qa_status != "test passed":
-        return ""
-    if stage == "trim" or "trim" in item or "shake" in item:
+    byproduct_text = " ".join((stage, item, category, material_type))
+    if "trim" in byproduct_text or "shake" in byproduct_text:
         return ""
     if not ("bud/flower" in category or "raw pre-roll" in category):
         return ""
-    if stage != "packaged goods" and "cultivation" not in license_type:
+    if ownership and not ownership.startswith("qcc-owned"):
         return ""
-    if "quarantine" in location:
-        return "Passed Quarantine Flower"
-    if qa_status == "test passed":
-        return "Tested Flower"
-    return "Untested Flower"
+    if stage == "packaged goods":
+        if "quarantine" in location and qa_status != "test passed":
+            return ""
+        return "CPG"
+    if "cultivation" not in license_type:
+        return ""
+    if stage == "wip-cultivation" and qa_status == "test passed":
+        return "WIP-Cultivation"
+    if include_pre_wip and stage == "pre-wip-cultivation":
+        return "Pre-WIP-Cultivation"
+    return ""
 
 
 def clone_planning_periods(

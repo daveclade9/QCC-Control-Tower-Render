@@ -2303,6 +2303,9 @@ def load_latest_inventory_bundle() -> tuple[dict[str, Any], pd.DataFrame, pd.Dat
                     inventory_packages = promote_legitimate_manufacturing_samples(
                         inventory_packages
                     )
+                    inventory_packages = normalize_cultivation_byproduct_stages(
+                        inventory_packages
+                    )
             return snapshot, inventory_skus, inventory_packages
         except Exception as error:
             last_error = error
@@ -2331,9 +2334,12 @@ def wip_inventory_status(
     """Return physical passed WIP with committed and available weights."""
     if packages.empty:
         return packages.copy()
+    packages = normalize_cultivation_byproduct_stages(packages)
     scope = packages[
         packages["qcc_owned"].fillna(0).astype(bool)
-        & packages["production_stage"].isin(["WIP-Cultivation", "WIP-Manufacturing"])
+        & packages["production_stage"].isin([
+            "WIP-Cultivation", "WIP-Purchased 1A", "WIP-Manufacturing",
+        ])
         & packages["qa_status"].eq("Test Passed")
     ].copy()
     scope["calculated_weight_grams"] = pd.to_numeric(
@@ -2387,7 +2393,9 @@ def potential_wip_for_sku(
     target_strain = normalize_strain_name(strain).strip().lower()
     source_strain = scope["strain"].apply(normalize_strain_name).str.lower()
     same_strain = source_strain.eq(target_strain)
-    cultivation = scope["production_stage"].eq("WIP-Cultivation")
+    cultivation = scope["production_stage"].isin([
+        "WIP-Cultivation", "WIP-Purchased 1A",
+    ])
     manufacturing = scope["production_stage"].eq("WIP-Manufacturing")
     item = scope["item"].fillna("").astype(str).str.lower()
     category = scope["category"].apply(normalized_rule_text)
@@ -4006,6 +4014,7 @@ def build_velocity(
     period_days: int | None = None,
     include_potential_wip: bool = True,
 ) -> pd.DataFrame:
+    inventory_packages = normalize_cultivation_byproduct_stages(inventory_packages)
     columns = [
         "Brand", "Strain", "SKU Type", "Units Shipped",
         "Avg Weekly Units", "Avg Weekly Units - Last 30 Days", "Packages",
@@ -4153,7 +4162,7 @@ def build_velocity(
         inventory_packages[
             inventory_packages.get(
                 "production_stage", pd.Series(dtype=str)
-            ).eq("Pre-WIP")
+            ).isin(["Pre-WIP-Cultivation", "Pre-WIP-Purchased 1A", "Pre-WIP"])
         ].copy()
         if include_potential_wip and not inventory_packages.empty
         else pd.DataFrame()
@@ -4723,6 +4732,141 @@ def build_transfer_display(analysis: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+def normalize_cultivation_byproduct_stages(packages: pd.DataFrame) -> pd.DataFrame:
+    """Normalize source-specific unfinished inventory stages at read time.
+
+    Historical snapshots used broad WIP labels. The shared definition now
+    preserves origin, ownership, and readiness: Building 33 flower is
+    Cultivation WIP; purchased Building 1A flower has its own WIP class; and
+    partner-owned material still at 1A remains a bulk opportunity. Trim and
+    Shake are byproducts outside every QCC WIP class.
+    """
+    if packages.empty or "production_stage" not in packages.columns:
+        return packages.copy()
+    result = packages.copy()
+    stage = result["production_stage"].fillna("").astype(str)
+    item = result.get("item", pd.Series("", index=result.index)).fillna("").astype(str)
+    category = result.get(
+        "category", pd.Series("", index=result.index)
+    ).fillna("").astype(str)
+    location = result.get(
+        "location", pd.Series("", index=result.index)
+    ).fillna("").astype(str)
+    material = result.get(
+        "material_type", pd.Series("", index=result.index)
+    ).fillna("").astype(str)
+    unfinished_stages = {
+        "Sellable Bulk", "1A Sellable Bulk", "1A Pending Bulk Opportunity",
+        "WIP-Cultivation", "Pre-WIP-Cultivation", "WIP-Purchased 1A",
+        "Pre-WIP-Purchased 1A", "Pre-WIP",
+    }
+    unfinished = stage.isin(unfinished_stages)
+    retention_flag = result.get(
+        "is_retention_sample", pd.Series(False, index=result.index)
+    ).fillna(False).astype(bool)
+    retention = unfinished & (
+        retention_flag
+        | (item + " " + category + " " + location).str.contains(
+            r"\b(?:retention|stability)\b", case=False, regex=True
+        )
+    )
+    result.loc[retention, "production_stage"] = "Retention Storage"
+    unfinished = unfinished & ~retention
+    material_key = material.str.casefold()
+    byproduct_text = item + " " + category
+    trim = unfinished & (
+        material_key.eq("trim")
+        | (
+            ~material_key.eq("shake")
+            & byproduct_text.str.contains(r"\btrim\b", case=False, regex=True)
+        )
+    )
+    shake = unfinished & ~trim & (
+        material_key.eq("shake")
+        | byproduct_text.str.contains(r"\bshake\b", case=False, regex=True)
+    )
+    origin = result.get(
+        "facility", pd.Series("", index=result.index)
+    ).fillna("").astype(str).str.casefold()
+    current = result.get(
+        "current_facility", pd.Series("", index=result.index)
+    ).fillna("").astype(str).str.casefold()
+    ownership = result.get(
+        "ownership_status", pd.Series("", index=result.index)
+    ).fillna("").astype(str).str.casefold()
+    qa = result.get(
+        "qa_status", pd.Series("", index=result.index)
+    ).fillna("").astype(str).str.casefold()
+    license_type = result.get(
+        "source_license_type", pd.Series("", index=result.index)
+    ).fillna("").astype(str).str.casefold()
+    location_key = location.apply(normalized_rule_text)
+    approved_locations = {
+        "vaultapprovedforsale", "vaultpendingtesting", "wipquarantineroom1",
+    }
+    cultivation_license = license_type.str.contains("cultivation", regex=False)
+    flower_bulk = (
+        material_key.eq("flower")
+        | category.str.contains(r"bud/flower\s*-?\s*bulk", case=False, regex=True)
+        | item.str.contains(
+            r"\b(?:bulk\s+flower|flower\s+bulk|mids?|smalls?)\b",
+            case=False,
+            regex=True,
+        )
+    ) & ~trim & ~shake
+    test_passed = qa.eq("test passed")
+    failed = qa.str.contains(r"failed|rejected", regex=True)
+    physically_1a = current.eq("building 1a") | ownership.eq(
+        "partner-owned / compliance managed"
+    )
+    originated_1a = origin.eq("building 1a") | ownership.eq(
+        "qcc-owned / purchased from building 1a"
+    )
+    purchased_1a = originated_1a & ~physically_1a
+    building_33 = origin.eq("building 33 (c9)") & ~originated_1a
+    classifiable = unfinished & cultivation_license & flower_bulk & ~failed
+
+    result.loc[classifiable & physically_1a & test_passed, "production_stage"] = (
+        "1A Sellable Bulk"
+    )
+    result.loc[classifiable & physically_1a & ~test_passed, "production_stage"] = (
+        "1A Pending Bulk Opportunity"
+    )
+    approved = location_key.isin(approved_locations)
+    purchased_ready = classifiable & purchased_1a & approved & test_passed
+    result.loc[purchased_ready, "production_stage"] = (
+        "WIP-Purchased 1A"
+    )
+    result.loc[
+        classifiable & purchased_1a & ~purchased_ready, "production_stage"
+    ] = (
+        "Pre-WIP-Purchased 1A"
+    )
+    cultivation_ready = classifiable & building_33 & approved & test_passed
+    result.loc[cultivation_ready, "production_stage"] = (
+        "WIP-Cultivation"
+    )
+    result.loc[
+        classifiable & building_33 & ~cultivation_ready, "production_stage"
+    ] = (
+        "Pre-WIP-Cultivation"
+    )
+
+    # Trim and Shake can remain sale opportunities while physically at 1A.
+    # Once purchased into Building 33, or when grown there, they are byproducts.
+    result.loc[trim & physically_1a & test_passed, "production_stage"] = "1A Sellable Bulk"
+    result.loc[
+        trim & physically_1a & ~test_passed & ~failed, "production_stage"
+    ] = "1A Pending Bulk Opportunity"
+    result.loc[shake & physically_1a & test_passed, "production_stage"] = "1A Sellable Bulk"
+    result.loc[
+        shake & physically_1a & ~test_passed & ~failed, "production_stage"
+    ] = "1A Pending Bulk Opportunity"
+    result.loc[trim & ~physically_1a, "production_stage"] = "Trim"
+    result.loc[shake & ~physically_1a, "production_stage"] = "Shake"
+    return result
+
+
 def build_inventory_views(
     packages: pd.DataFrame, plans: pd.DataFrame, sources: pd.DataFrame
 ) -> dict[str, pd.DataFrame]:
@@ -4733,7 +4877,7 @@ def build_inventory_views(
             "potential_wip_inventory", "aging_cpg", "aging_bulk",
             "all_inventory", "needs_review",
         ]}
-    data = packages.copy()
+    data = normalize_cultivation_byproduct_stages(packages)
     numeric = [
         "quantity", "calculated_weight_grams", "inventory_age_days",
         "days_remaining_in_sale_window",
@@ -4788,7 +4932,9 @@ def build_inventory_views(
     ].copy() if not physical_wip.empty else physical_wip.copy()
     wip_and_pre_wip = pd.concat([
         physical_wip,
-        data[data["production_stage"].eq("Pre-WIP")],
+        data[data["production_stage"].isin([
+            "Pre-WIP-Cultivation", "Pre-WIP-Purchased 1A", "Pre-WIP",
+        ])],
     ], ignore_index=True, sort=False)
     potential_wip_display = display(available_wip)
     if not potential_wip_display.empty:
@@ -4804,8 +4950,10 @@ def build_inventory_views(
     )
     aging_bulk_mask = (
         data["production_stage"].isin([
-            "Sellable Bulk", "WIP-Cultivation", "WIP-Manufacturing",
-            "Pre-WIP",
+            "Sellable Bulk", "1A Sellable Bulk", "1A Pending Bulk Opportunity",
+            "WIP-Cultivation", "Pre-WIP-Cultivation",
+            "WIP-Purchased 1A", "Pre-WIP-Purchased 1A",
+            "WIP-Manufacturing", "Pre-WIP",
         ])
         & data["quantity"].gt(0)
     )

@@ -260,8 +260,8 @@ def test_current_flower_supply_uses_the_agreed_net_flower_rule():
         "SKU Type": "3.5g Flower", "Item": "Diamond Bar Packaged 3.5g EA",
         "Location": "Vault 1 Cultivation - Approved For Sale",
     }
-    untested_flower = {
-        "Production Stage": "Sellable Bulk", "License": "Cultivation",
+    pre_wip_flower = {
+        "Production Stage": "Pre-WIP-Cultivation", "License": "Cultivation",
         "Category": "Bud/Flower - Bulk", "QA Status": "Not Submitted",
         "SKU Type": "Not Packaged SKU", "Item": "Diamond Bar Bulk",
         "Location": "Vault - Pending Testing",
@@ -272,9 +272,12 @@ def test_current_flower_supply_uses_the_agreed_net_flower_rule():
         "SKU Type": "Not Packaged SKU", "Item": "Diamond Bar Bulk",
         "Location": "WIP Quarantine Room 1",
     }
-    assert cultivation_flower_supply_bucket(tested_flower) == "Tested Flower"
-    assert cultivation_flower_supply_bucket(untested_flower) == "Untested Flower"
-    assert cultivation_flower_supply_bucket(passed_quarantine) == "Passed Quarantine Flower"
+    assert cultivation_flower_supply_bucket(tested_flower) == "CPG"
+    assert cultivation_flower_supply_bucket(pre_wip_flower) == ""
+    assert cultivation_flower_supply_bucket(
+        pre_wip_flower, include_pre_wip=True
+    ) == "Pre-WIP-Cultivation"
+    assert cultivation_flower_supply_bucket(passed_quarantine) == "WIP-Cultivation"
     for excluded in (
         {**passed_quarantine, "QA Status": "Not Submitted"},
         {**tested_flower, "Category": "Shake/Trim (by strain)", "Item": "Diamond Bar Trim"},
@@ -287,7 +290,7 @@ def test_current_flower_supply_uses_the_agreed_net_flower_rule():
 
 def test_manufacturing_bulk_and_fresh_frozen_do_not_count_as_current_flower():
     cultivation_bulk = {
-        "Production Stage": "Sellable Bulk",
+        "Production Stage": "WIP-Cultivation",
         "License": "Cultivation",
         "Category": "Bud/Flower - Bulk",
         "Item": "Diamond Bar Bulk Flower",
@@ -305,9 +308,32 @@ def test_manufacturing_bulk_and_fresh_frozen_do_not_count_as_current_flower():
         "Item": "Diamond Bar Fresh Frozen",
     }
 
-    assert cultivation_flower_supply_bucket(cultivation_bulk) == "Tested Flower"
+    assert cultivation_flower_supply_bucket(cultivation_bulk) == "WIP-Cultivation"
     assert cultivation_flower_supply_bucket(manufacturing_bulk) == ""
     assert cultivation_flower_supply_bucket(fresh_frozen) == ""
+
+
+def test_clone_supply_excludes_purchased_1a_wip_and_its_pre_wip():
+    common = {
+        "Category": "Bud/Flower - Bulk",
+        "License": "Cultivation",
+        "Ownership Status": "QCC-Owned / Purchased from Building 1A",
+    }
+    purchased_wip = {
+        **common,
+        "Production Stage": "WIP-Purchased 1A",
+        "QA Status": "Test Passed",
+    }
+    purchased_pre_wip = {
+        **common,
+        "Production Stage": "Pre-WIP-Purchased 1A",
+        "QA Status": "Not Submitted",
+    }
+
+    assert cultivation_flower_supply_bucket(purchased_wip) == ""
+    assert cultivation_flower_supply_bucket(
+        purchased_pre_wip, include_pre_wip=True
+    ) == ""
 
 
 def test_clone_planning_schedule_rolls_rooms_and_crop_numbers_every_two_weeks():

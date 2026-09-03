@@ -171,7 +171,7 @@ from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 from .ai_demand import ai_two_week_demand_forecast
 
 
-PILOT_VERSION = "0.9.6.19-staging"
+PILOT_VERSION = "0.9.6.20-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -470,6 +470,7 @@ ClonePlanMatrixValue = TypedDict(
         "show_breakdown": bool,
         "cpg_lbs": float,
         "wip_lbs": float,
+        "pre_wip_lbs": float,
         "current_total_lbs": float,
         "available": bool,
         "editable_allocation": bool,
@@ -750,6 +751,7 @@ class DashboardState(rx.State):
     cultivation_new_strain_error: str = ""
     cultivation_clone_plan_demand_model: str = "Availability-Adjusted"
     cultivation_clone_plan_product_scope: str = "Flower + Pre-Rolls"
+    cultivation_clone_plan_include_pre_wip: bool = False
     cultivation_clone_plan_demand_revision: int = 0
     cultivation_clone_plan_allocations: dict[str, float] = {}
     cultivation_clone_plan_entry_version: int = 0
@@ -6642,6 +6644,10 @@ class DashboardState(rx.State):
         self.cultivation_clone_plan_status = "Draft"
         self.cultivation_clone_plan_dirty = True
 
+    @rx.event
+    def change_cultivation_clone_plan_include_pre_wip(self, value: bool):
+        self.cultivation_clone_plan_include_pre_wip = bool(value)
+
     @staticmethod
     def _normalized_clone_demand_model(value: Any) -> str:
         """Normalize current choices and legacy saved-plan labels."""
@@ -8062,6 +8068,7 @@ class DashboardState(rx.State):
         _ = self.cultivation_clone_plan_demand_revision
         _ = self.cultivation_clone_plan_demand_model
         _ = self.cultivation_clone_plan_product_scope
+        _ = self.cultivation_clone_plan_include_pre_wip
         _ = self.velocity
         _ = self.velocity_windows
         _ = self.availability_adjusted_velocity_windows
@@ -8110,6 +8117,9 @@ class DashboardState(rx.State):
                 "show_breakdown": show_breakdown,
                 "cpg_lbs": round(float(detail.get("cpg_lbs", 0) or 0), 1),
                 "wip_lbs": round(float(detail.get("wip_lbs", 0) or 0), 1),
+                "pre_wip_lbs": round(
+                    float(detail.get("pre_wip_lbs", 0) or 0), 1
+                ),
                 "current_total_lbs": round(float(detail.get("total_lbs", 0) or 0), 1),
                 "available": available,
                 "editable_allocation": editable_allocation,
@@ -8416,7 +8426,7 @@ class DashboardState(rx.State):
     ) -> dict[str, dict[str, float]]:
         totals: dict[str, dict[str, float]] = {}
         for row in self.all_inventory:
-            bucket = cultivation_flower_supply_bucket(row)
+            bucket = cultivation_flower_supply_bucket(row, include_pre_wip=True)
             if not bucket:
                 continue
             key = normalized_strain(row.get("Strain", ""))
@@ -8428,12 +8438,20 @@ class DashboardState(rx.State):
             detail = totals.setdefault(key, {
                 "cpg_lbs": 0.0,
                 "wip_lbs": 0.0,
+                "pre_wip_lbs": 0.0,
                 "total_lbs": 0.0,
             })
-            stage = str(row.get("Production Stage", "") or "").strip().casefold()
-            field = "cpg_lbs" if stage == "packaged goods" else "wip_lbs"
+            field = {
+                "CPG": "cpg_lbs",
+                "WIP-Cultivation": "wip_lbs",
+                "Pre-WIP-Cultivation": "pre_wip_lbs",
+            }[bucket]
             detail[field] += pounds
-            detail["total_lbs"] += pounds
+            if (
+                bucket != "Pre-WIP-Cultivation"
+                or self.cultivation_clone_plan_include_pre_wip
+            ):
+                detail["total_lbs"] += pounds
         return totals
 
     def _cultivation_current_inventory_by_strain(self) -> dict[str, float]:
@@ -9455,7 +9473,11 @@ class DashboardState(rx.State):
         filtered: list[dict[str, Any]] = []
         for row in rows:
             stage = str(row.get("Production Stage", ""))
-            if stage in {"WIP-Cultivation", "WIP-Manufacturing", "Pre-WIP"}:
+            if stage in {
+                "WIP-Cultivation", "Pre-WIP-Cultivation",
+                "WIP-Purchased 1A", "Pre-WIP-Purchased 1A",
+                "WIP-Manufacturing", "Pre-WIP",
+            }:
                 row_strain = normalize_strain_name(
                     str(row.get("Strain", ""))
                 ).strip().lower()
@@ -9647,7 +9669,11 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def executive_sellable_bulk_weight(self) -> str:
-        return self._weight_label(self._executive_stage_weight("Sellable Bulk"))
+        total = sum(
+            self._executive_stage_weight(stage)
+            for stage in ("Sellable Bulk", "1A Sellable Bulk")
+        )
+        return self._weight_label(total)
 
     @rx.var(cache=True)
     def executive_wip_cultivation_weight(self) -> str:
@@ -9659,12 +9685,20 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def executive_pre_wip_weight(self) -> str:
-        return self._weight_label(self._executive_stage_weight("Pre-WIP"))
+        total = sum(
+            self._executive_stage_weight(stage)
+            for stage in (
+                "Pre-WIP-Cultivation", "Pre-WIP-Purchased 1A", "Pre-WIP",
+            )
+        )
+        return self._weight_label(total)
 
     @rx.var(cache=True)
     def executive_pre_wip_packages(self) -> str:
         count = sum(
-            row.get("Production Stage") == "Pre-WIP"
+            row.get("Production Stage") in {
+                "Pre-WIP-Cultivation", "Pre-WIP-Purchased 1A", "Pre-WIP",
+            }
             for row in self.executive_inventory_rows
         )
         return f"{count:,}"
@@ -10198,7 +10232,9 @@ class DashboardState(rx.State):
     def filtered_pre_wip_inventory(self) -> list[dict[str, Any]]:
         return [
             row for row in self.filtered_wip_inventory
-            if row.get("Production Stage") == "Pre-WIP"
+            if row.get("Production Stage") in {
+                "Pre-WIP-Cultivation", "Pre-WIP-Purchased 1A", "Pre-WIP",
+            }
         ]
 
     @rx.var(cache=True)
@@ -13991,7 +14027,7 @@ def active_inventory_context() -> rx.Component:
             rx.grid(
                 metric_card(
                     "Pre-WIP Packages", DashboardState.pre_wip_inventory_count,
-                    "Production Stage equals Pre-WIP",
+                    "All source-specific pending WIP stages",
                 ),
                 metric_card(
                     "Pre-WIP Weight", DashboardState.pre_wip_inventory_weight,
@@ -14113,7 +14149,7 @@ def wip_inventory_view() -> rx.Component:
         rx.grid(
             metric_card(
                 "Pre-WIP Packages", DashboardState.pre_wip_inventory_count,
-                "Production Stage equals Pre-WIP",
+                "All source-specific pending WIP stages",
             ),
             metric_card(
                 "Pre-WIP Weight", DashboardState.pre_wip_inventory_weight,
@@ -16500,7 +16536,7 @@ def cultivation_clone_plan_value_cell(
                         width="100%",
                     ),
                     rx.hstack(
-                        rx.text("WIP · usable cultivation bulk", size="2"),
+                        rx.text("WIP-Cultivation · tested flower bulk", size="2"),
                         rx.spacer(),
                         rx.text(
                             cell["wip_lbs"].to_string() + " lb",
@@ -16508,6 +16544,34 @@ def cultivation_clone_plan_value_cell(
                             size="2",
                         ),
                         width="100%",
+                    ),
+                    rx.hstack(
+                        rx.vstack(
+                            rx.text("Pre-WIP-Cultivation · pending testing", size="2"),
+                            rx.text(
+                                rx.cond(
+                                    DashboardState.cultivation_clone_plan_include_pre_wip,
+                                    "Included in Current Pounds",
+                                    "Excluded from Current Pounds",
+                                ),
+                                size="1",
+                                color=rx.cond(
+                                    DashboardState.cultivation_clone_plan_include_pre_wip,
+                                    "#7c3aed",
+                                    MUTED,
+                                ),
+                            ),
+                            spacing="0",
+                            align="start",
+                        ),
+                        rx.spacer(),
+                        rx.text(
+                            cell["pre_wip_lbs"].to_string() + " lb",
+                            weight="bold",
+                            size="2",
+                        ),
+                        width="100%",
+                        align="center",
                     ),
                     rx.separator(size="4"),
                     rx.hstack(
@@ -17052,6 +17116,20 @@ def cultivation_clone_planning_panel() -> rx.Component:
                             width="100%",
                         ),
                     ),
+                    rx.box(
+                        rx.text("Current Pounds", size="1", weight="bold", color=MUTED),
+                        rx.hstack(
+                            rx.switch(
+                                checked=DashboardState.cultivation_clone_plan_include_pre_wip,
+                                on_change=DashboardState.change_cultivation_clone_plan_include_pre_wip,
+                                color_scheme="purple",
+                            ),
+                            rx.text("Include Pre-WIP", size="2", weight="bold"),
+                            align="center",
+                            spacing="2",
+                            min_height="40px",
+                        ),
+                    ),
                     snapshot_stat_card(
                         "Planned Bench Equivalents",
                         DashboardState.cultivation_clone_plan_total_benches,
@@ -17067,7 +17145,7 @@ def cultivation_clone_planning_panel() -> rx.Component:
                         DashboardState.cultivation_clone_plan_room_capacity,
                         "#2563eb",
                     ),
-                    columns=rx.breakpoints(initial="1", md="2", xl="6"),
+                    columns=rx.breakpoints(initial="1", md="2", xl="7"),
                     gap="3",
                     width="100%",
                 ),
@@ -17083,7 +17161,11 @@ def cultivation_clone_planning_panel() -> rx.Component:
                 ),
                 cultivation_new_strain_control(),
                 rx.callout(
-                    "Current Pounds combines CPG and usable cultivation WIP while excluding trim, retention, samples, failed quarantine, and unusable material. Demand products affect demand only; Current Pounds remains total usable flower-equivalent supply. Scheduled pounds are expected 30 days after harvest, stop counting when crop-matched actual inventory appears, and expire 45 days after harvest. Click a Scheduled value to review Fresh Frozen or Creative Use reductions.",
+                    rx.cond(
+                        DashboardState.cultivation_clone_plan_include_pre_wip,
+                        "Current Pounds combines CPG, WIP-Cultivation, and—because the toggle is on—Pre-WIP-Cultivation. Purchased or partner-owned 1A bulk, trim, shake, retention, samples, and manufacturing bulk remain excluded. Scheduled pounds arrive 30 days after harvest and expire 45 days after harvest.",
+                        "Current Pounds combines CPG and WIP-Cultivation. Pre-WIP-Cultivation is excluded unless the user turns on Include Pre-WIP. Purchased or partner-owned 1A bulk, trim, shake, retention, samples, and manufacturing bulk remain excluded. Scheduled pounds arrive 30 days after harvest and expire 45 days after harvest.",
+                    ),
                     icon="info",
                     color_scheme="blue",
                     width="100%",
