@@ -30,6 +30,54 @@ class InventoryNavigationCacheTest(unittest.TestCase):
             "2 pkg / 1.5 lb",
         )
 
+    def test_all_inventory_does_not_show_the_samples_metric(self):
+        getter = DashboardState.active_inventory_shows_samples.fget
+        state = SimpleNamespace(inventory_view_name="all")
+        self.assertFalse(getter(state))
+
+        for view_name in ("cpg", "aging_cpg"):
+            with self.subTest(view_name=view_name):
+                state.inventory_view_name = view_name
+                self.assertTrue(getter(state))
+
+    def test_all_inventory_cpg_weight_is_split_by_license(self):
+        rows = [
+            {
+                "Production Stage": "Packaged Goods",
+                "License": "Cultivation",
+                "Calculated Weight (g)": 453.59237,
+            },
+            {
+                "Production Stage": "Packaged Goods",
+                "License": "Manufacturing",
+                "Calculated Weight (g)": 907.18474,
+            },
+            {
+                "Production Stage": "WIP-Cultivation",
+                "License": "Cultivation",
+                "Calculated Weight (g)": 4535.9237,
+            },
+        ]
+        state = SimpleNamespace(
+            filtered_all_inventory=rows,
+            _filtered_weight_total=lambda selected: (
+                f"{sum(row['Calculated Weight (g)'] for row in selected) / 453.59237:,.1f} lb"
+            ),
+        )
+
+        self.assertEqual(
+            DashboardState._all_inventory_cpg_weight_by_license(
+                state, "Cultivation"
+            ),
+            "1.0 lb",
+        )
+        self.assertEqual(
+            DashboardState._all_inventory_cpg_weight_by_license(
+                state, "Manufacturing"
+            ),
+            "2.0 lb",
+        )
+
     def test_source_harvest_is_added_only_to_all_inventory(self):
         state = SimpleNamespace(inventory_weight_unit="Pounds")
         columns_for_view = DashboardState._inventory_columns_for_view

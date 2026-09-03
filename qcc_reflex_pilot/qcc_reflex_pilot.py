@@ -171,7 +171,7 @@ from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 from .ai_demand import ai_two_week_demand_forecast
 
 
-PILOT_VERSION = "0.9.6.24-staging"
+PILOT_VERSION = "0.9.6.25-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -10402,13 +10402,22 @@ class DashboardState(rx.State):
         ]
         return self._filtered_unit_total(rows)
 
-    @rx.var(cache=True)
-    def all_inventory_cpg_weight_summary(self) -> str:
+    def _all_inventory_cpg_weight_by_license(self, license_type: str) -> str:
         rows = [
             row for row in self.filtered_all_inventory
             if row.get("Production Stage") == "Packaged Goods"
+            and str(row.get("License", "")).strip().casefold()
+            == license_type.casefold()
         ]
         return self._filtered_weight_total(rows)
+
+    @rx.var(cache=True)
+    def all_inventory_cpg_flower_weight_summary(self) -> str:
+        return self._all_inventory_cpg_weight_by_license("Cultivation")
+
+    @rx.var(cache=True)
+    def all_inventory_cpg_manufacturing_weight_summary(self) -> str:
+        return self._all_inventory_cpg_weight_by_license("Manufacturing")
 
     @rx.var(cache=True)
     def pre_wip_inventory_count(self) -> str:
@@ -10595,7 +10604,7 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def active_inventory_shows_samples(self) -> bool:
-        return self.inventory_view_name in {"cpg", "aging_cpg", "all"}
+        return self.inventory_view_name in {"cpg", "aging_cpg"}
 
     @rx.var(cache=True)
     def active_inventory_weight(self) -> str:
@@ -14248,11 +14257,16 @@ def active_inventory_context() -> rx.Component:
                         "Finished packaged units",
                     ),
                     metric_card(
-                        "CPG Weight",
-                        DashboardState.all_inventory_cpg_weight_summary,
-                        "Finished packaged weight",
+                        "CPG Flower Weight",
+                        DashboardState.all_inventory_cpg_flower_weight_summary,
+                        "Packaged goods on the cultivation license",
                     ),
-                    columns=rx.breakpoints(initial="1", sm="2", lg="3"),
+                    metric_card(
+                        "CPG Manufacturing Weight",
+                        DashboardState.all_inventory_cpg_manufacturing_weight_summary,
+                        "Packaged goods on the manufacturing license",
+                    ),
+                    columns=rx.breakpoints(initial="1", sm="2", lg="4"),
                     gap="4", width="100%",
                 ),
                 rx.cond(
