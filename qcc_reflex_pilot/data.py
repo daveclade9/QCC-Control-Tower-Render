@@ -1541,12 +1541,25 @@ def _lab_source_discrepancies(frame: pd.DataFrame) -> dict[str, str]:
         "total_terpenes": "Total Terpenes",
     }
     for package_tag, package_rows in frame.groupby("package_tag"):
-        sources = set(package_rows["source_kind"].astype(str))
-        if not {"Lab Direct", "Metrc"}.issubset(sources):
+        status_values = package_rows.get(
+            "lab_testing_status", pd.Series("TestPassed", index=package_rows.index)
+        )
+        metrc_status = status_values.fillna("").astype(str).str.lower().str.replace(
+            r"[^a-z]", "", regex=True
+        )
+        final_metrc = package_rows[
+            package_rows["source_kind"].eq("Metrc")
+            & metrc_status.isin({"testpassed", "retestpassed", "testfailed", "retestfailed"})
+        ]
+        if package_rows["source_kind"].ne("Lab Direct").all() or final_metrc.empty:
             continue
         values: dict[str, dict[str, Any]] = {}
         for source_kind in ("Lab Direct", "Metrc"):
-            rows = package_rows[package_rows["source_kind"].eq(source_kind)].rename(
+            source_rows = (
+                final_metrc if source_kind == "Metrc"
+                else package_rows[package_rows["source_kind"].eq("Lab Direct")]
+            )
+            rows = source_rows.rename(
                 columns={"test_name": "Test", "result": "Result"}
             )
             values[source_kind] = label_analytes(rows.to_dict("records"))
@@ -1619,6 +1632,16 @@ def _lab_direct_upload_summary(frame: pd.DataFrame) -> pd.DataFrame:
         status_key = re.sub(
             r"[^a-z]", "", str(latest.get("lab_testing_status", "") or "").lower()
         )
+        status_values = package_rows.get(
+            "lab_testing_status", pd.Series("TestPassed", index=package_rows.index)
+        )
+        metrc_status = status_values.fillna("").astype(str).str.lower().str.replace(
+            r"[^a-z]", "", regex=True
+        )
+        has_final_metrc = bool((
+            package_rows["source_kind"].eq("Metrc")
+            & metrc_status.isin({"testpassed", "retestpassed", "testfailed", "retestfailed"})
+        ).any())
         summaries.append({
             "Imported At": str(latest.get("imported_at", "") or ""),
             "File": str(latest.get("source_filename", "") or ""),
@@ -1629,10 +1652,7 @@ def _lab_direct_upload_summary(frame: pd.DataFrame) -> pd.DataFrame:
                 "testpassed": "Passed", "retestpassed": "Passed",
                 "testfailed": "Failed", "retestfailed": "Failed",
             }.get(status_key, "Pending"),
-            "Active Source": (
-                "Metrc" if package_rows["source_kind"].eq("Metrc").any()
-                else "Lab Direct"
-            ),
+            "Active Source": "Metrc" if has_final_metrc else "Lab Direct",
             "Total THC %": analyte(r"^Total THC\s*\(%\)$"),
             "Total Terpenes %": analyte(r"^Total Terpenes\s*\(%\)$"),
         })
@@ -1666,8 +1686,17 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
             WHERE COALESCE(test_name, '') !~* 'R\\s*&\\s*D|research'
         ), source_choice AS (
             SELECT package_tag,
-                   CASE WHEN BOOL_OR(source_kind = 'Metrc')
-                        THEN 'Metrc' ELSE 'Lab Direct' END AS source_kind
+                   CASE
+                       WHEN BOOL_OR(
+                           source_kind = 'Metrc'
+                           AND REGEXP_REPLACE(
+                               LOWER(COALESCE(lab_testing_status, '')),
+                               '[^a-z]', '', 'g'
+                           ) IN ('testpassed', 'retestpassed', 'testfailed', 'retestfailed')
+                       ) OR NOT BOOL_OR(source_kind = 'Lab Direct')
+                       THEN 'Metrc'
+                       ELSE 'Lab Direct'
+                   END AS source_kind
             FROM compliance_all
             GROUP BY package_tag
         ), compliance AS (
@@ -1796,7 +1825,7 @@ def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, 
     # contain a blank or differently formatted packaged-license value.
     if packaged_license:
         rows = safe_query_frame(
-            "SELECT test_date, test_name, result, test_passed, "
+            "SELECT test_date, test_name, result, test_passed, lab_testing_status, "
             "CASE WHEN lab_license = 'LAB-DIRECT' "
             "THEN 'Lab Direct' ELSE 'Metrc' END AS source_kind "
             "FROM lab_result_records WHERE package_tag = %s "
@@ -1807,7 +1836,7 @@ def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, 
         rows = pd.DataFrame()
     if rows.empty:
         rows = safe_query_frame(
-            "SELECT test_date, test_name, result, test_passed, "
+            "SELECT test_date, test_name, result, test_passed, lab_testing_status, "
             "CASE WHEN lab_license = 'LAB-DIRECT' "
             "THEN 'Lab Direct' ELSE 'Metrc' END AS source_kind "
             "FROM lab_result_records WHERE package_tag = %s "
@@ -1816,8 +1845,16 @@ def load_qa_analytes(package_tag: str, packaged_license: str) -> list[dict[str, 
         )
     if rows.empty:
         return []
-    if rows["source_kind"].eq("Metrc").any():
+    status_key = rows["lab_testing_status"].fillna("").astype(str).str.lower().str.replace(
+        r"[^a-z]", "", regex=True
+    )
+    final_metrc = rows["source_kind"].eq("Metrc") & status_key.isin({
+        "testpassed", "retestpassed", "testfailed", "retestfailed",
+    })
+    if final_metrc.any():
         rows = rows[rows["source_kind"].eq("Metrc")].copy()
+    elif rows["source_kind"].eq("Lab Direct").any():
+        rows = rows[rows["source_kind"].eq("Lab Direct")].copy()
     rows["test_date"] = pd.to_datetime(rows["test_date"], errors="coerce").dt.strftime("%Y-%m-%d")
     rows["result"] = pd.to_numeric(rows["result"], errors="coerce").round(4)
     rows["test_passed"] = rows["test_passed"].fillna(0).astype(bool).map({True: "Yes", False: "No"})

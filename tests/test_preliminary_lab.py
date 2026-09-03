@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from qcc_reflex_pilot.data import (
+    _lab_direct_upload_summary,
     _lab_source_discrepancies,
     _prepare_qa_packages,
     normalize_lab_summary,
@@ -115,6 +116,17 @@ class PreliminaryLabSummaryTest(unittest.TestCase):
         message = _lab_source_discrepancies(rows)[SAMPLE_TAG]
         self.assertIn("Total Terpenes", message)
         self.assertNotIn("Total THC,", message)
+
+    def test_pending_metrc_does_not_replace_passed_lab_direct_summary(self):
+        direct = normalize_lab_summary(
+            summary_frame(), "20260828 QCC Preliminary Results Summary.xlsx", "hash"
+        )
+        direct["source_kind"] = "Lab Direct"
+        pending = direct.iloc[[0]].copy()
+        pending["source_kind"] = "Metrc"
+        pending["lab_testing_status"] = "TestingInProgress"
+        summary = _lab_direct_upload_summary(pd.concat([direct, pending]))
+        self.assertEqual(summary.iloc[0]["Active Source"], "Lab Direct")
 
 
 if __name__ == "__main__":
