@@ -169,9 +169,10 @@ from .cultivation_registry import (
 from .plant_data import crop_code, parse_metrc_plant_exports, plant_crop_reconciliation
 from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 from .ai_demand import ai_two_week_demand_forecast
+from .wip_report import build_wip_rollforward_workbook
 
 
-PILOT_VERSION = "0.9.6.25-staging"
+PILOT_VERSION = "0.9.6.26-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -638,6 +639,10 @@ class DashboardState(rx.State):
     aging_bulk_band_filter: str = "All Age Bands"
     executive_facility_filter: str = "All Facilities"
     executive_ownership_filter: str = "QCC-Owned Inventory"
+    executive_view: str = "overview"
+    executive_report_message: str = ""
+    executive_report_error: str = ""
+    executive_report_building: bool = False
     inventory_lookup_text: str = ""
     inventory_lookup_message: str = "Enter a complete Metrc tag to inspect one package."
     selected_inventory_details: list[list[str]] = []
@@ -5595,6 +5600,11 @@ class DashboardState(rx.State):
             return
         yield DashboardState.load_sales_background
 
+    def change_executive_view(self, value: str):
+        self.executive_view = value
+        self.executive_report_error = ""
+        self.executive_report_message = ""
+
     def _registry_payload(self) -> dict[str, list[dict[str, Any]]]:
         if not self._cultivation_registry:
             self._cultivation_registry = load_registry()
@@ -7750,13 +7760,19 @@ class DashboardState(rx.State):
             f"(clone-cut week starts {start.strftime('%b')} {start.day})."
         )
 
-    def _clone_plan_weekly_demand_by_strain(self) -> dict[str, float]:
+    def _clone_plan_weekly_demand_by_strain(
+        self,
+        demand_model: str | None = None,
+        product_scope: str | None = None,
+    ) -> dict[str, float]:
         totals: dict[str, float] = {}
+        selected_model = demand_model or self.cultivation_clone_plan_demand_model
+        selected_scope = product_scope or self.cultivation_clone_plan_product_scope
         adjusted_period = {
             "Availability-Adjusted": "All Time",
             "30-Day Availability-Adjusted": "30 Days",
             "60-Day Availability-Adjusted": "60 Days",
-        }.get(self.cultivation_clone_plan_demand_model)
+        }.get(selected_model)
         if adjusted_period:
             selected_window = self.availability_adjusted_velocity_windows.get(
                 adjusted_period
@@ -7784,9 +7800,9 @@ class DashboardState(rx.State):
             sku_lower = sku.casefold()
             is_flower = any(size in sku_lower for size in ("1g flower", "3.5g flower", "7g flower"))
             is_preroll = "pre-roll" in sku_lower or "preroll" in sku_lower
-            if self.cultivation_clone_plan_product_scope == "Pre-Rolls Only":
+            if selected_scope == "Pre-Rolls Only":
                 included = is_preroll
-            elif self.cultivation_clone_plan_product_scope == "Flower Only":
+            elif selected_scope == "Flower Only":
                 included = is_flower
             else:
                 included = is_flower or is_preroll
@@ -7801,10 +7817,15 @@ class DashboardState(rx.State):
         return totals
 
     def _clone_plan_two_week_demand_by_strain(
-        self, periods: list[dict[str, Any]]
+        self,
+        periods: list[dict[str, Any]],
+        demand_model: str | None = None,
+        product_scope: str | None = None,
     ) -> dict[str, list[float]]:
         """Return period-specific demand while preserving legacy flat models."""
-        if self.cultivation_clone_plan_demand_model == "AI-Adjusted":
+        selected_model = demand_model or self.cultivation_clone_plan_demand_model
+        selected_scope = product_scope or self.cultivation_clone_plan_product_scope
+        if selected_model == "AI-Adjusted":
             forecast = ai_two_week_demand_forecast(
                 periods=periods,
                 adjusted_windows=self.availability_adjusted_velocity_windows,
@@ -7814,11 +7835,13 @@ class DashboardState(rx.State):
                     or self.velocity_windows.get("All Time")
                     or self.velocity
                 ),
-                product_scope=self.cultivation_clone_plan_product_scope,
+                product_scope=selected_scope,
             )
             if forecast:
                 return forecast
-        weekly = self._clone_plan_weekly_demand_by_strain()
+        weekly = self._clone_plan_weekly_demand_by_strain(
+            selected_model, selected_scope
+        )
         return {
             strain: [
                 0.0 if bool(period.get("is_historical", False)) else 2.0 * value
@@ -7907,7 +7930,11 @@ class DashboardState(rx.State):
         return allocations
 
     def _clone_plan_scheduled_by_period(
-        self, periods: list[dict[str, Any]]
+        self,
+        periods: list[dict[str, Any]],
+        *,
+        exclude_current_plan: bool = True,
+        post_harvest_days: int | None = None,
     ) -> tuple[dict[str, list[float]], dict[str, list[list[ScheduledSupplyDetail]]]]:
         result: dict[str, list[float]] = {}
         detail_result: dict[str, list[list[ScheduledSupplyDetail]]] = {}
@@ -7923,7 +7950,12 @@ class DashboardState(rx.State):
             square_feet: float,
         ) -> None:
             harvest = date.fromisoformat(harvest_text)
-            available = harvest + timedelta(days=self.cultivation_post_harvest_days)
+            availability_days = (
+                self.cultivation_post_harvest_days
+                if post_harvest_days is None
+                else max(0, int(post_harvest_days))
+            )
+            available = harvest + timedelta(days=availability_days)
             distances = [
                 abs((date.fromisoformat(period["clone_cut_date"]) - available).days)
                 for period in periods
@@ -8011,7 +8043,15 @@ class DashboardState(rx.State):
             )
 
         known_crops = {str(row["crop"]).casefold() for row in UPCOMING_CROP_ALLOCATIONS}
-        plan_periods = {row["crop"]: row for row in prior_clone_planning_periods(8)}
+        plan_periods = {
+            str(row.get("crop", "")): dict(row)
+            for row in self._registry_payload().get("schedule", [])
+            if str(row.get("crop", ""))
+        }
+        plan_periods.update({
+            row["crop"]: row for row in prior_clone_planning_periods(8)
+            if row["crop"] not in plan_periods
+        })
         saved_by_crop = {
             str(plan.get("crop", "") or "").strip(): plan
             for plan in self.cultivation_clone_plan_history
@@ -8020,7 +8060,10 @@ class DashboardState(rx.State):
         for crop_name, allocations in self._clone_plan_allocations_by_crop().items():
             if (
                 crop_name.casefold() in known_crops
-                or crop_name == self._current_clone_period()["crop"]
+                or (
+                    exclude_current_plan
+                    and crop_name == self._current_clone_period()["crop"]
+                )
             ):
                 continue
             plan = saved_by_crop.get(crop_name, {})
@@ -8546,6 +8589,171 @@ class DashboardState(rx.State):
         return {
             key: float(values.get("total_lbs", 0) or 0)
             for key, values in self._cultivation_current_inventory_breakdown_by_strain().items()
+        }
+
+    @staticmethod
+    def _rolling_months(count: int = 12) -> list[date]:
+        current = date.today().replace(day=1)
+        months: list[date] = []
+        year, month = current.year, current.month
+        for _ in range(max(1, count)):
+            months.append(date(year, month, 1))
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+        return months
+
+    def _wip_report_payload(self) -> dict[str, Any]:
+        """Assemble one auditable snapshot for the four CFO report models."""
+        months = self._rolling_months(12)
+        horizon_end = (
+            date(months[-1].year + (1 if months[-1].month == 12 else 0),
+                 1 if months[-1].month == 12 else months[-1].month + 1, 1)
+        )
+        period_dates: list[date] = []
+        cursor = months[0]
+        while cursor < horizon_end:
+            period_dates.append(cursor)
+            cursor += timedelta(days=14)
+        periods = [
+            {
+                "crop": f"REPORT-{index + 1}",
+                "room": "",
+                "clone_cut_date": value.isoformat(),
+                "flower_entry_date": value.isoformat(),
+                "harvest_date": value.isoformat(),
+                "available_date": value.isoformat(),
+                "is_historical": False,
+            }
+            for index, value in enumerate(period_dates)
+        ]
+
+        current = self._cultivation_current_inventory_breakdown_by_strain()
+        opening = {
+            key: float(detail.get("wip_lbs", 0) or 0)
+            + float(detail.get("pre_wip_lbs", 0) or 0)
+            for key, detail in current.items()
+        }
+        _, scheduled_detail = self._clone_plan_scheduled_by_period(
+            periods,
+            exclude_current_plan=False,
+            post_harvest_days=30,
+        )
+        scheduled: dict[str, dict[str, float]] = {}
+        label_candidates: dict[str, str] = {}
+        for row in self.all_inventory:
+            key = normalized_strain(row.get("Strain", ""))
+            label = normalize_strain_name(row.get("Strain", ""))
+            if key and label:
+                label_candidates.setdefault(key, label)
+        for rows in self.availability_adjusted_velocity_windows.values():
+            for row in rows:
+                key = normalized_strain(row.get("Strain", ""))
+                label = normalize_strain_name(row.get("Strain", ""))
+                if key and label:
+                    label_candidates.setdefault(key, label)
+        for key, buckets in scheduled_detail.items():
+            for details in buckets:
+                for detail in details:
+                    try:
+                        available = date.fromisoformat(
+                            str(detail.get("available_date", ""))
+                        )
+                    except ValueError:
+                        continue
+                    month_key = available.strftime("%Y-%m")
+                    if month_key not in {month.strftime("%Y-%m") for month in months}:
+                        continue
+                    scheduled.setdefault(key, {})[month_key] = (
+                        scheduled.setdefault(key, {}).get(month_key, 0.0)
+                        + max(0.0, float(detail.get("forecast_counted_lbs", 0) or 0))
+                    )
+                    label = normalize_strain_name(detail.get("strain", ""))
+                    if label:
+                        label_candidates.setdefault(key, label)
+
+        model_names = [
+            "Current SKU Velocity",
+            "30-Day Availability-Adjusted",
+            "60-Day Availability-Adjusted",
+            "AI-Adjusted",
+        ]
+        model_lookup = {
+            "Current SKU Velocity": "Current SKU Velocity",
+            "30-Day Availability-Adjusted": "30-Day Availability-Adjusted",
+            "60-Day Availability-Adjusted": "60-Day Availability-Adjusted",
+            "AI-Adjusted": "AI-Adjusted",
+        }
+        requested_by_model: dict[str, dict[str, dict[str, float]]] = {}
+        for report_model in model_names:
+            forecast = self._clone_plan_two_week_demand_by_strain(
+                periods,
+                model_lookup[report_model],
+                "Flower + Pre-Rolls",
+            )
+            requested: dict[str, dict[str, float]] = {}
+            for strain_key, period_values in forecast.items():
+                for index, two_week_lbs in enumerate(period_values):
+                    if index >= len(period_dates):
+                        break
+                    start = period_dates[index]
+                    remaining_days = 14
+                    segment_start = start
+                    while remaining_days > 0 and segment_start < horizon_end:
+                        next_month = date(
+                            segment_start.year + (1 if segment_start.month == 12 else 0),
+                            1 if segment_start.month == 12 else segment_start.month + 1,
+                            1,
+                        )
+                        segment_days = min(
+                            remaining_days, (next_month - segment_start).days
+                        )
+                        month_key = segment_start.strftime("%Y-%m")
+                        requested.setdefault(strain_key, {})[month_key] = (
+                            requested.setdefault(strain_key, {}).get(month_key, 0.0)
+                            + max(0.0, float(two_week_lbs or 0))
+                            * segment_days
+                            / 14.0
+                        )
+                        remaining_days -= segment_days
+                        segment_start += timedelta(days=segment_days)
+            requested_by_model[report_model] = requested
+
+        active_keys = set(opening) | set(scheduled)
+        for requested in requested_by_model.values():
+            active_keys.update(requested)
+        active_keys = {
+            key for key in active_keys
+            if opening.get(key, 0) > 0
+            or any(scheduled.get(key, {}).values())
+            or any(
+                any(model.get(key, {}).values())
+                for model in requested_by_model.values()
+            )
+        }
+        for strain in self._cultivation_planning_strain_names():
+            key = normalized_strain(strain)
+            if key:
+                label_candidates.setdefault(key, normalize_strain_name(strain))
+        labels = {
+            key: label_candidates.get(key) or normalize_strain_name(key) or key.title()
+            for key in active_keys
+        }
+        strains = sorted(labels.values(), key=str.casefold)
+
+        def relabel(source: dict[str, Any]) -> dict[str, Any]:
+            return {labels[key]: value for key, value in source.items() if key in labels}
+
+        return {
+            "months": months,
+            "strains": strains,
+            "opening_wip": relabel(opening),
+            "scheduled": relabel(scheduled),
+            "requested_by_model": {
+                model: relabel(values)
+                for model, values in requested_by_model.items()
+            },
         }
 
     @rx.var(cache=True)
@@ -10934,6 +11142,45 @@ class DashboardState(rx.State):
         )
 
     @rx.event
+    def download_cultivation_wip_report(self):
+        self.executive_report_error = ""
+        self.executive_report_message = "Building the four-sheet WIP report..."
+        self.executive_report_building = True
+        try:
+            payload = self._wip_report_payload()
+            if not payload["strains"]:
+                raise ValueError(
+                    "No cultivation WIP, scheduled supply, or Flower/Pre-Roll demand is loaded."
+                )
+            content = build_wip_rollforward_workbook(
+                **payload,
+                as_of=self.loaded_at,
+                minimum_floor_lbs=5.0,
+                excess_threshold_lbs=50.0,
+            )
+            self.executive_report_message = (
+                f"Prepared four demand-model sheets for {len(payload['strains'])} strains."
+            )
+            return rx.download(
+                data=content,
+                mime_type=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+                filename=(
+                    "qcc_cultivation_wip_rollforward_"
+                    f"{date.today().isoformat()}.xlsx"
+                ),
+            )
+        except Exception as error:
+            self.executive_report_error = (
+                "The cultivation WIP report could not be built: " + str(error)
+            )
+            self.executive_report_message = ""
+        finally:
+            self.executive_report_building = False
+
+    @rx.event
     def download_customers(self):
         return rx.download(
             data=self._csv_bytes(self.filtered_customers),
@@ -11629,7 +11876,7 @@ def filters() -> rx.Component:
     )
 
 
-def executive_dashboard_panel() -> rx.Component:
+def executive_overview_panel() -> rx.Component:
     """Concise operating view for leadership and department meetings."""
     return rx.vstack(
         rx.box(
@@ -11761,6 +12008,122 @@ def executive_dashboard_panel() -> rx.Component:
             height="520px",
         ),
         width="100%", spacing="5",
+    )
+
+
+def executive_reports_panel() -> rx.Component:
+    return rx.vstack(
+        rx.box(
+            rx.heading("Reports & Exports", size="7", color=DARK),
+            rx.text(
+                "Repeatable finance and operating reports generated from the current Control Tower snapshot.",
+                color=MUTED,
+            ),
+            width="100%",
+        ),
+        rx.card(
+            rx.vstack(
+                rx.flex(
+                    rx.box(
+                        rx.hstack(
+                            rx.icon("file-spreadsheet", color=ACCENT),
+                            rx.heading("Cultivation WIP Roll-Forward", size="5", color=DARK),
+                            gap="2",
+                            align="center",
+                        ),
+                        rx.text(
+                            "A 12-month Excel report with separate Current Velocity, 30-Day Adjusted, 60-Day Adjusted, and AI Adjusted sheets.",
+                            color=MUTED,
+                            size="2",
+                        ),
+                    ),
+                    rx.spacer(),
+                    rx.button(
+                        "Download WIP Report",
+                        on_click=DashboardState.download_cultivation_wip_report,
+                        loading=DashboardState.executive_report_building,
+                        background=ACCENT,
+                        color="white",
+                    ),
+                    width="100%",
+                    align="center",
+                    gap="4",
+                    wrap="wrap",
+                ),
+                rx.grid(
+                    executive_metric_card(
+                        "Demand Scope", "Flower + Pre-Rolls",
+                        "Used on all four sheets", "#0f766e", "#f0fdfa",
+                    ),
+                    executive_metric_card(
+                        "Opening WIP", "WIP + Pre-WIP",
+                        "Cultivation classifications only", "#2563eb", "#eff6ff",
+                    ),
+                    executive_metric_card(
+                        "Minimum Floor", "5.0 lb",
+                        "Retained per strain", "#7c3aed", "#f5f3ff",
+                    ),
+                    executive_metric_card(
+                        "Excess Threshold", "50.0 lb",
+                        "Reported above this level", "#d97706", "#fffbeb",
+                    ),
+                    columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+                    gap="3",
+                    width="100%",
+                ),
+                rx.callout(
+                    "Scheduled pounds enter on the expected availability date—30 days after harvest—and already reflect Fresh Frozen and Creative Use reductions. Curing/trim loss remains zero to avoid deducting yield twice.",
+                    icon="info",
+                    color_scheme="blue",
+                    width="100%",
+                ),
+                rx.cond(
+                    DashboardState.executive_report_message != "",
+                    rx.callout(
+                        DashboardState.executive_report_message,
+                        icon="circle_check",
+                        color_scheme="green",
+                        width="100%",
+                    ),
+                ),
+                rx.cond(
+                    DashboardState.executive_report_error != "",
+                    rx.callout(
+                        DashboardState.executive_report_error,
+                        icon="triangle_alert",
+                        color_scheme="red",
+                        width="100%",
+                    ),
+                ),
+                width="100%",
+                spacing="4",
+            ),
+            width="100%",
+            border_top=f"5px solid {ACCENT}",
+        ),
+        width="100%",
+        spacing="5",
+    )
+
+
+def executive_dashboard_panel() -> rx.Component:
+    return rx.vstack(
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger("Overview", value="overview"),
+                rx.tabs.trigger("Reports & Exports", value="reports"),
+            ),
+            value=DashboardState.executive_view,
+            on_change=DashboardState.change_executive_view,
+            width="100%",
+        ),
+        rx.cond(
+            DashboardState.executive_view == "reports",
+            executive_reports_panel(),
+            executive_overview_panel(),
+        ),
+        width="100%",
+        spacing="4",
     )
 
 
