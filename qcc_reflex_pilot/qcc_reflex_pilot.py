@@ -609,6 +609,7 @@ class DashboardState(rx.State):
     qa_adjusted_metrc_total_terpenes: str = ""
     qa_adjusted_metrc_total_cbg: str = ""
     qa_adjusted_metrc_terpene_values: list[str] = ["", "", ""]
+    qa_adjusted_source_label: str = "Metrc"
     qa_adjusted_coa_message: str = ""
     qa_adjusted_coa_error: str = ""
     inventory_stage_filter: str = "All Production Stages"
@@ -1841,6 +1842,7 @@ class DashboardState(rx.State):
         self.qa_adjusted_metrc_total_terpenes = ""
         self.qa_adjusted_metrc_total_cbg = ""
         self.qa_adjusted_metrc_terpene_values = ["", "", ""]
+        self.qa_adjusted_source_label = "Metrc"
 
     @rx.event
     def select_qa_package(self, package_tag: str, packaged_license: str):
@@ -1920,6 +1922,12 @@ class DashboardState(rx.State):
         self, rows: list[dict[str, Any]], adjusted_coa: dict[str, Any]
     ) -> None:
         metrc = label_analytes(rows)
+        sources = {
+            str(row.get("Source", "") or "").strip() for row in rows
+            if str(row.get("Source", "") or "").strip()
+        }
+        is_lab_direct = "Lab Direct" in sources and "Metrc" not in sources
+        self.qa_adjusted_source_label = "Lab Direct" if is_lab_direct else "Metrc"
         top = list(metrc.get("top_terpenes", []))[:3]
         while len(top) < 3:
             top.append(("", None))
@@ -1949,9 +1957,16 @@ class DashboardState(rx.State):
                 for name in self.qa_adjusted_terpene_names
             ]
         else:
-            self.qa_adjusted_total_terpenes = ""
-            self.qa_adjusted_total_cbg = ""
-            self.qa_adjusted_terpene_values = ["", "", ""]
+            self.qa_adjusted_total_terpenes = (
+                self.qa_adjusted_metrc_total_terpenes if is_lab_direct else ""
+            )
+            self.qa_adjusted_total_cbg = (
+                self.qa_adjusted_metrc_total_cbg if is_lab_direct else ""
+            )
+            self.qa_adjusted_terpene_values = (
+                list(self.qa_adjusted_metrc_terpene_values)
+                if is_lab_direct else ["", "", ""]
+            )
 
     @rx.event
     def change_qa_adjusted_total_terpenes(self, value: str):
@@ -2013,10 +2028,14 @@ class DashboardState(rx.State):
         suspects: list[str] = []
         metrc_total = self._adjusted_number(self.qa_adjusted_metrc_total_terpenes)
         if total is not None and metrc_total is not None and abs(total - metrc_total) > 0.011:
-            suspects.append("Total Terpenes differs from Metrc by more than 0.01%.")
+            suspects.append(
+                f"Total Terpenes differs from {self.qa_adjusted_source_label} by more than 0.01%."
+            )
         metrc_cbg = self._adjusted_number(self.qa_adjusted_metrc_total_cbg)
         if total_cbg is not None and metrc_cbg is not None and abs(total_cbg - metrc_cbg) > 0.021:
-            suspects.append("Total CBG differs from the Metrc-derived value by more than 0.02%.")
+            suspects.append(
+                f"Total CBG differs from {self.qa_adjusted_source_label} by more than 0.02%."
+            )
         for index, (name, value, metrc_text) in enumerate(zip(
             self.qa_adjusted_terpene_names,
             terpene_values,
@@ -2025,7 +2044,8 @@ class DashboardState(rx.State):
             metrc_value = self._adjusted_number(metrc_text)
             if value is not None and metrc_value is not None and abs(value - metrc_value) > 0.011:
                 suspects.append(
-                    f"{name or f'Terpene {index}'} differs from Metrc by more than 0.01%."
+                    f"{name or f'Terpene {index}'} differs from "
+                    f"{self.qa_adjusted_source_label} by more than 0.01%."
                 )
         payload = {
             "total_terpenes": total,
@@ -2842,10 +2862,10 @@ class DashboardState(rx.State):
             elif metrc is not None and abs(entered - metrc) > tolerance:
                 status, color = "Suspect", "orange"
             else:
-                status, color = "Matches Metrc range", "teal"
+                status, color = "Matches source range", "teal"
             rows.append({
                 "Field": label,
-                "Metrc": "—" if metrc is None else f"{metrc:.3f}%",
+                "Source": "—" if metrc is None else f"{metrc:.3f}%",
                 "Entered": "—" if entered is None else f"{entered:.3f}%",
                 "Status": status,
                 "Color": color,
@@ -14424,9 +14444,9 @@ def qa_import_panel() -> rx.Component:
             value="qa-import",
             header=rx.flex(
                 rx.box(
-                    rx.text("Import Lab Results", weight="bold", color=DARK),
+                    rx.text("Import Preliminary Lab Results", weight="bold", color=DARK),
                     rx.text(
-                        "Upload Lab Direct Excel summaries or Metrc Lab Result CSV files.",
+                        "Upload the laboratory's passed Preliminary Results Summary workbook.",
                         size="1", color=MUTED,
                     ),
                 ),
@@ -14479,44 +14499,6 @@ def qa_import_panel() -> rx.Component:
                     rx.button(
                         "Clear Selection",
                         on_click=rx.clear_selected_files("qa_lab_summary_upload"),
-                        variant="outline",
-                    ),
-                    gap="3",
-                ),
-                rx.divider(),
-                rx.heading("Metrc Lab Results", size="3", color=DARK),
-                rx.upload(
-                    rx.vstack(
-                        rx.icon("upload", size=28, color=ACCENT),
-                        rx.text("Drag LabResultsReport CSV files here or click to select"),
-                        rx.button("Choose CSV Files", variant="outline"),
-                        spacing="2", align="center",
-                    ),
-                    id="qa_lab_upload",
-                    accept={"text/csv": [".csv"], "application/vnd.ms-excel": [".csv"]},
-                    multiple=True,
-                    max_files=20,
-                    border=f"2px dashed {ACCENT}",
-                    border_radius="12px",
-                    padding="2rem",
-                    width="100%",
-                ),
-                rx.flex(
-                    rx.foreach(rx.selected_files("qa_lab_upload"), rx.badge),
-                    gap="2", wrap="wrap", width="100%",
-                ),
-                rx.flex(
-                    rx.button(
-                        "Import Selected Files",
-                        on_click=DashboardState.import_qa_lab_files(
-                            rx.upload_files(upload_id="qa_lab_upload")
-                        ),
-                        loading=DashboardState.qa_importing,
-                        background=ACCENT, color="white",
-                    ),
-                    rx.button(
-                        "Clear Selection",
-                        on_click=rx.clear_selected_files("qa_lab_upload"),
                         variant="outline",
                     ),
                     gap="3",
@@ -14639,7 +14621,7 @@ def qa_analyte_category_badge(row: rx.Var) -> rx.Component:
 def qa_adjusted_coa_review_row(row: rx.Var) -> rx.Component:
     return rx.table.row(
         rx.table.cell(row["Field"]),
-        rx.table.cell(row["Metrc"]),
+        rx.table.cell(row["Source"]),
         rx.table.cell(row["Entered"]),
         rx.table.cell(
             rx.badge(row["Status"], color_scheme=row["Color"], variant="soft")
@@ -14657,7 +14639,8 @@ def qa_adjusted_terpene_input(index: int, on_change: Any) -> rx.Component:
                 ),
                 rx.spacer(),
                 rx.badge(
-                    "Metrc " + DashboardState.qa_adjusted_metrc_terpene_values[index] + "%",
+                    DashboardState.qa_adjusted_source_label + " "
+                    + DashboardState.qa_adjusted_metrc_terpene_values[index] + "%",
                     color_scheme="gray", variant="soft",
                 ),
                 width="100%", align="center",
@@ -14680,8 +14663,8 @@ def qa_adjusted_coa_dialog() -> rx.Component:
         rx.dialog.content(
             rx.dialog.title("Adjusted COA Values"),
             rx.dialog.description(
-                "Enter the higher-precision values printed on the laboratory COA. "
-                "The app compares them with Metrc before saving them to this lab sample."
+                "Review the higher-precision laboratory values. Lab Direct results "
+                "are prefilled, but they are not stored as an Adjusted COA until you save."
             ),
             rx.callout(
                 "Enter percentages as displayed—for example, 1.567 rather than 0.01567.",
@@ -14692,7 +14675,8 @@ def qa_adjusted_coa_dialog() -> rx.Component:
                     rx.flex(
                         rx.text("Total Terpenes %", weight="bold"), rx.spacer(),
                         rx.badge(
-                            "Metrc " + DashboardState.qa_adjusted_metrc_total_terpenes + "%",
+                            DashboardState.qa_adjusted_source_label + " "
+                            + DashboardState.qa_adjusted_metrc_total_terpenes + "%",
                             color_scheme="gray", variant="soft",
                         ),
                         width="100%",
@@ -14708,7 +14692,8 @@ def qa_adjusted_coa_dialog() -> rx.Component:
                     rx.flex(
                         rx.text("Total CBG %", weight="bold"), rx.spacer(),
                         rx.badge(
-                            "Metrc-derived " + DashboardState.qa_adjusted_metrc_total_cbg + "%",
+                            DashboardState.qa_adjusted_source_label + " "
+                            + DashboardState.qa_adjusted_metrc_total_cbg + "%",
                             color_scheme="gray", variant="soft",
                         ),
                         width="100%",
@@ -14751,7 +14736,7 @@ def qa_adjusted_coa_dialog() -> rx.Component:
                 rx.table.header(
                     rx.table.row(*[
                         rx.table.column_header_cell(column)
-                        for column in ["Field", "Metrc", "Entered COA", "Check"]
+                        for column in ["Field", "Source", "Entered COA", "Check"]
                     ])
                 ),
                 rx.table.body(

@@ -11,6 +11,7 @@ from qcc_reflex_pilot.data import (
     read_lab_summary_bytes,
 )
 from qcc_reflex_pilot.zebra_labels import label_analytes, prepare_label_context
+from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
 
 
 SAMPLE_TAG = "1A4110300002A31000037744"
@@ -127,6 +128,23 @@ class PreliminaryLabSummaryTest(unittest.TestCase):
         pending["lab_testing_status"] = "TestingInProgress"
         summary = _lab_direct_upload_summary(pd.concat([direct, pending]))
         self.assertEqual(summary.iloc[0]["Active Source"], "Lab Direct")
+
+    def test_lab_direct_values_prefill_adjusted_coa_without_saving(self):
+        normalized = normalize_lab_summary(
+            summary_frame(), "20260828 QCC Preliminary Results Summary.xlsx", "hash"
+        )
+        rows = normalized.rename(columns={
+            "test_name": "Test", "result": "Result", "test_passed": "Passed",
+        }).to_dict("records")
+        for row in rows:
+            row["Source"] = "Lab Direct"
+        state = DashboardState(_reflex_internal_init=True)
+        state._initialize_adjusted_coa_inputs(rows, {})
+        self.assertEqual(state.qa_adjusted_source_label, "Lab Direct")
+        self.assertEqual(state.qa_adjusted_total_terpenes, "2.069")
+        self.assertEqual(state.qa_adjusted_total_cbg, "1.21")
+        self.assertEqual(state.qa_adjusted_terpene_values, ["0.389", "0.320", "0.225"])
+        self.assertEqual(state.qa_adjusted_coa, {})
 
 
 if __name__ == "__main__":
