@@ -217,3 +217,38 @@ def test_legacy_manufacturing_pre_wip_is_source_specific():
         "Pre-WIP-Manufacturing",
         "Pre-WIP-Cultivation",
     ]
+
+
+def test_cultivation_smalls_use_base_strain_and_follow_qa_readiness():
+    shared = {
+        "production_stage": "Sellable Bulk",
+        "source_license_type": "Cultivation",
+        "material_type": "Flower",
+        "category": "Bud/Flower - Bulk",
+        "facility": "Building 33 (C9)",
+        "current_facility": "Building 33 (C9)",
+        "ownership_status": "QCC-Owned / Clade9 Origin",
+        "location": "Vault - Pending Testing",
+    }
+    packages = pd.DataFrame([
+        {
+            **shared,
+            "strain": "Diamond Bar Smalls",
+            "item": "Diamond Bar Smalls Bulk",
+            "qa_status": "Test Passed",
+        },
+        {
+            **shared,
+            "strain": "Blue Dream - Smalls",
+            "item": "Blue Dream Smalls Bulk",
+            "qa_status": "Not Submitted",
+        },
+    ])
+
+    result = normalize_cultivation_byproduct_stages(packages)
+
+    assert result["strain"].tolist() == ["Diamond Bar", "Blue Dream"]
+    assert result["production_stage"].tolist() == [
+        "WIP-Cultivation",
+        "Pre-WIP-Cultivation",
+    ]

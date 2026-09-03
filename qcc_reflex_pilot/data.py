@@ -4837,6 +4837,16 @@ def normalize_cultivation_byproduct_stages(packages: pd.DataFrame) -> pd.DataFra
     building_33 = origin.eq("building 33 (c9)") & ~originated_1a
     classifiable = unfinished & cultivation_license & flower_bulk & ~failed
 
+    # A trailing "Smalls" value describes the bulk grade, not a separate
+    # cultivar. Normalize the strain used by every downstream inventory view
+    # while retaining the grade in the original Item and Category fields.
+    if "strain" in result.columns:
+        strain = result["strain"].fillna("").astype(str).str.strip()
+        grade_labeled_strain = classifiable & strain.ne("")
+        result.loc[grade_labeled_strain, "strain"] = strain.loc[
+            grade_labeled_strain
+        ].map(normalize_strain_name)
+
     result.loc[classifiable & physically_1a & test_passed, "production_stage"] = (
         "1A Sellable Bulk"
     )

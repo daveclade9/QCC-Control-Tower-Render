@@ -429,6 +429,7 @@ def default_split_percentages(strain_count: int) -> tuple[float, float, float]:
 
 def normalized_strain(value: Any) -> str:
     name = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    name = re.sub(r"(?:\s*[-_/]\s*|\s+)smalls?$", "", name).strip()
     return STRAIN_ALIASES.get(name, name)
 
 

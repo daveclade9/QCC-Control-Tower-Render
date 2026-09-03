@@ -147,6 +147,26 @@ class CloneDemandModelTest(unittest.TestCase):
         ]
         self.assertAlmostEqual(included["total_lbs"], 6.0)
 
+    def test_smalls_are_grouped_with_the_base_strain_in_current_pounds(self):
+        self.state.all_inventory = [
+            {
+                "Strain": "Diamond Bar Smalls",
+                "Production Stage": "Pre-WIP-Cultivation",
+                "Category": "Bud/Flower - Bulk",
+                "QA Status": "Not Submitted",
+                "License": "Cultivation",
+                "Ownership Status": "QCC-Owned / Clade9 Origin",
+                "Calculated Weight (g)": 453.59237,
+            },
+        ]
+        self.state.cultivation_clone_plan_include_pre_wip = True
+
+        breakdown = self.state._cultivation_current_inventory_breakdown_by_strain()
+
+        self.assertEqual(list(breakdown), ["diamond bar"])
+        self.assertAlmostEqual(breakdown["diamond bar"]["pre_wip_lbs"], 1.0)
+        self.assertAlmostEqual(breakdown["diamond bar"]["total_lbs"], 1.0)
+
     def test_missing_adjusted_window_does_not_zero_all_demand(self):
         self.state.availability_adjusted_velocity_windows = {
             "All Time": self.state.availability_adjusted_velocity_windows["All Time"]

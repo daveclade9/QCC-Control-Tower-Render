@@ -39,6 +39,15 @@ class CompatibleBrandRulesTest(unittest.TestCase):
         row = self.row(Strain="Diamond Bar")
         self.assertEqual(compatible_inventory_brand(row), "Clade9")
 
+    def test_smalls_grade_uses_the_base_strain_brand_rule(self):
+        for strain in CLADE9_COMPATIBLE_BULK_STRAINS:
+            with self.subTest(strain=strain):
+                row = self.row(
+                    Strain=f"{strain} Smalls",
+                    Item=f"{strain} Smalls Bulk",
+                )
+                self.assertEqual(compatible_inventory_brand(row), "Clade9")
+
     def test_unapproved_strain_is_not_inferred_from_demand(self):
         row = self.row(Strain="Ice Cream Cake")
         self.assertEqual(

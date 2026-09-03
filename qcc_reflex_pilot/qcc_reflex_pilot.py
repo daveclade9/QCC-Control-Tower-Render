@@ -171,7 +171,7 @@ from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 from .ai_demand import ai_two_week_demand_forecast
 
 
-PILOT_VERSION = "0.9.6.21-staging"
+PILOT_VERSION = "0.9.6.22-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"

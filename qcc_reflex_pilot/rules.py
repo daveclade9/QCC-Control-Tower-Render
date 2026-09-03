@@ -113,6 +113,14 @@ def canonicalize_transfer_item(item: Any) -> str:
 
 def normalize_strain_name(value: Any) -> str:
     text = re.sub(r"\s+", " ", str(value or "").strip(" -_"))
+    # Metrc sometimes appends a physical flower grade to the cultivar name.
+    # Smalls remain the same strain; the grade is retained in Item/Category.
+    text = re.sub(
+        r"(?:\s*[-_/]\s*|\s+)smalls?$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
     aliases = {
         "private reserve": "Private Reserve OG",
         "private reserve og": "Private Reserve OG",
