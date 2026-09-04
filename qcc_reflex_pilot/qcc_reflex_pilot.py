@@ -172,7 +172,7 @@ from .ai_demand import ai_two_week_demand_forecast
 from .wip_report import build_wip_rollforward_workbook
 
 
-PILOT_VERSION = "0.9.6.26-staging"
+PILOT_VERSION = "0.9.6.27-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -643,6 +643,9 @@ class DashboardState(rx.State):
     executive_report_message: str = ""
     executive_report_error: str = ""
     executive_report_building: bool = False
+    executive_report_include_non_clade9: bool = False
+    executive_report_minimum_floor_lbs: str = "0"
+    executive_report_excess_threshold_lbs: str = "50"
     inventory_lookup_text: str = ""
     inventory_lookup_message: str = "Enter a complete Metrc tag to inspect one package."
     selected_inventory_details: list[list[str]] = []
@@ -8604,6 +8607,26 @@ class DashboardState(rx.State):
                 year += 1
         return months
 
+    def _wip_report_clade9_strain_keys(self) -> set[str]:
+        """Identify strains that belong in the default Clade9 report scope."""
+        keys = {normalized_strain(value) for value in CLADE9_CLONE_STRAINS}
+        craft_keys = {normalized_strain(value) for value in CRAFT_KINGS_CLONE_STRAINS}
+        keys.update(
+            normalized_strain(value)
+            for value in self.cultivation_provisional_strains
+            if normalized_strain(value) not in craft_keys
+        )
+        for row in self.all_inventory:
+            brand = str(row.get("Brand", "") or "").strip().casefold()
+            compatible = str(self._compatible_brand(row) or "").strip().casefold()
+            if brand == "clade9" or compatible == "clade9":
+                keys.add(normalized_strain(row.get("Strain", "")))
+        for rows in self.velocity_windows.values():
+            for row in rows:
+                if str(row.get("Brand", "") or "").strip().casefold() == "clade9":
+                    keys.add(normalized_strain(row.get("Strain", "")))
+        return {key for key in keys if key}
+
     def _wip_report_payload(self) -> dict[str, Any]:
         """Assemble one auditable snapshot for the four CFO report models."""
         months = self._rolling_months(12)
@@ -8732,6 +8755,8 @@ class DashboardState(rx.State):
                 for model in requested_by_model.values()
             )
         }
+        if not self.executive_report_include_non_clade9:
+            active_keys &= self._wip_report_clade9_strain_keys()
         for strain in self._cultivation_planning_strain_names():
             key = normalized_strain(strain)
             if key:
@@ -11142,11 +11167,27 @@ class DashboardState(rx.State):
         )
 
     @rx.event
+    def change_executive_report_strain_scope(self, value: bool):
+        self.executive_report_include_non_clade9 = bool(value)
+
+    @rx.event
+    def change_executive_report_minimum_floor(self, value: str):
+        self.executive_report_minimum_floor_lbs = str(value or "0")
+
+    @rx.event
+    def change_executive_report_excess_threshold(self, value: str):
+        self.executive_report_excess_threshold_lbs = str(value or "0")
+
+    @rx.event
     def download_cultivation_wip_report(self):
         self.executive_report_error = ""
         self.executive_report_message = "Building the four-sheet WIP report..."
         self.executive_report_building = True
         try:
+            minimum_floor = float(self.executive_report_minimum_floor_lbs or 0)
+            excess_threshold = float(self.executive_report_excess_threshold_lbs or 0)
+            if minimum_floor < 0 or excess_threshold < 0:
+                raise ValueError("Minimum WIP Floor and Excess Threshold must be zero or greater.")
             payload = self._wip_report_payload()
             if not payload["strains"]:
                 raise ValueError(
@@ -11155,8 +11196,8 @@ class DashboardState(rx.State):
             content = build_wip_rollforward_workbook(
                 **payload,
                 as_of=self.loaded_at,
-                minimum_floor_lbs=0.0,
-                excess_threshold_lbs=50.0,
+                minimum_floor_lbs=minimum_floor,
+                excess_threshold_lbs=excess_threshold,
             )
             self.executive_report_message = (
                 f"Prepared four demand-model sheets for {len(payload['strains'])} strains."
@@ -12060,16 +12101,52 @@ def executive_reports_panel() -> rx.Component:
                         "Cultivation classifications only", "#2563eb", "#eff6ff",
                     ),
                     executive_metric_card(
-                        "Minimum Floor", "0.0 lb",
-                        "No minimum balance retained", "#7c3aed", "#f5f3ff",
+                        "Strain Scope",
+                        rx.cond(
+                            DashboardState.executive_report_include_non_clade9,
+                            "All strains",
+                            "Clade9 strains",
+                        ),
+                        "Clade9 is the default", "#7c3aed", "#f5f3ff",
                     ),
                     executive_metric_card(
-                        "Excess Threshold", "50.0 lb",
-                        "Reported above this level", "#d97706", "#fffbeb",
+                        "Forecast Horizon", "12 months",
+                        "Beginning with the current month", "#d97706", "#fffbeb",
                     ),
                     columns=rx.breakpoints(initial="1", sm="2", lg="4"),
                     gap="3",
                     width="100%",
+                ),
+                rx.flex(
+                    rx.box(
+                        rx.text("Strain scope", size="1", color=MUTED, weight="bold"),
+                        rx.hstack(
+                            rx.switch(
+                                checked=DashboardState.executive_report_include_non_clade9,
+                                on_change=DashboardState.change_executive_report_strain_scope,
+                                color_scheme="purple",
+                            ),
+                            rx.text("Include Non-Clade9 Strains", color=DARK, weight="bold"),
+                            gap="2", align="center",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Minimum WIP Floor (lb)", size="1", color=MUTED, weight="bold"),
+                        rx.input(
+                            value=DashboardState.executive_report_minimum_floor_lbs,
+                            on_change=DashboardState.change_executive_report_minimum_floor,
+                            type="number", min="0", step="0.1", width="180px",
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Excess Threshold (lb)", size="1", color=MUTED, weight="bold"),
+                        rx.input(
+                            value=DashboardState.executive_report_excess_threshold_lbs,
+                            on_change=DashboardState.change_executive_report_excess_threshold,
+                            type="number", min="0", step="0.1", width="180px",
+                        ),
+                    ),
+                    gap="5", align="end", wrap="wrap", width="100%",
                 ),
                 rx.callout(
                     "Scheduled pounds enter on the expected availability date—30 days after harvest—and already reflect Fresh Frozen and Creative Use reductions. Curing/trim loss remains zero to avoid deducting yield twice.",

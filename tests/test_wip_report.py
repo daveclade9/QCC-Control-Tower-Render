@@ -52,6 +52,7 @@ class WipReportTest(unittest.TestCase):
         self.assertEqual(sheet["B5"].value, 0.0)
         self.assertEqual(sheet["D10"].value, "Unit")
         self.assertEqual(sheet["D11"].value, "lbs")
+        self.assertGreaterEqual(sheet.column_dimensions["E"].width, 15)
         self.assertEqual(sheet.freeze_panes, "E11")
         self.assertTrue(any(
             isinstance(cell.value, str) and cell.value.startswith("=MAX(0,")

@@ -101,6 +101,27 @@ class CloneDemandModelTest(unittest.TestCase):
         self.assertAlmostEqual(flower, 20 * 3.5 / 453.59237)
         self.assertAlmostEqual(preroll, 100 / 453.59237)
 
+    def test_wip_report_default_scope_identifies_clade9_strains(self):
+        self.state.cultivation_provisional_strains = ["New Clade9 Strain"]
+        self.state.all_inventory = [
+            {"Brand": "Clade9", "Strain": "Inventory Clade9 Strain"},
+            {"Brand": "Craft Kings", "Strain": "Golden Goat"},
+        ]
+        self.state.velocity_windows = {
+            "All Time": [
+                {"Brand": "Clade9", "Strain": "Demand Clade9 Strain"},
+                {"Brand": "Craft Kings", "Strain": "Sour Chem"},
+            ]
+        }
+
+        keys = self.state._wip_report_clade9_strain_keys()
+
+        self.assertIn("new clade9 strain", keys)
+        self.assertIn("inventory clade9 strain", keys)
+        self.assertIn("demand clade9 strain", keys)
+        self.assertNotIn("golden goat", keys)
+        self.assertNotIn("sour chem", keys)
+
     def test_current_pounds_breakdown_uses_formal_wip_and_optional_pre_wip(self):
         self.state.all_inventory = [
             {
