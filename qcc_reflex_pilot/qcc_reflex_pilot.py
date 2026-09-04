@@ -11155,7 +11155,7 @@ class DashboardState(rx.State):
             content = build_wip_rollforward_workbook(
                 **payload,
                 as_of=self.loaded_at,
-                minimum_floor_lbs=5.0,
+                minimum_floor_lbs=0.0,
                 excess_threshold_lbs=50.0,
             )
             self.executive_report_message = (
@@ -12060,8 +12060,8 @@ def executive_reports_panel() -> rx.Component:
                         "Cultivation classifications only", "#2563eb", "#eff6ff",
                     ),
                     executive_metric_card(
-                        "Minimum Floor", "5.0 lb",
-                        "Retained per strain", "#7c3aed", "#f5f3ff",
+                        "Minimum Floor", "0.0 lb",
+                        "No minimum balance retained", "#7c3aed", "#f5f3ff",
                     ),
                     executive_metric_card(
                         "Excess Threshold", "50.0 lb",

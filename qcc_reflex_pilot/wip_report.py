@@ -36,7 +36,7 @@ def calculate_rollforward(
     opening_wip: dict[str, float],
     scheduled: dict[str, dict[str, float]],
     requested: dict[str, dict[str, float]],
-    minimum_floor_lbs: float = 5.0,
+    minimum_floor_lbs: float = 0.0,
     excess_threshold_lbs: float = 50.0,
 ) -> dict[str, dict[str, list[float]]]:
     """Calculate the auditable monthly WIP roll-forward for every strain."""
@@ -58,14 +58,15 @@ def calculate_rollforward(
                 0.0, float(requested.get(strain, {}).get(month_key, 0.0) or 0.0)
             )
             releasable = max(0.0, opening + harvested - minimum_floor_lbs)
-            released = min(request, releasable)
-            closing = max(0.0, opening + harvested - released)
+            release_amount = min(request, releasable)
+            released = -release_amount
+            closing = max(0.0, opening + harvested + released)
             opening_values.append(round(opening, 2))
             harvested_values.append(round(harvested, 2))
             requested_values.append(round(request, 2))
             released_values.append(round(released, 2))
             closing_values.append(round(closing, 2))
-            reduction_values.append(round(max(0.0, request - released), 2))
+            reduction_values.append(round(max(0.0, request + released), 2))
             excess_values.append(
                 round(max(0.0, closing - excess_threshold_lbs), 2)
             )
@@ -88,13 +89,23 @@ def _style_header(cell, fill: str = NAVY) -> None:
     cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
-def _write_section_header(ws, row: int, title: str, months: list[date]) -> None:
-    ws.cell(row=row, column=1, value=title)
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
-    _style_header(ws.cell(row=row, column=1))
+def _write_section_header(
+    ws, row: int, title: str, months: list[date], *, main_table: bool = False
+) -> None:
+    if main_table:
+        ws.cell(row=row, column=1, value="Sku")
+        ws.cell(row=row, column=2, value="Source")
+        _style_header(ws.cell(row=row, column=1))
+        _style_header(ws.cell(row=row, column=2))
+    else:
+        ws.cell(row=row, column=1, value=title)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
+        _style_header(ws.cell(row=row, column=1))
     ws.cell(row=row, column=3, value="Measure")
     _style_header(ws.cell(row=row, column=3))
-    for offset, month in enumerate(months, start=4):
+    ws.cell(row=row, column=4, value="Unit")
+    _style_header(ws.cell(row=row, column=4))
+    for offset, month in enumerate(months, start=5):
         cell = ws.cell(row=row, column=offset, value=month.strftime("%b %Y"))
         _style_header(cell)
 
@@ -122,7 +133,7 @@ def _write_model_sheet(
         minimum_floor_lbs=minimum_floor_lbs,
         excess_threshold_lbs=excess_threshold_lbs,
     )
-    last_col = 3 + len(months)
+    last_col = 4 + len(months)
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
     title = ws.cell(1, 1, "QCC Cultivation WIP Roll-Forward")
     title.fill = PatternFill("solid", fgColor=GREEN)
@@ -148,7 +159,7 @@ def _write_model_sheet(
     ws.row_dimensions[8].height = 30
 
     row = 10
-    _write_section_header(ws, row, "WIP Roll-Forward", months)
+    _write_section_header(ws, row, "WIP Roll-Forward", months, main_table=True)
     rollforward_rows: dict[tuple[str, str], int] = {}
     requested_header_row = 11 + (6 * len(strains))
     actual_header_row = requested_header_row + len(strains) + 1
@@ -168,11 +179,12 @@ def _write_model_sheet(
             ws.cell(row, 1, strain)
             ws.cell(row, 2, "Cultivation")
             ws.cell(row, 3, measure)
+            ws.cell(row, 4, "lbs")
             if measure == "Closing WIP":
                 for column in range(1, last_col + 1):
                     ws.cell(row, column).fill = PatternFill("solid", fgColor=PALE_GREEN)
-            for index, month_key in enumerate(month_keys, start=4):
-                position = index - 4
+            for index, month_key in enumerate(month_keys, start=5):
+                position = index - 5
                 if measure == "Opening WIP":
                     if position == 0:
                         value: Any = values[strain]["opening"][position]
@@ -190,7 +202,7 @@ def _write_model_sheet(
                     harvested_row = rollforward_rows[(strain, "Harvested in from plants")]
                     loss_row = rollforward_rows[(strain, "Curing/trim loss")]
                     value = (
-                        f"=MIN({letter}{requested_row},MAX(0,{letter}{opening_row}"
+                        f"=-MIN({letter}{requested_row},MAX(0,{letter}{opening_row}"
                         f"+{letter}{harvested_row}-{letter}{loss_row}-$B$5))"
                     )
                 else:
@@ -201,7 +213,7 @@ def _write_model_sheet(
                     letter = get_column_letter(index)
                     value = (
                         f"=MAX(0,{letter}{opening_row}+{letter}{harvested_row}"
-                        f"-{letter}{loss_row}-{letter}{release_row})"
+                        f"-{letter}{loss_row}+{letter}{release_row})"
                     )
                 ws.cell(row, index, value)
         row += 1
@@ -220,8 +232,9 @@ def _write_model_sheet(
             ws.cell(row, 1, strain)
             ws.cell(row, 2, "Cultivation")
             ws.cell(row, 3, "Pounds")
+            ws.cell(row, 4, "lbs")
             for column, calculated_value in enumerate(
-                values[strain][value_key], start=4
+                values[strain][value_key], start=5
             ):
                 letter = get_column_letter(column)
                 position = strain_position[strain]
@@ -235,7 +248,7 @@ def _write_model_sheet(
                 elif value_key == "reduction":
                     requested_row = requested_header_row + 1 + position
                     actual_row = actual_header_row + 1 + position
-                    value = f"=MAX(0,{letter}{requested_row}-{letter}{actual_row})"
+                    value = f"=MAX(0,{letter}{requested_row}+{letter}{actual_row})"
                 else:
                     closing_row = rollforward_rows[(strain, "Closing WIP")]
                     value = f"=MAX(0,{letter}{closing_row}-$B$6)"
@@ -248,7 +261,7 @@ def _write_model_sheet(
     for data_row in ws.iter_rows(min_row=10, max_row=row, min_col=1, max_col=last_col):
         for cell in data_row:
             cell.border = Border(bottom=thin)
-            if cell.column >= 4:
+            if cell.column >= 5:
                 cell.number_format = '#,##0.0;[Red](#,##0.0);-'
                 cell.alignment = Alignment(horizontal="right")
             else:
@@ -256,9 +269,10 @@ def _write_model_sheet(
     ws.column_dimensions["A"].width = 25
     ws.column_dimensions["B"].width = 14
     ws.column_dimensions["C"].width = 31
-    for column in range(4, last_col + 1):
+    ws.column_dimensions["D"].width = 9
+    for column in range(5, last_col + 1):
         ws.column_dimensions[get_column_letter(column)].width = 12
-    ws.freeze_panes = "D11"
+    ws.freeze_panes = "E11"
     ws.auto_filter.ref = f"A10:{get_column_letter(last_col)}{row}"
     ws.sheet_view.showGridLines = False
     ws.page_setup.orientation = "landscape"
@@ -278,7 +292,7 @@ def build_wip_rollforward_workbook(
     scheduled: dict[str, dict[str, float]],
     requested_by_model: dict[str, dict[str, dict[str, float]]],
     as_of: str | None = None,
-    minimum_floor_lbs: float = 5.0,
+    minimum_floor_lbs: float = 0.0,
     excess_threshold_lbs: float = 50.0,
 ) -> bytes:
     """Build the four-sheet WIP workbook and return its XLSX bytes."""

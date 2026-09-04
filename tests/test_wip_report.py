@@ -23,7 +23,7 @@ class WipReportTest(unittest.TestCase):
             excess_threshold_lbs=50.0,
         )["Diamond Bar"]
 
-        self.assertEqual(result["released"], [5.0, 10.0])
+        self.assertEqual(result["released"], [-5.0, -10.0])
         self.assertEqual(result["closing"], [5.0, 55.0])
         self.assertEqual(result["reduction"], [7.0, 0.0])
         self.assertEqual(result["excess"], [0.0, 5.0])
@@ -48,7 +48,11 @@ class WipReportTest(unittest.TestCase):
         sheet = workbook["Current Velocity"]
         self.assertEqual(sheet["A1"].value, "QCC Cultivation WIP Roll-Forward")
         self.assertEqual(sheet["B2"].value, "Current SKU Velocity")
-        self.assertEqual(sheet.freeze_panes, "D11")
+        self.assertEqual(sheet["A10"].value, "Sku")
+        self.assertEqual(sheet["B5"].value, 0.0)
+        self.assertEqual(sheet["D10"].value, "Unit")
+        self.assertEqual(sheet["D11"].value, "lbs")
+        self.assertEqual(sheet.freeze_panes, "E11")
         self.assertTrue(any(
             isinstance(cell.value, str) and cell.value.startswith("=MAX(0,")
             for row in sheet.iter_rows()
