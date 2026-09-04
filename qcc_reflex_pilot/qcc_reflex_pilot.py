@@ -172,7 +172,7 @@ from .ai_demand import ai_two_week_demand_forecast
 from .wip_report import build_wip_rollforward_workbook
 
 
-PILOT_VERSION = "0.9.6.27-staging"
+PILOT_VERSION = "0.9.6.28-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"

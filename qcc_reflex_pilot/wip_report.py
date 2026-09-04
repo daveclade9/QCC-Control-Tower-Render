@@ -271,10 +271,9 @@ def _write_model_sheet(
     ws.column_dimensions["C"].width = 31
     ws.column_dimensions["D"].width = 9
     for column in range(5, last_col + 1):
-        # Leave enough space for Excel's filter button without covering Month/Year.
+        # Keep the reporting periods comfortably readable at normal zoom.
         ws.column_dimensions[get_column_letter(column)].width = 15
     ws.freeze_panes = "E11"
-    ws.auto_filter.ref = f"A10:{get_column_letter(last_col)}{row}"
     ws.sheet_view.showGridLines = False
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
