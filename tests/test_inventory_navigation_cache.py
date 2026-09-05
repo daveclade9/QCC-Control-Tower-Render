@@ -86,6 +86,31 @@ class InventoryNavigationCacheTest(unittest.TestCase):
             "2 pkg / 1.5 lb",
         )
 
+    def test_purchased_1a_wip_summaries_remain_separate(self):
+        rows = [
+            {
+                "Production Stage": "WIP-Purchased 1A",
+                "Calculated Weight (g)": 453.59237,
+            },
+            {
+                "Production Stage": "Pre-WIP-Purchased 1A",
+                "Calculated Weight (g)": 907.18474,
+            },
+        ]
+
+        self.assertEqual(
+            DashboardState._stage_package_weight_summary(
+                rows, "WIP-Purchased 1A"
+            ),
+            "1 pkg / 1.0 lb",
+        )
+        self.assertEqual(
+            DashboardState._stage_package_weight_summary(
+                rows, "Pre-WIP-Purchased 1A"
+            ),
+            "1 pkg / 2.0 lb",
+        )
+
     def test_all_inventory_does_not_show_the_samples_metric(self):
         getter = DashboardState.active_inventory_shows_samples.fget
         state = SimpleNamespace(inventory_view_name="all")

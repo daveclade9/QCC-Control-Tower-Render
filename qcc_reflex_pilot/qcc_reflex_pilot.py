@@ -172,7 +172,7 @@ from .ai_demand import ai_two_week_demand_forecast
 from .wip_report import build_wip_rollforward_workbook
 
 
-PILOT_VERSION = "0.9.6.30-staging"
+PILOT_VERSION = "0.9.6.31-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -10629,6 +10629,16 @@ class DashboardState(rx.State):
         return self._inventory_stage_summary("Pre-WIP-Manufacturing")
 
     @rx.var(cache=True)
+    def purchased_1a_wip_summary(self) -> str:
+        _ = self.filtered_wip_inventory
+        return self._inventory_stage_summary("WIP-Purchased 1A")
+
+    @rx.var(cache=True)
+    def purchased_1a_pre_wip_summary(self) -> str:
+        _ = self.filtered_wip_inventory
+        return self._inventory_stage_summary("Pre-WIP-Purchased 1A")
+
+    @rx.var(cache=True)
     def mt_smalls_weight_summary(self) -> str:
         return self._mt_smalls_weight_summary(self.filtered_wip_inventory)
 
@@ -14695,11 +14705,21 @@ def active_inventory_context() -> rx.Component:
                     "Pending manufacturing input; excluded from Clone Allocation",
                 ),
                 metric_card(
+                    "Purchased 1A WIP",
+                    DashboardState.purchased_1a_wip_summary,
+                    "Test-passed purchased or partner-owned 1A bulk",
+                ),
+                metric_card(
+                    "Purchased 1A Pre-WIP",
+                    DashboardState.purchased_1a_pre_wip_summary,
+                    "Purchased or partner-owned 1A bulk pending testing",
+                ),
+                metric_card(
                     "MT Smalls Weight",
                     DashboardState.mt_smalls_weight_summary,
                     "Cultivation WIP and Pre-WIP with Smalls in the Item name",
                 ),
-                columns=rx.breakpoints(initial="1", sm="2", lg="5"),
+                columns=rx.breakpoints(initial="1", sm="2", lg="4"),
                 gap="4", width="100%",
             ),
             rx.cond(
