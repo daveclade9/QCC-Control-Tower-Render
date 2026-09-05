@@ -170,9 +170,16 @@ from .plant_data import crop_code, parse_metrc_plant_exports, plant_crop_reconci
 from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 from .ai_demand import ai_two_week_demand_forecast
 from .wip_report import build_wip_rollforward_workbook
+from .packaging_inventory import (
+    packaging_bom_recipes,
+    packaging_items,
+    packaging_planning_rows as workbook_packaging_planning_rows,
+    packaging_snapshot_rows,
+    packaging_suppliers,
+)
 
 
-PILOT_VERSION = "0.9.6.31-staging"
+PILOT_VERSION = "0.9.6.32-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -709,6 +716,15 @@ class DashboardState(rx.State):
     inventory_view_name: str = "cpg"
     inventory_page: int = 1
     inventory_page_size: int = 10
+    materials_view: str = "inventory"
+    packaging_search: str = ""
+    packaging_category_filter: str = "All Categories"
+    packaging_vendor_filter: str = "All Vendors"
+    packaging_ownership_filter: str = "All Ownership"
+    packaging_coverage_filter: str = "All Coverage Statuses"
+    packaging_rows_per_page: str = "25"
+    packaging_page: int = 1
+    packaging_bom_search: str = ""
     executive_action_rows_per_page: str = "10"
     top_sku_rows_per_page: str = "10"
     stockout_rows_per_page: str = "10"
@@ -1321,6 +1337,172 @@ class DashboardState(rx.State):
         self.exception_page = 1
         if self.workspace_view == "distribution" and self.distribution_view in {"transfers", "exceptions"}:
             yield DashboardState.load_distribution_operations_background
+
+    @rx.event
+    def change_materials_view(self, value: str):
+        self.materials_view = value
+
+    @rx.event
+    def change_packaging_search(self, value: str):
+        self.packaging_search = value
+        self.packaging_page = 1
+
+    @rx.event
+    def change_packaging_category_filter(self, value: str):
+        self.packaging_category_filter = value
+        self.packaging_page = 1
+
+    @rx.event
+    def change_packaging_vendor_filter(self, value: str):
+        self.packaging_vendor_filter = value
+        self.packaging_page = 1
+
+    @rx.event
+    def change_packaging_ownership_filter(self, value: str):
+        self.packaging_ownership_filter = value
+        self.packaging_page = 1
+
+    @rx.event
+    def change_packaging_coverage_filter(self, value: str):
+        self.packaging_coverage_filter = value
+
+    @rx.event
+    def change_packaging_rows_per_page(self, value: str):
+        self.packaging_rows_per_page = value if value in {"10", "25", "50"} else "25"
+        self.packaging_page = 1
+
+    @rx.event
+    def change_packaging_bom_search(self, value: str):
+        self.packaging_bom_search = value
+
+    @rx.event
+    def packaging_previous_page(self):
+        self.packaging_page = max(1, self.packaging_page - 1)
+
+    @rx.event
+    def packaging_next_page(self):
+        self.packaging_page = min(self.packaging_total_pages, self.packaging_page + 1)
+
+    @rx.var(cache=True)
+    def packaging_category_options(self) -> list[str]:
+        return ["All Categories", *sorted({str(row.get("category", "")) for row in packaging_items() if row.get("category")})]
+
+    @rx.var(cache=True)
+    def packaging_vendor_options(self) -> list[str]:
+        return ["All Vendors", *sorted({str(row.get("vendor", "")) for row in packaging_items() if row.get("vendor")})]
+
+    def _filtered_packaging_items(self) -> list[dict[str, Any]]:
+        search = self.packaging_search.strip().lower()
+        rows = packaging_items()
+        if search:
+            rows = [row for row in rows if search in f"{row.get('material_id', '')} {row.get('item', '')} {row.get('vendor', '')}".lower()]
+        if self.packaging_category_filter != "All Categories":
+            rows = [row for row in rows if row.get("category") == self.packaging_category_filter]
+        if self.packaging_vendor_filter != "All Vendors":
+            rows = [row for row in rows if row.get("vendor") == self.packaging_vendor_filter]
+        if self.packaging_ownership_filter != "All Ownership":
+            rows = [row for row in rows if row.get("ownership") == self.packaging_ownership_filter]
+        return rows
+
+    @rx.var
+    def packaging_item_rows(self) -> list[dict[str, Any]]:
+        rows = self._filtered_packaging_items()
+        page_size = int(self.packaging_rows_per_page)
+        start = (self.packaging_page - 1) * page_size
+        return [
+            {
+                "material_id": row.get("material_id", ""),
+                "item": row.get("item", ""),
+                "category": row.get("category", ""),
+                "vendor": row.get("vendor", ""),
+                "ownership": row.get("ownership", ""),
+                "on_hand": f"{float(row.get('on_hand', 0) or 0):,.0f}",
+                "latest_count_date": row.get("latest_count_date", ""),
+            }
+            for row in rows[start:start + page_size]
+        ]
+
+    @rx.var
+    def packaging_filtered_item_count(self) -> int:
+        return len(self._filtered_packaging_items())
+
+    @rx.var
+    def packaging_total_pages(self) -> int:
+        return max(1, math.ceil(len(self._filtered_packaging_items()) / int(self.packaging_rows_per_page)))
+
+    @rx.var
+    def packaging_page_label(self) -> str:
+        total = len(self._filtered_packaging_items())
+        if total == 0:
+            return "No matching materials"
+        start = (self.packaging_page - 1) * int(self.packaging_rows_per_page) + 1
+        end = min(total, start + int(self.packaging_rows_per_page) - 1)
+        return f"Showing {start}–{end} of {total} materials"
+
+    @rx.var(cache=True)
+    def packaging_tracked_item_count(self) -> int:
+        return len(packaging_items())
+
+    @rx.var(cache=True)
+    def packaging_supplier_count(self) -> int:
+        return len({row.get("supplier") for row in packaging_suppliers()})
+
+    @rx.var(cache=True)
+    def packaging_bom_count(self) -> int:
+        return len(packaging_bom_recipes())
+
+    @rx.var(cache=True)
+    def packaging_snapshot_count(self) -> int:
+        return len(packaging_snapshot_rows())
+
+    @rx.var
+    def packaging_coverage_rows(self) -> list[dict[str, Any]]:
+        search = self.packaging_search.strip().lower()
+        rows = workbook_packaging_planning_rows()
+        if search:
+            rows = [row for row in rows if search in f"{row.get('item', '')} {row.get('vendor', '')} {row.get('source_sheet', '')}".lower()]
+        if self.packaging_coverage_filter != "All Coverage Statuses":
+            rows = [row for row in rows if row.get("coverage_status") == self.packaging_coverage_filter]
+        order = {"Critical": 0, "Reorder Soon": 1, "Covered": 2, "No Demand / Review": 3}
+        rows.sort(key=lambda row: (order.get(str(row.get("coverage_status")), 9), float(row.get("months_of_supply", 0) or 0)))
+        return [
+            {
+                "item": row.get("item", ""),
+                "source": row.get("source_sheet", ""),
+                "on_hand": f"{float(row.get('on_hand', 0) or 0):,.0f}",
+                "on_order": f"{float(row.get('quantity_on_order', 0) or 0):,.0f}",
+                "monthly_usage": f"{float(row.get('average_monthly_usage', 0) or 0):,.1f}",
+                "months": f"{float(row.get('months_of_supply', 0) or 0):.1f}" if float(row.get("months_of_supply", 0) or 0) > 0 else "—",
+                "status": row.get("coverage_status", ""),
+            }
+            for row in rows[:50]
+        ]
+
+    @rx.var
+    def packaging_bom_rows(self) -> list[dict[str, Any]]:
+        search = self.packaging_bom_search.strip().lower()
+        rows = packaging_bom_recipes()
+        if search:
+            rows = [row for row in rows if search in f"{row.get('bom_id', '')} {row.get('recipe_name', '')} {row.get('brand', '')}".lower()]
+        return [
+            {
+                "bom_id": row.get("bom_id", ""),
+                "recipe_name": row.get("recipe_name", ""),
+                "brand": row.get("brand", ""),
+                "components": str(row.get("component_count", 0)),
+                "component_list": ", ".join(str(component.get("item", "")) for component in row.get("components", [])),
+                "status": row.get("status", "Provisional"),
+            }
+            for row in rows
+        ]
+
+    @rx.var(cache=True)
+    def packaging_count_history_rows(self) -> list[dict[str, Any]]:
+        return packaging_snapshot_rows()
+
+    @rx.var(cache=True)
+    def packaging_supplier_rows(self) -> list[dict[str, Any]]:
+        return packaging_suppliers()
 
     @staticmethod
     def _validated_table_row_limit(value: str) -> str:
@@ -16258,12 +16440,219 @@ def manufacturing_panel() -> rx.Component:
     )
 
 
+def packaging_table_header(*labels: str) -> rx.Component:
+    return rx.table.header(
+        rx.table.row(
+            *[
+                rx.table.column_header_cell(
+                    label,
+                    background=DARK,
+                    color="white",
+                    font_weight="700",
+                    white_space="normal",
+                    vertical_align="middle",
+                    border_right="1px solid rgba(255,255,255,0.42)",
+                )
+                for label in labels
+            ]
+        )
+    )
+
+
+def packaging_inventory_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["material_id"], font_weight="700", white_space="nowrap"),
+        rx.table.cell(row["item"], min_width="300px", white_space="normal"),
+        rx.table.cell(row["category"], min_width="150px"),
+        rx.table.cell(row["vendor"], min_width="150px"),
+        rx.table.cell(row["ownership"], min_width="130px"),
+        rx.table.cell(row["on_hand"], text_align="right", white_space="nowrap"),
+        rx.table.cell(row["latest_count_date"], white_space="nowrap"),
+    )
+
+
+def packaging_coverage_badge(status: rx.Var) -> rx.Component:
+    return rx.match(
+        status,
+        ("Critical", rx.badge("Critical", color_scheme="red", variant="solid")),
+        ("Reorder Soon", rx.badge("Reorder Soon", color_scheme="yellow", variant="solid")),
+        ("Covered", rx.badge("Covered", color_scheme="green", variant="solid")),
+        rx.badge("No Demand / Review", color_scheme="gray"),
+    )
+
+
+def packaging_coverage_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["item"], min_width="300px", white_space="normal", font_weight="600"),
+        rx.table.cell(row["source"], min_width="150px"),
+        rx.table.cell(row["on_hand"], text_align="right"),
+        rx.table.cell(row["on_order"], text_align="right"),
+        rx.table.cell(row["monthly_usage"], text_align="right"),
+        rx.table.cell(row["months"], text_align="right"),
+        rx.table.cell(packaging_coverage_badge(row["status"]), min_width="140px"),
+    )
+
+
+def packaging_bom_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["bom_id"], font_weight="700", white_space="nowrap"),
+        rx.table.cell(row["recipe_name"], min_width="260px", font_weight="600", white_space="normal"),
+        rx.table.cell(row["brand"], min_width="120px"),
+        rx.table.cell(row["components"], text_align="right"),
+        rx.table.cell(row["component_list"], min_width="460px", white_space="normal", color=MUTED),
+        rx.table.cell(rx.badge(row["status"], color_scheme="purple")),
+    )
+
+
+def packaging_count_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["count_date"], font_weight="700", white_space="nowrap"),
+        rx.table.cell(row["items_counted"], text_align="right"),
+        rx.table.cell(row["nonzero_items"], text_align="right"),
+        rx.table.cell(row["zero_items"], text_align="right"),
+        rx.table.cell(row["source"], min_width="240px"),
+    )
+
+
+def packaging_supplier_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["supplier"], font_weight="700", min_width="190px"),
+        rx.table.cell(row["supplies"], min_width="180px", white_space="normal"),
+        rx.table.cell(row["payment_terms"], min_width="210px", white_space="normal"),
+        rx.table.cell(row["website"], min_width="240px", white_space="normal"),
+        rx.table.cell(rx.badge(row["status"], color_scheme="green")),
+    )
+
+
+def packaging_inventory_workspace() -> rx.Component:
+    return rx.vstack(
+        rx.callout(
+            "Workbook-seeded pilot: item IDs, latest balances, count history, suppliers, and BOM links were normalized from Packaging Inventory 2026. BOMs remain provisional until operational review.",
+            icon="database",
+            color_scheme="blue",
+            width="100%",
+        ),
+        rx.grid(
+            metric_card("Tracked Materials", DashboardState.packaging_tracked_item_count, "Active workbook item records"),
+            metric_card("Physical Counts", DashboardState.packaging_snapshot_count, "Historical count dates retained"),
+            metric_card("Provisional BOMs", DashboardState.packaging_bom_count, "Recipes awaiting validation"),
+            metric_card("Suppliers", DashboardState.packaging_supplier_count, "Normalized supplier records"),
+            columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+            gap="3",
+            width="100%",
+        ),
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger("Inventory Registry", value="inventory"),
+                rx.tabs.trigger("Coverage & Reorder", value="coverage"),
+                rx.tabs.trigger("Provisional BOMs", value="boms"),
+                rx.tabs.trigger("Count History", value="counts"),
+                rx.tabs.trigger("Suppliers", value="suppliers"),
+                class_name="qcc-tabs",
+                width="100%",
+            ),
+            rx.tabs.content(
+                rx.vstack(
+                    rx.grid(
+                        rx.input(placeholder="Search material, ID, or vendor", value=DashboardState.packaging_search, on_change=DashboardState.change_packaging_search),
+                        rx.select(DashboardState.packaging_category_options, value=DashboardState.packaging_category_filter, on_change=DashboardState.change_packaging_category_filter),
+                        rx.select(DashboardState.packaging_vendor_options, value=DashboardState.packaging_vendor_filter, on_change=DashboardState.change_packaging_vendor_filter),
+                        rx.select(["All Ownership", "QCC Owned", "Customer Supplied"], value=DashboardState.packaging_ownership_filter, on_change=DashboardState.change_packaging_ownership_filter),
+                        columns=rx.breakpoints(initial="1", md="2", xl="4"), gap="2", width="100%",
+                    ),
+                    rx.box(
+                        rx.table.root(
+                            packaging_table_header("Material ID", "Packaging Inventory Item", "Category", "Primary Vendor", "Ownership", "On Hand", "Count Date"),
+                            rx.table.body(rx.foreach(DashboardState.packaging_item_rows, packaging_inventory_row)),
+                            width="100%", variant="surface",
+                        ),
+                        width="100%", overflow_x="auto",
+                    ),
+                    rx.hstack(
+                        rx.text(DashboardState.packaging_page_label, color=MUTED, size="2"),
+                        rx.spacer(),
+                        rx.select(["10", "25", "50"], value=DashboardState.packaging_rows_per_page, on_change=DashboardState.change_packaging_rows_per_page, width="90px"),
+                        rx.button("Previous", on_click=DashboardState.packaging_previous_page, variant="outline", disabled=DashboardState.packaging_page <= 1),
+                        rx.text(DashboardState.packaging_page.to_string() + " / " + DashboardState.packaging_total_pages.to_string(), font_weight="700"),
+                        rx.button("Next", on_click=DashboardState.packaging_next_page, variant="outline", disabled=DashboardState.packaging_page >= DashboardState.packaging_total_pages),
+                        width="100%", align="center",
+                    ),
+                    width="100%", spacing="3",
+                ),
+                value="inventory",
+            ),
+            rx.tabs.content(
+                rx.vstack(
+                    rx.hstack(
+                        rx.input(placeholder="Search coverage records", value=DashboardState.packaging_search, on_change=DashboardState.change_packaging_search, width="320px"),
+                        rx.select(["All Coverage Statuses", "Critical", "Reorder Soon", "Covered", "No Demand / Review"], value=DashboardState.packaging_coverage_filter, on_change=DashboardState.change_packaging_coverage_filter, width="210px"),
+                        wrap="wrap", width="100%",
+                    ),
+                    rx.callout("Coverage reproduces the workbook's current planning logic. It is a review aid until Control Tower demand, lead times, safety stock, and approved purchase orders replace the spreadsheet assumptions.", icon="triangle_alert", color_scheme="yellow", width="100%"),
+                    rx.box(
+                        rx.table.root(
+                            packaging_table_header("Packaging Inventory Item", "Workbook Plan", "On Hand", "On Order", "Average Monthly Use", "Months Supply", "Status"),
+                            rx.table.body(rx.foreach(DashboardState.packaging_coverage_rows, packaging_coverage_row)),
+                            width="100%", variant="surface",
+                        ), width="100%", overflow_x="auto",
+                    ),
+                    width="100%", spacing="3",
+                ), value="coverage",
+            ),
+            rx.tabs.content(
+                rx.vstack(
+                    rx.input(placeholder="Search recipe, brand, or BOM ID", value=DashboardState.packaging_bom_search, on_change=DashboardState.change_packaging_bom_search, width="340px"),
+                    rx.box(
+                        rx.table.root(
+                            packaging_table_header("BOM ID", "Recipe", "Brand", "Components", "Workbook Component List", "Status"),
+                            rx.table.body(rx.foreach(DashboardState.packaging_bom_rows, packaging_bom_row)),
+                            width="100%", variant="surface",
+                        ), width="100%", overflow_x="auto",
+                    ),
+                    width="100%", spacing="3",
+                ), value="boms",
+            ),
+            rx.tabs.content(
+                rx.box(
+                    rx.table.root(
+                        packaging_table_header("Count Date", "Items Counted", "Nonzero Items", "Zero Items", "Source"),
+                        rx.table.body(rx.foreach(DashboardState.packaging_count_history_rows, packaging_count_row)),
+                        width="100%", variant="surface",
+                    ), width="100%", overflow_x="auto",
+                ), value="counts",
+            ),
+            rx.tabs.content(
+                rx.vstack(
+                    rx.callout("Personal contacts, email addresses, phone numbers, and street addresses were intentionally not embedded in the application seed. They can move into a secured supplier registry later.", icon="shield_check", color_scheme="green", width="100%"),
+                    rx.box(
+                        rx.table.root(
+                            packaging_table_header("Supplier", "Supplies", "Payment Terms", "Website", "Status"),
+                            rx.table.body(rx.foreach(DashboardState.packaging_supplier_rows, packaging_supplier_row)),
+                            width="100%", variant="surface",
+                        ), width="100%", overflow_x="auto",
+                    ),
+                    width="100%", spacing="3",
+                ), value="suppliers",
+            ),
+            value=DashboardState.materials_view,
+            on_change=DashboardState.change_materials_view,
+            width="100%",
+        ),
+        width="100%",
+        spacing="4",
+    )
+
+
 def materials_procurement_panel() -> rx.Component:
-    return erp_foundation_panel(
-        "Materials & Procurement",
-        "Packaging, operating supplies, suppliers, purchasing, and receiving.",
-        "Packaging Inventory",
-        "Packaging Inventory will be the first materials workspace, followed by supplier records, purchase orders, receiving, and reorder controls.",
+    return rx.vstack(
+        rx.box(
+            rx.heading("Materials & Procurement", size="6", color=DARK),
+            rx.text("Packaging inventory, requirements, supplier records, and the foundation for purchasing and receiving.", color=MUTED),
+            width="100%",
+        ),
+        packaging_inventory_workspace(),
+        width="100%",
+        spacing="4",
     )
 
 
