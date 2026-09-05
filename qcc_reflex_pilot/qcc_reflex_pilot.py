@@ -172,7 +172,7 @@ from .ai_demand import ai_two_week_demand_forecast
 from .wip_report import build_wip_rollforward_workbook
 
 
-PILOT_VERSION = "0.9.6.28-staging"
+PILOT_VERSION = "0.9.6.30-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -9713,6 +9713,15 @@ class DashboardState(rx.State):
     def filtered_transfer_data(self) -> list[dict[str, Any]]:
         return [row for row in self._transfer_data if self._matches(row)]
 
+    @staticmethod
+    def _is_mt_smalls(row: dict[str, Any]) -> bool:
+        """Return whether a package belongs to the MT Smalls filter group."""
+        return (
+            str(row.get("Production Stage", "") or "")
+            in {"WIP-Cultivation", "Pre-WIP-Cultivation"}
+            and "smalls" in str(row.get("Item", "") or "").casefold()
+        )
+
     def _filtered_inventory(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         filtered = []
         for row in rows:
@@ -9733,7 +9742,10 @@ class DashboardState(rx.State):
                 and row.get("QA Status") != self.inventory_qa_filter
             ):
                 continue
-            if (
+            if self.inventory_category_filter == "MT Smalls":
+                if not self._is_mt_smalls(row):
+                    continue
+            elif (
                 self.inventory_category_filter != "All Categories"
                 and row.get("Category") != self.inventory_category_filter
             ):
@@ -10158,7 +10170,11 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def inventory_category_options(self) -> list[str]:
-        return self._inventory_options("Category", "All Categories")
+        values = self._inventory_options("Category", "All Categories")[1:]
+        return [
+            "All Categories", "MT Smalls",
+            *[value for value in values if value != "MT Smalls"],
+        ]
 
     @rx.var(cache=True)
     def inventory_location_options(self) -> list[str]:
@@ -10583,6 +10599,15 @@ class DashboardState(rx.State):
             self.filtered_wip_inventory, stage
         )
 
+    @staticmethod
+    def _mt_smalls_weight_summary(rows: list[dict[str, Any]]) -> str:
+        weight = sum(
+            DashboardState._number(row, "Calculated Weight (g)")
+            for row in rows
+            if DashboardState._is_mt_smalls(row)
+        )
+        return f"{weight / 453.59237:,.1f} lb"
+
     @rx.var(cache=True)
     def cultivation_wip_summary(self) -> str:
         _ = self.filtered_wip_inventory
@@ -10602,6 +10627,10 @@ class DashboardState(rx.State):
     def manufacturing_pre_wip_summary(self) -> str:
         _ = self.filtered_wip_inventory
         return self._inventory_stage_summary("Pre-WIP-Manufacturing")
+
+    @rx.var(cache=True)
+    def mt_smalls_weight_summary(self) -> str:
+        return self._mt_smalls_weight_summary(self.filtered_wip_inventory)
 
     @rx.var(cache=True)
     def all_inventory_cultivation_pre_wip_summary(self) -> str:
@@ -14665,7 +14694,12 @@ def active_inventory_context() -> rx.Component:
                     DashboardState.manufacturing_pre_wip_summary,
                     "Pending manufacturing input; excluded from Clone Allocation",
                 ),
-                columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+                metric_card(
+                    "MT Smalls Weight",
+                    DashboardState.mt_smalls_weight_summary,
+                    "Cultivation WIP and Pre-WIP with Smalls in the Item name",
+                ),
+                columns=rx.breakpoints(initial="1", sm="2", lg="5"),
                 gap="4", width="100%",
             ),
             rx.cond(

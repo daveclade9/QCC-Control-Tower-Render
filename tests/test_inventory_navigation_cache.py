@@ -7,6 +7,62 @@ from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
 
 
 class InventoryNavigationCacheTest(unittest.TestCase):
+    def test_mt_smalls_filter_requires_cultivation_wip_and_smalls_item(self):
+        eligible_wip = {
+            "Production Stage": "WIP-Cultivation",
+            "Item": "Diamond Bar Smalls Bulk",
+        }
+        eligible_pre_wip = {
+            "Production Stage": "Pre-WIP-Cultivation",
+            "Item": "Blue Dream SMALLS",
+        }
+        excluded_rows = [
+            {"Production Stage": "WIP-Cultivation", "Item": "Diamond Bar Bulk"},
+            {"Production Stage": "WIP-Manufacturing", "Item": "Diamond Bar Smalls"},
+            {"Production Stage": "Pre-WIP-Purchased 1A", "Item": "J1 Smalls"},
+        ]
+
+        self.assertTrue(DashboardState._is_mt_smalls(eligible_wip))
+        self.assertTrue(DashboardState._is_mt_smalls(eligible_pre_wip))
+        for row in excluded_rows:
+            with self.subTest(row=row):
+                self.assertFalse(DashboardState._is_mt_smalls(row))
+
+    def test_mt_smalls_is_available_as_an_inventory_category(self):
+        state = SimpleNamespace(
+            all_inventory=[{"Category": "Bud/Flower - Bulk"}],
+            _inventory_options=lambda column, all_label: [
+                all_label, "Bud/Flower - Bulk"
+            ],
+        )
+        options = DashboardState.inventory_category_options.fget(state)
+
+        self.assertEqual(options[:2], ["All Categories", "MT Smalls"])
+
+    def test_mt_smalls_summary_totals_only_eligible_weight(self):
+        rows = [
+            {
+                "Production Stage": "WIP-Cultivation",
+                "Item": "Diamond Bar Smalls",
+                "Calculated Weight (g)": 453.59237,
+            },
+            {
+                "Production Stage": "Pre-WIP-Cultivation",
+                "Item": "Blue Dream Smalls Bulk",
+                "Calculated Weight (g)": 226.796185,
+            },
+            {
+                "Production Stage": "WIP-Cultivation",
+                "Item": "Diamond Bar Bulk Flower",
+                "Calculated Weight (g)": 4535.9237,
+            },
+        ]
+
+        self.assertEqual(
+            DashboardState._mt_smalls_weight_summary(rows),
+            "1.5 lb",
+        )
+
     def test_all_inventory_stage_summary_uses_only_the_requested_stage(self):
         rows = [
             {
