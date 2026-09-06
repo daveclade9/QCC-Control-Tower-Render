@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.41-staging"
+PILOT_VERSION = "0.9.6.42-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -11057,8 +11057,8 @@ class DashboardState(rx.State):
             "WIP-Cultivation": "Cultivation WIP",
             "Pre-WIP-Cultivation": "Cultivation Pre-WIP",
             "WIP-Manufacturing": "Manufacturing WIP",
-            "Pre-WIP-Manufacturing": "Manufacturing\nPre-WIP",
-            "Pre-WIP": "Manufacturing\nPre-WIP",
+            "Pre-WIP-Manufacturing": "Manufacturing Pre-WIP",
+            "Pre-WIP": "Manufacturing Pre-WIP",
             "WIP-Purchased 1A": "Purchased 1A WIP",
             "Pre-WIP-Purchased 1A": "Purchased 1A Pre-WIP",
             "1A Sellable Bulk": "1A Sellable Bulk",

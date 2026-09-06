@@ -89,11 +89,15 @@ body {
   max-height: 48px !important;
 }
 
-/* Bulk inventory classes may contain an intentional line break so long
-   workflow names remain readable without widening the entire table. */
+/* Keep long workflow names readable without widening the entire table. */
 .qcc-bulk-classification-grid:not(.qcc-all-inventory-grid) .gridjs-td:nth-child(4),
 .qcc-all-inventory-grid.qcc-bulk-classification-grid .gridjs-td:nth-child(5) {
-  white-space: pre-line;
+  width: 140px !important;
+  min-width: 140px !important;
+  max-width: 140px !important;
+  white-space: normal;
+  overflow-wrap: normal;
+  word-break: normal;
   line-height: 1.2;
 }
 
