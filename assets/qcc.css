@@ -7,6 +7,40 @@ body {
   min-height: 100vh;
 }
 
+/* Compact audit grid for preliminary/direct lab uploads. */
+.qcc-qa-lab-direct-grid .gridjs-table {
+  font-size: 12px;
+  line-height: 1.25;
+  table-layout: fixed;
+}
+
+.qcc-qa-lab-direct-grid .gridjs-th {
+  font-size: 11px;
+  line-height: 1.2;
+  padding: 9px 34px 9px 10px;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: normal;
+  vertical-align: middle;
+  min-height: 62px;
+}
+
+.qcc-qa-lab-direct-grid .gridjs-th-content {
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: normal;
+  text-overflow: clip;
+}
+
+.qcc-qa-lab-direct-grid .gridjs-td {
+  font-size: 12px;
+  line-height: 1.25;
+  padding: 7px 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .qcc-inventory-grid .gridjs-wrapper {
   border: 0;
   box-shadow: none;

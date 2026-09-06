@@ -20,6 +20,7 @@ class TableRowLimitTest(unittest.TestCase):
         self.assertEqual(state.qa_manufacturing_pass_page_size, 10)
         self.assertEqual(state.qa_manufacturing_potency_page_size, 10)
         self.assertEqual(state.qa_manufacturing_detail_page_size, 10)
+        self.assertEqual(state.qa_lab_direct_page_size, 10)
 
     def test_standard_table_row_limit_accepts_only_supported_values(self):
         state = DashboardState(_reflex_internal_init=True)
@@ -35,6 +36,10 @@ class TableRowLimitTest(unittest.TestCase):
         DashboardState.change_qa_manufacturing_detail_rows_per_page.fn(state, "50")
         self.assertEqual(state.qa_manufacturing_detail_rows_per_page, "50")
         self.assertEqual(state.qa_manufacturing_detail_page_size, 50)
+
+        DashboardState.change_qa_lab_direct_rows_per_page.fn(state, "25")
+        self.assertEqual(state.qa_lab_direct_rows_per_page, "25")
+        self.assertEqual(state.qa_lab_direct_page_size, 25)
 
     def test_server_paged_transfer_limit_resets_to_first_page(self):
         state = DashboardState(_reflex_internal_init=True)

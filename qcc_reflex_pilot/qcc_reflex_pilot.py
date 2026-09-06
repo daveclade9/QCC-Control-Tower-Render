@@ -179,7 +179,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.32-staging"
+PILOT_VERSION = "0.9.6.33-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -577,6 +577,7 @@ class DashboardState(rx.State):
     qa_manufacturing_pass_rows_per_page: str = "10"
     qa_manufacturing_potency_rows_per_page: str = "10"
     qa_manufacturing_detail_rows_per_page: str = "10"
+    qa_lab_direct_rows_per_page: str = "10"
     qa_cultivation_consistency_strain: str = ""
     qa_manufacturing_consistency_strain: str = ""
     qa_lookup_draft: str = ""
@@ -1747,6 +1748,10 @@ class DashboardState(rx.State):
         self.qa_manufacturing_detail_rows_per_page = self._validated_table_row_limit(value)
 
     @rx.event
+    def change_qa_lab_direct_rows_per_page(self, value: str):
+        self.qa_lab_direct_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
     def change_qa_lookup_search(self, value: str):
         # Typing must not evaluate or render matching database rows. The draft
         # is submitted only when Find and Preview is pressed.
@@ -2626,6 +2631,10 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def qa_manufacturing_detail_page_size(self) -> int:
         return int(self.qa_manufacturing_detail_rows_per_page)
+
+    @rx.var(cache=True)
+    def qa_lab_direct_page_size(self) -> int:
+        return int(self.qa_lab_direct_rows_per_page)
 
     @rx.var(cache=True)
     def qa_cultivation_metrics(self) -> list[dict[str, str]]:
@@ -15484,10 +15493,16 @@ def qa_lab_direct_summary_panel() -> rx.Component:
                 "when matching Metrc lab results arrive.",
                 size="2", color=MUTED,
             ),
-            readable_grid(
+            limited_data_grid(
                 DashboardState.qa_lab_direct_summary,
                 columns,
-                "190px",
+                DashboardState.qa_lab_direct_rows_per_page,
+                DashboardState.change_qa_lab_direct_rows_per_page,
+                DashboardState.qa_lab_direct_page_size,
+                height="430px",
+                class_name="qcc-qa-lab-direct-grid",
+                column_width=170,
+                minimum_width=1530,
             ),
             width="100%",
             padding="1rem",
