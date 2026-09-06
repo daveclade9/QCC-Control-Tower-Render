@@ -79,6 +79,38 @@ class CultivationRegistryTests(unittest.TestCase):
             rows[34]["crop"],
         )
 
+    def test_clone_planner_advances_four_days_before_cut(self):
+        rows = generate_schedule(
+            program=default_cycle_program(),
+            rooms=default_room_rows(),
+            start_crop="F5.10",
+            first_clone_cut="2026-08-28",
+            count=5,
+        )
+        self.assertEqual(
+            current_schedule_row(rows, date(2026, 9, 6))["crop"], "F5.10"
+        )
+        self.assertEqual(
+            current_schedule_row(rows, date(2026, 9, 7))["crop"], "F1.11"
+        )
+
+    def test_manual_override_expires_at_next_planning_date(self):
+        rows = generate_schedule(
+            program=default_cycle_program(),
+            rooms=default_room_rows(),
+            start_crop="F5.10",
+            first_clone_cut="2026-08-28",
+            count=5,
+        )
+        rows[0]["status"] = "Planning"
+        rows[0]["source"] = "Selected Current Crop"
+        self.assertEqual(
+            current_schedule_row(rows, date(2026, 9, 6))["crop"], "F5.10"
+        )
+        self.assertEqual(
+            current_schedule_row(rows, date(2026, 9, 7))["crop"], "F1.11"
+        )
+
     def test_independent_room_program_is_supported(self):
         program = {
             **default_cycle_program(),

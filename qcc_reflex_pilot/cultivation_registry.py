@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 import json
 import re
 from typing import Any
+from zoneinfo import ZoneInfo
 
 try:
     import psycopg
@@ -276,12 +277,27 @@ def default_schedule(count: int = DEFAULT_FUTURE_CROPS) -> list[dict[str, Any]]:
 
 
 def current_schedule_row(
-    rows: list[dict[str, Any]], as_of: date | None = None
+    rows: list[dict[str, Any]],
+    as_of: date | None = None,
+    planning_lead_days: int = 4,
 ) -> dict[str, Any] | None:
-    """Resolve an explicitly selected crop, otherwise use the current cut date."""
+    """Resolve the crop being planned before its clone-cut date.
+
+    A manual selection remains authoritative only until the next crop in that
+    program reaches its planning date, preventing a stale override from
+    permanently stopping the rolling schedule.
+    """
     if not rows:
         return None
     ordered = sorted(rows, key=lambda row: str(row.get("clone_cut_date", "")))
+    today = as_of or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    lead_days = max(0, int(planning_lead_days))
+
+    def planning_date(row: dict[str, Any]) -> date:
+        return date.fromisoformat(str(row.get("clone_cut_date", ""))) - timedelta(
+            days=lead_days
+        )
+
     explicitly_selected = next(
         (
             row
@@ -292,9 +308,27 @@ def current_schedule_row(
         None,
     )
     if explicitly_selected is not None:
-        return explicitly_selected
-    today = (as_of or date.today()).isoformat()
-    started = [row for row in ordered if str(row.get("clone_cut_date", "")) <= today]
+        program_id = str(explicitly_selected.get("program_id", ""))
+        program_rows = [
+            row for row in ordered
+            if str(row.get("program_id", "")) == program_id
+        ]
+        selected_index = next(
+            (
+                index for index, row in enumerate(program_rows)
+                if str(row.get("schedule_id", ""))
+                == str(explicitly_selected.get("schedule_id", ""))
+            ),
+            -1,
+        )
+        next_row = (
+            program_rows[selected_index + 1]
+            if 0 <= selected_index < len(program_rows) - 1
+            else None
+        )
+        if next_row is None or today < planning_date(next_row):
+            return explicitly_selected
+    started = [row for row in ordered if planning_date(row) <= today]
     return started[-1] if started else ordered[0]
 
 
@@ -557,6 +591,23 @@ def set_current_schedule(schedule_id: str, updated_by: str) -> None:
                 "source='Selected Current Crop',updated_by=%s,updated_at=%s "
                 "WHERE schedule_id=%s",
                 (updated_by, now, schedule_id),
+            )
+        connection.commit()
+
+
+def clear_current_schedule_override(updated_by: str) -> None:
+    """Return Clone Allocation to the automatic four-day planning schedule."""
+    if psycopg is None or not database_url():
+        raise RuntimeError("A live Supabase connection is required to clear the override.")
+    now = datetime.now().astimezone().isoformat()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_schema(cursor)
+            cursor.execute(
+                "UPDATE qcc_cultivation_schedule "
+                "SET status='Upcoming',source='Generated',updated_by=%s,updated_at=%s "
+                "WHERE source='Selected Current Crop'",
+                (updated_by, now),
             )
         connection.commit()
 

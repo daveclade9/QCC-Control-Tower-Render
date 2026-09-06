@@ -151,6 +151,7 @@ from .cultivation_registry import (
     calculate_bench_metrics,
     calculate_lighting_total,
     calculate_room_metrics,
+    clear_current_schedule_override,
     current_schedule_row,
     default_bench_rows,
     default_cycle_program,
@@ -185,7 +186,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.36-staging"
+PILOT_VERSION = "0.9.6.37-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -6247,6 +6248,7 @@ class DashboardState(rx.State):
                 "flower_entry_date": str(current.get("flower_entry_date", "")),
                 "harvest_date": str(current.get("harvest_date", "")),
                 "available_date": str(current.get("available_date", "")),
+                "source": str(current.get("source", "")),
             }
         return clone_planning_periods(1)[0]
 
@@ -6396,6 +6398,15 @@ class DashboardState(rx.State):
         return "CURRENT CYCLE · " + self._current_clone_period()["crop"]
 
     @rx.var(cache=True)
+    def cultivation_current_schedule_mode(self) -> str:
+        _ = self.cultivation_registry_revision
+        return (
+            "TEMPORARY MANUAL OVERRIDE"
+            if self._current_clone_period().get("source") == "Selected Current Crop"
+            else "AUTOMATIC · 4 DAYS BEFORE CLONE CUT"
+        )
+
+    @rx.var(cache=True)
     def cultivation_current_room_capacity_title(self) -> str:
         _ = self.cultivation_registry_revision
         room = self._current_clone_period()["room"].replace("Flower Room ", "F")
@@ -6490,7 +6501,7 @@ class DashboardState(rx.State):
             self.cultivation_registry_message = (
                 f"Saved {count} cultivation schedule records. They now appear in "
                 "the Saved Schedule table below. Clone Allocation automatically follows "
-                "the most recent crop whose clone-cut date has arrived."
+                "each crop four days before its clone-cut date."
             )
             self.cultivation_registry_error = ""
         except Exception as error:
@@ -6513,6 +6524,29 @@ class DashboardState(rx.State):
             self.cultivation_flower_entry_date = period["flower_entry_date"]
             self.cultivation_bench_plans = self._registered_room_bench_plans(period["room"])
             self.cultivation_registry_message = f'{period["crop"]} is now the current Clone Allocation crop.'
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def return_to_automatic_schedule(self):
+        try:
+            clear_current_schedule_override(
+                self.auth_name or self.auth_email or "QCC Reflex User"
+            )
+            self._cultivation_registry = load_registry()
+            self.cultivation_registry_revision += 1
+            period = self._current_clone_period()
+            self.cultivation_current_schedule_id = ""
+            self.cultivation_current_crop_draft = period["crop"]
+            self.cultivation_flower_room = period["room"]
+            self.cultivation_cycle_name = period["crop"]
+            self.cultivation_flower_entry_date = period["flower_entry_date"]
+            self.cultivation_bench_plans = self._registered_room_bench_plans(period["room"])
+            self.cultivation_registry_message = (
+                f'Automatic schedule restored. {period["crop"]} is current; each crop '
+                "advances four days before its clone-cut date."
+            )
             self.cultivation_registry_error = ""
         except Exception as error:
             self.cultivation_registry_error = str(error)
@@ -19117,6 +19151,22 @@ def cultivation_clone_planning_panel() -> rx.Component:
                         on_click=DashboardState.save_current_crop_name,
                         variant="outline",
                     ),
+                    rx.badge(
+                        DashboardState.cultivation_current_schedule_mode,
+                        color_scheme=rx.cond(
+                            DashboardState.cultivation_current_schedule_mode
+                            == "TEMPORARY MANUAL OVERRIDE",
+                            "purple",
+                            "green",
+                        ),
+                        variant="soft",
+                    ),
+                    rx.button(
+                        "Return to Automatic Schedule",
+                        on_click=DashboardState.return_to_automatic_schedule,
+                        variant="outline",
+                        color_scheme="teal",
+                    ),
                     align="end",
                     gap="3",
                     wrap="wrap",
@@ -20163,7 +20213,7 @@ def cultivation_schedule_panel() -> rx.Component:
             rx.vstack(
                 rx.heading("Saved Schedule", size="4", color=DARK),
                 rx.text(
-                    "Every saved preview appears here. Clone Allocation automatically follows the most recent crop whose clone-cut date has arrived.",
+                    "Every saved preview appears here. Clone Allocation automatically advances four days before each clone-cut date. A manual selection remains temporary and expires when the next crop reaches its planning date.",
                     size="2",
                     color=MUTED,
                 ),
