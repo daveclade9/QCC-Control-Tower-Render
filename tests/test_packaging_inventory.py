@@ -1,6 +1,8 @@
 from qcc_reflex_pilot.packaging_inventory import (
     packaging_bom_recipes,
     packaging_items,
+    packaging_seed_items,
+    next_packaging_material_id,
     packaging_planning_rows,
     packaging_snapshot_rows,
     packaging_suppliers,
@@ -34,3 +36,19 @@ def test_boms_are_provisional_and_have_components():
     recipes = packaging_bom_recipes()
     assert all(recipe["status"] == "Provisional" for recipe in recipes)
     assert all(recipe["components"] for recipe in recipes)
+
+
+def test_seed_items_have_item_master_defaults():
+    item = packaging_seed_items()[0]
+    assert item["uom"] == "Each"
+    assert item["default_location"] == "Unassigned"
+    assert item["status"] == "Active"
+    assert item["available"] == item["on_hand"]
+
+
+def test_next_material_id_advances_existing_registry():
+    assert next_packaging_material_id([
+        {"material_id": "PKG-0009"},
+        {"material_id": "CUSTOM-1"},
+        {"material_id": "PKG-0265"},
+    ]) == "PKG-0266"
