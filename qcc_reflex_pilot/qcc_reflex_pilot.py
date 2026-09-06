@@ -180,7 +180,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.34-staging"
+PILOT_VERSION = "0.9.6.35-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -15509,26 +15509,6 @@ def qa_operation_panel(
                 minimum_width=1620,
             ),
             rx.callout("No potency ranges are available.", icon="circle_help"),
-        ),
-        rx.heading("Matching Package Records", size="4", color=DARK),
-        rx.cond(
-            detail_rows.length() > 0,
-            limited_data_grid(
-                detail_rows,
-                QA_DETAIL_COLUMNS,
-                detail_rows_value,
-                detail_rows_handler,
-                detail_page_size,
-                height="560px",
-                class_name="qcc-14px-data-grid",
-                column_width=190,
-                minimum_width=1710,
-            ),
-            rx.callout(
-                "No package records match the active Brand, Strain, SKU Type, and compliance filters.",
-                icon="circle_help",
-                width="100%",
-            ),
         ),
         width="100%", spacing="4",
     )
