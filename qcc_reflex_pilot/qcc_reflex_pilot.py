@@ -186,7 +186,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.37-staging"
+PILOT_VERSION = "0.9.6.38-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -19139,15 +19139,34 @@ def cultivation_clone_planning_panel() -> rx.Component:
                 ),
                 rx.flex(
                     rx.box(
-                        rx.text("Current crop name", size="1", weight="bold", color=MUTED),
+                        rx.text("Manual current-crop override", size="1", weight="bold", color=MUTED),
+                        rx.select(
+                            DashboardState.cultivation_schedule_id_options,
+                            placeholder="Choose a saved crop",
+                            on_change=DashboardState.choose_current_schedule,
+                            width="320px",
+                        ),
+                        rx.text(
+                            "Selecting a crop here temporarily makes it current in Clone Allocation.",
+                            size="1",
+                            color=MUTED,
+                        ),
+                    ),
+                    rx.box(
+                        rx.text("Rename current crop ID", size="1", weight="bold", color=MUTED),
                         rx.input(
                             value=DashboardState.cultivation_current_crop_draft,
                             on_change=DashboardState.set_cultivation_current_crop_draft,
                             width="220px",
                         ),
+                        rx.text(
+                            "Changes the crop label only; it does not select the current crop.",
+                            size="1",
+                            color=MUTED,
+                        ),
                     ),
                     rx.button(
-                        "Save Crop Name",
+                        "Rename Current Crop",
                         on_click=DashboardState.save_current_crop_name,
                         variant="outline",
                     ),
@@ -19171,6 +19190,24 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     gap="3",
                     wrap="wrap",
                     width="100%",
+                ),
+                rx.cond(
+                    DashboardState.cultivation_registry_error != "",
+                    rx.callout(
+                        DashboardState.cultivation_registry_error,
+                        icon="triangle-alert",
+                        color_scheme="red",
+                        width="100%",
+                    ),
+                ),
+                rx.cond(
+                    DashboardState.cultivation_registry_message != "",
+                    rx.callout(
+                        DashboardState.cultivation_registry_message,
+                        icon="circle-check",
+                        color_scheme="green",
+                        width="100%",
+                    ),
                 ),
                 rx.grid(
                     rx.box(
