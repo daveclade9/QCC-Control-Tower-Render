@@ -89,6 +89,14 @@ body {
   max-height: 48px !important;
 }
 
+/* Bulk inventory classes may contain an intentional line break so long
+   workflow names remain readable without widening the entire table. */
+.qcc-bulk-classification-grid:not(.qcc-all-inventory-grid) .gridjs-td:nth-child(4),
+.qcc-all-inventory-grid.qcc-bulk-classification-grid .gridjs-td:nth-child(5) {
+  white-space: pre-line;
+  line-height: 1.2;
+}
+
 /* Compact Metrc cultivation rows keep full 24-character plant tags visible. */
 .qcc-cultivation-plant-grid .gridjs-th {
   font-size: 12px;

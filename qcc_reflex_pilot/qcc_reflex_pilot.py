@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.40-staging"
+PILOT_VERSION = "0.9.6.41-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -10509,6 +10509,8 @@ class DashboardState(rx.State):
             columns[columns.index("SKU Type")] = "Bulk Type"
             columns[columns.index("Unit Count")] = "Inventory Class"
         if view_name == "all":
+            columns[columns.index("SKU Type")] = "SKU Type / Bulk Type"
+            columns[columns.index("Unit Count")] = "Unit Count / Inventory Class"
             columns.insert(columns.index("Location"), "Packaged Date")
             columns.insert(columns.index("QA Status"), "Source Harvest")
         return columns
@@ -10524,7 +10526,10 @@ class DashboardState(rx.State):
         elif self.inventory_view_name == "bulk":
             identity = "Compatible Brand, Strain, and SKU Type"
         elif self.inventory_view_name == "all":
-            identity = "Brand, Compatible Brand, Strain, and SKU Type"
+            identity = (
+                "Brand, Compatible Brand, Strain, and the applicable "
+                "SKU Type or Bulk Type and Unit Count or Inventory Class"
+            )
         else:
             identity = "Brand, Strain, and SKU Type"
         return (
@@ -11052,14 +11057,23 @@ class DashboardState(rx.State):
             "WIP-Cultivation": "Cultivation WIP",
             "Pre-WIP-Cultivation": "Cultivation Pre-WIP",
             "WIP-Manufacturing": "Manufacturing WIP",
-            "Pre-WIP-Manufacturing": "Manufacturing Pre-WIP",
-            "Pre-WIP": "Manufacturing Pre-WIP",
+            "Pre-WIP-Manufacturing": "Manufacturing\nPre-WIP",
+            "Pre-WIP": "Manufacturing\nPre-WIP",
             "WIP-Purchased 1A": "Purchased 1A WIP",
             "Pre-WIP-Purchased 1A": "Purchased 1A Pre-WIP",
             "1A Sellable Bulk": "1A Sellable Bulk",
             "1A Pending Bulk Opportunity": "1A Pending Bulk",
             "Sellable Bulk": "Sellable Bulk",
         }.get(stage, stage or "Unclassified Bulk")
+
+    @staticmethod
+    def _is_bulk_inventory_row(row: dict[str, Any]) -> bool:
+        """Distinguish unfinished/bulk material from packaged CPG rows."""
+        sku_type = str(row.get("SKU Type", "") or "").strip().casefold()
+        stage = str(row.get("Production Stage", "") or "").strip()
+        return sku_type in {"", "not packaged sku"} and stage not in {
+            "Packaged Goods", "Retention Storage",
+        }
 
     def _inventory_rows(
         self,
@@ -11072,16 +11086,20 @@ class DashboardState(rx.State):
         if summarize:
             groups: dict[tuple[str, ...], dict[str, Any]] = {}
             for row in rows:
+                classified_row = classified_bulk_view or (
+                    selected_view == "all" and self._is_bulk_inventory_row(row)
+                )
                 key = tuple([
                     *self._inventory_identity_values(row, selected_view),
                     str(row.get("Strain", "") or ""),
                     *(
                         [self._bulk_type(row), self._inventory_class(row)]
-                        if classified_bulk_view
+                        if classified_row
                         else [str(row.get("SKU Type", "") or "")]
                     ),
                 ])
                 group = groups.setdefault(key, {
+                    "classified": classified_row,
                     "units": 0.0,
                     "weight": 0.0,
                     "oldest_age": 0.0,
@@ -11113,7 +11131,7 @@ class DashboardState(rx.State):
                 (
                     [
                     *key,
-                    *([] if classified_bulk_view else [round(group["units"], 2)]),
+                    *([] if group["classified"] else [round(group["units"], 2)]),
                     self._inventory_weight_value(group["weight"]),
                     round(group["oldest_age"], 1),
                     ]
@@ -11144,7 +11162,13 @@ class DashboardState(rx.State):
                     str(row.get("Strain", "") or ""),
                     *(
                         [self._bulk_type(row), self._inventory_class(row)]
-                        if classified_bulk_view
+                        if (
+                            classified_bulk_view
+                            or (
+                                selected_view == "all"
+                                and self._is_bulk_inventory_row(row)
+                            )
+                        )
                         else [
                             str(row.get("SKU Type", "") or ""),
                             round(self._unit_count(row), 2),
@@ -12308,8 +12332,13 @@ def inventory_data_grid(data: rx.Var) -> rx.Component:
         ),
         class_name=rx.cond(
             DashboardState.inventory_view_name == "all",
-            "qcc-inventory-grid qcc-all-inventory-grid",
-            "qcc-inventory-grid",
+            "qcc-inventory-grid qcc-all-inventory-grid qcc-bulk-classification-grid",
+            rx.cond(
+                (DashboardState.inventory_view_name == "wip")
+                | (DashboardState.inventory_view_name == "aging_bulk"),
+                "qcc-inventory-grid qcc-bulk-classification-grid",
+                "qcc-inventory-grid",
+            ),
         ),
         width="100%",
         overflow_x="auto",
