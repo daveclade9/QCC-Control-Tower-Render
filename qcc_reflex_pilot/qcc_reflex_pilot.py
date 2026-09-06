@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.39-staging"
+PILOT_VERSION = "0.9.6.40-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -10505,6 +10505,9 @@ class DashboardState(rx.State):
             f"Total Weight ({unit})", "Age (Days)", "Location",
             "QA Status", "Metrc Tag",
         ]
+        if view_name in {"wip", "aging_bulk"}:
+            columns[columns.index("SKU Type")] = "Bulk Type"
+            columns[columns.index("Unit Count")] = "Inventory Class"
         if view_name == "all":
             columns.insert(columns.index("Location"), "Packaged Date")
             columns.insert(columns.index("QA Status"), "Source Harvest")
@@ -10516,7 +10519,9 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def inventory_grouping_caption(self) -> str:
-        if self.inventory_view_name in {"bulk", "wip", "aging_bulk"}:
+        if self.inventory_view_name in {"wip", "aging_bulk"}:
+            identity = "Compatible Brand, Strain, Bulk Type, and Inventory Class"
+        elif self.inventory_view_name == "bulk":
             identity = "Compatible Brand, Strain, and SKU Type"
         elif self.inventory_view_name == "all":
             identity = "Brand, Compatible Brand, Strain, and SKU Type"
@@ -11018,6 +11023,44 @@ class DashboardState(rx.State):
             return [brand, compatible]
         return [brand]
 
+    @staticmethod
+    def _bulk_type(row: dict[str, Any]) -> str:
+        """Return a useful physical-material classification for bulk views."""
+        text = " ".join(
+            str(row.get(column, "") or "")
+            for column in ("Item", "Category")
+        ).casefold()
+        if re.search(r"\bfresh[\s_-]*frozen\b|\bwpff\b", text):
+            return "Fresh Frozen"
+        if re.search(r"\bsmalls?\b", text):
+            return "MT Smalls"
+        if re.search(r"\btrim\b", text):
+            return "Trim"
+        if re.search(r"\bshake\b", text):
+            return "Shake"
+        if re.search(r"\b(?:concentrate|extract|distillate|oil|resin|rosin)\b", text):
+            return "Concentrate / Extract"
+        if re.search(r"\b(?:flower|bud|mids?|bulk)\b", text):
+            return "Regular Flower Bulk"
+        return "Other Bulk"
+
+    @staticmethod
+    def _inventory_class(row: dict[str, Any]) -> str:
+        """Translate internal production-stage codes into user-facing classes."""
+        stage = str(row.get("Production Stage", "") or "").strip()
+        return {
+            "WIP-Cultivation": "Cultivation WIP",
+            "Pre-WIP-Cultivation": "Cultivation Pre-WIP",
+            "WIP-Manufacturing": "Manufacturing WIP",
+            "Pre-WIP-Manufacturing": "Manufacturing Pre-WIP",
+            "Pre-WIP": "Manufacturing Pre-WIP",
+            "WIP-Purchased 1A": "Purchased 1A WIP",
+            "Pre-WIP-Purchased 1A": "Purchased 1A Pre-WIP",
+            "1A Sellable Bulk": "1A Sellable Bulk",
+            "1A Pending Bulk Opportunity": "1A Pending Bulk",
+            "Sellable Bulk": "Sellable Bulk",
+        }.get(stage, stage or "Unclassified Bulk")
+
     def _inventory_rows(
         self,
         rows: list[dict[str, Any]],
@@ -11025,13 +11068,18 @@ class DashboardState(rx.State):
         view_name: str | None = None,
     ) -> list[list[Any]]:
         selected_view = view_name or self.inventory_view_name
+        classified_bulk_view = selected_view in {"wip", "aging_bulk"}
         if summarize:
             groups: dict[tuple[str, ...], dict[str, Any]] = {}
             for row in rows:
                 key = tuple([
                     *self._inventory_identity_values(row, selected_view),
                     str(row.get("Strain", "") or ""),
-                    str(row.get("SKU Type", "") or ""),
+                    *(
+                        [self._bulk_type(row), self._inventory_class(row)]
+                        if classified_bulk_view
+                        else [str(row.get("SKU Type", "") or "")]
+                    ),
                 ])
                 group = groups.setdefault(key, {
                     "units": 0.0,
@@ -11064,7 +11112,8 @@ class DashboardState(rx.State):
             return [
                 (
                     [
-                    *key, round(group["units"], 2),
+                    *key,
+                    *([] if classified_bulk_view else [round(group["units"], 2)]),
                     self._inventory_weight_value(group["weight"]),
                     round(group["oldest_age"], 1),
                     ]
@@ -11093,8 +11142,14 @@ class DashboardState(rx.State):
                 [
                     *self._inventory_identity_values(row, selected_view),
                     str(row.get("Strain", "") or ""),
-                    str(row.get("SKU Type", "") or ""),
-                    round(self._unit_count(row), 2),
+                    *(
+                        [self._bulk_type(row), self._inventory_class(row)]
+                        if classified_bulk_view
+                        else [
+                            str(row.get("SKU Type", "") or ""),
+                            round(self._unit_count(row), 2),
+                        ]
+                    ),
                     self._inventory_weight_value(
                         self._number(row, "Calculated Weight (g)")
                     ),
@@ -15541,7 +15596,6 @@ def inventory_panel() -> rx.Component:
         rx.tabs.root(
             rx.tabs.list(
                 rx.tabs.trigger("CPG Inventory", value="cpg"),
-                rx.tabs.trigger("Bulk Inventory", value="bulk"),
                 rx.tabs.trigger("WIP & Pre-WIP", value="wip"),
                 rx.tabs.trigger("Aging Risk CPG", value="aging_cpg"),
                 rx.tabs.trigger("Aging Risk Bulk", value="aging_bulk"),
