@@ -6,6 +6,7 @@ from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
 class TableRowLimitTest(unittest.TestCase):
     def test_requested_operational_tables_default_to_ten_rows(self):
         state = DashboardState(_reflex_internal_init=True)
+        state.qa_lab_direct_page = 4
 
         self.assertEqual(state.executive_action_page_size, 10)
         self.assertEqual(state.top_sku_page_size, 10)
@@ -37,9 +38,11 @@ class TableRowLimitTest(unittest.TestCase):
         self.assertEqual(state.qa_manufacturing_detail_rows_per_page, "50")
         self.assertEqual(state.qa_manufacturing_detail_page_size, 50)
 
-        DashboardState.change_qa_lab_direct_rows_per_page.fn(state, "25")
+        event = DashboardState.change_qa_lab_direct_rows_per_page.fn(state, "25")
+        next(event)
         self.assertEqual(state.qa_lab_direct_rows_per_page, "25")
         self.assertEqual(state.qa_lab_direct_page_size, 25)
+        self.assertEqual(state.qa_lab_direct_page, 1)
 
     def test_server_paged_transfer_limit_resets_to_first_page(self):
         state = DashboardState(_reflex_internal_init=True)

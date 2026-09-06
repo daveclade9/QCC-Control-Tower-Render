@@ -1661,6 +1661,111 @@ def _lab_direct_upload_summary(frame: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def load_lab_direct_upload_page(
+    page: int = 1,
+    page_size: int = 10,
+    include_archive: bool = False,
+    start_date: str = "",
+    end_date: str = "",
+) -> dict[str, Any]:
+    """Load one package-level Lab Direct audit page from Supabase.
+
+    Records are retained indefinitely. With no explicit date range, the
+    operational view is limited to the latest 90 days unless archive access is
+    enabled. Aggregation and pagination happen in PostgreSQL so historical
+    growth does not increase the browser payload.
+    """
+    page = max(int(page or 1), 1)
+    page_size = int(page_size or 10)
+    if page_size not in {10, 25, 50}:
+        page_size = 10
+    start_date = str(start_date or "").strip()
+    end_date = str(end_date or "").strip()
+    filters: list[str] = []
+    parameters: list[Any] = []
+    if start_date:
+        filters.append("LEFT(imported_at, 10) >= %s")
+        parameters.append(start_date)
+    if end_date:
+        filters.append("LEFT(imported_at, 10) <= %s")
+        parameters.append(end_date)
+    if not start_date and not end_date and not include_archive:
+        filters.append(
+            "LEFT(imported_at, 10) >= TO_CHAR(CURRENT_DATE - INTERVAL '90 days', 'YYYY-MM-DD')"
+        )
+    where_clause = " AND ".join(filters) if filters else "TRUE"
+    offset = (page - 1) * page_size
+    query = f"""
+        WITH direct_ranked AS (
+            SELECT *,
+                   DENSE_RANK() OVER (
+                       PARTITION BY package_tag
+                       ORDER BY imported_at DESC, test_date DESC
+                   ) AS upload_rank
+            FROM lab_result_records
+            WHERE lab_license = 'LAB-DIRECT'
+        ), latest_direct AS (
+            SELECT package_tag,
+                   MAX(imported_at) AS imported_at,
+                   MAX(source_filename) AS source_filename,
+                   MAX(source_package_labels) AS source_package_labels,
+                   MAX(item) AS item,
+                   MAX(lab_testing_status) AS lab_testing_status,
+                   MAX(CASE WHEN test_name ~* '^Total THC\\s*\\(%%\\)$'
+                            THEN result END) AS total_thc,
+                   MAX(CASE WHEN test_name ~* '^Total Terpenes\\s*\\(%%\\)$'
+                            THEN result END) AS total_terpenes
+            FROM direct_ranked
+            WHERE upload_rank = 1
+            GROUP BY package_tag
+        ), audit AS (
+            SELECT direct.*,
+                   CASE
+                       WHEN EXISTS (
+                           SELECT 1
+                           FROM lab_result_records metrc
+                           WHERE metrc.package_tag = direct.package_tag
+                             AND metrc.lab_license <> 'LAB-DIRECT'
+                             AND REGEXP_REPLACE(
+                                 LOWER(COALESCE(metrc.lab_testing_status, '')),
+                                 '[^a-z]', '', 'g'
+                             ) IN ('testpassed', 'retestpassed', 'testfailed', 'retestfailed')
+                       ) THEN 'Metrc'
+                       ELSE 'Lab Direct'
+                   END AS active_source
+            FROM latest_direct direct
+        )
+        SELECT *, COUNT(*) OVER() AS total_rows
+        FROM audit
+        WHERE {where_clause}
+        ORDER BY imported_at DESC, package_tag
+        LIMIT %s OFFSET %s
+    """
+    parameters.extend([page_size, offset])
+    frame = query_frame(query, tuple(parameters), statement_timeout_seconds=45)
+    total = int(frame.iloc[0].get("total_rows", 0) or 0) if not frame.empty else 0
+    rows: list[dict[str, Any]] = []
+    for record in frame.to_dict("records"):
+        status_key = re.sub(
+            r"[^a-z]", "", str(record.get("lab_testing_status", "") or "").lower()
+        )
+        rows.append({
+            "Imported At": str(record.get("imported_at", "") or ""),
+            "File": str(record.get("source_filename", "") or ""),
+            "Sample Tag": str(record.get("package_tag", "") or ""),
+            "Parent Package": str(record.get("source_package_labels", "") or ""),
+            "Product": str(record.get("item", "") or ""),
+            "Result Status": {
+                "testpassed": "Passed", "retestpassed": "Passed",
+                "testfailed": "Failed", "retestfailed": "Failed",
+            }.get(status_key, "Pending"),
+            "Active Source": str(record.get("active_source", "") or "Lab Direct"),
+            "Total THC %": record.get("total_thc"),
+            "Total Terpenes %": record.get("total_terpenes"),
+        })
+    return {"rows": rows, "total": total, "page": page, "page_size": page_size}
+
+
 def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
     """Load compact QA package records, templates, and import history."""
     now = time.monotonic()
@@ -1766,7 +1871,6 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
         packages = load_operational_context()["inventory_packages"]
     prepared = _prepare_qa_packages(labs, packages)
     comparisons = _lab_source_discrepancies(source_comparison)
-    lab_direct_summary = _lab_direct_upload_summary(source_comparison)
     if not prepared.empty:
         prepared["source_discrepancy"] = prepared["package_tag"].map(
             comparisons
@@ -1805,7 +1909,6 @@ def load_qa_module_data(force_refresh: bool = False) -> dict[str, Any]:
         "packages": _qa_record_list(prepared),
         "templates": template_rows,
         "import_log": _qa_record_list(import_log.head(100)),
-        "lab_direct_summary": _qa_record_list(lab_direct_summary),
         "record_count": int(len(prepared)),
         "analyte_count": int(len(labs)),
     }

@@ -7,6 +7,7 @@ from qcc_reflex_pilot.data import (
     _lab_direct_upload_summary,
     _lab_source_discrepancies,
     _prepare_qa_packages,
+    load_lab_direct_upload_page,
     normalize_lab_summary,
     read_lab_summary_bytes,
 )
@@ -145,6 +146,47 @@ class PreliminaryLabSummaryTest(unittest.TestCase):
         self.assertEqual(state.qa_adjusted_total_cbg, "1.21")
         self.assertEqual(state.qa_adjusted_terpene_values, ["0.389", "0.320", "0.225"])
         self.assertEqual(state.qa_adjusted_coa, {})
+
+    @patch("qcc_reflex_pilot.data.query_frame")
+    def test_lab_direct_audit_defaults_to_90_days_and_pages_on_server(self, query):
+        query.return_value = pd.DataFrame([{
+            "imported_at": "2026-09-01T12:00:00+00:00",
+            "source_filename": "summary.xlsx",
+            "package_tag": SAMPLE_TAG,
+            "source_package_labels": PARENT_TAG,
+            "item": "Fig Bar 5pk",
+            "lab_testing_status": "TestPassed",
+            "active_source": "Lab Direct",
+            "total_thc": 28.51,
+            "total_terpenes": 2.069,
+            "total_rows": 31,
+        }])
+
+        payload = load_lab_direct_upload_page(page=2, page_size=10)
+
+        sql, parameters = query.call_args.args[:2]
+        self.assertIn("INTERVAL '90 days'", sql)
+        self.assertEqual(parameters[-2:], (10, 10))
+        self.assertEqual(payload["total"], 31)
+        self.assertEqual(payload["page"], 2)
+        self.assertEqual(payload["rows"][0]["Result Status"], "Passed")
+
+    @patch("qcc_reflex_pilot.data.query_frame")
+    def test_lab_direct_archive_and_date_range_are_explicit(self, query):
+        query.return_value = pd.DataFrame()
+
+        load_lab_direct_upload_page(
+            include_archive=True,
+            start_date="2026-01-01",
+            end_date="2026-03-31",
+            page_size=25,
+        )
+
+        sql, parameters = query.call_args.args[:2]
+        self.assertNotIn("INTERVAL '90 days'", sql)
+        self.assertIn("LEFT(imported_at, 10) >= %s", sql)
+        self.assertIn("LEFT(imported_at, 10) <= %s", sql)
+        self.assertEqual(parameters, ("2026-01-01", "2026-03-31", 25, 0))
 
 
 if __name__ == "__main__":

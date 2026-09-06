@@ -34,6 +34,7 @@ from .data import (
     import_lab_summary_bytes,
     load_adjusted_coa,
     load_qa_analytes,
+    load_lab_direct_upload_page,
     load_qa_module_data,
     load_clone_allocations,
     load_clone_plans,
@@ -179,7 +180,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.33-staging"
+PILOT_VERSION = "0.9.6.34-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -567,6 +568,13 @@ class DashboardState(rx.State):
     qa_templates: list[dict[str, Any]] = []
     qa_import_log: list[list[Any]] = []
     qa_lab_direct_summary: list[list[Any]] = []
+    qa_lab_direct_include_archive: bool = False
+    qa_lab_direct_start_date: str = ""
+    qa_lab_direct_end_date: str = ""
+    qa_lab_direct_page: int = 1
+    qa_lab_direct_total: int = 0
+    qa_lab_direct_loading: bool = False
+    qa_lab_direct_error: str = ""
     qa_record_count: int = 0
     qa_analyte_count: int = 0
     qa_cultivation_test_type: str = "All Test Types"
@@ -1593,17 +1601,9 @@ class DashboardState(rx.State):
             "File", "Source Rows", "Stored Rows", "Inserted", "Updated",
             "Test Min", "Test Max", "Imported At",
         ]
-        summary_columns = [
-            "Imported At", "File", "Sample Tag", "Parent Package", "Product",
-            "Result Status", "Active Source", "Total THC %", "Total Terpenes %",
-        ]
         self.qa_import_log = [
             [row.get(column, "") for column in import_columns]
             for row in payload.get("import_log", [])
-        ]
-        self.qa_lab_direct_summary = [
-            [row.get(column, "") for column in summary_columns]
-            for row in payload.get("lab_direct_summary", [])
         ]
         self.qa_record_count = int(payload.get("record_count", 0) or 0)
         self.qa_analyte_count = int(payload.get("analyte_count", 0) or 0)
@@ -1617,6 +1617,18 @@ class DashboardState(rx.State):
         ))
         self._sync_qa_consistency_filters()
         self.qa_loaded = True
+
+    def _apply_qa_lab_direct_page(self, payload: dict[str, Any]) -> None:
+        columns = [
+            "Imported At", "File", "Sample Tag", "Parent Package", "Product",
+            "Result Status", "Active Source", "Total THC %", "Total Terpenes %",
+        ]
+        self.qa_lab_direct_summary = [
+            [row.get(column, "") for column in columns]
+            for row in payload.get("rows", [])
+        ]
+        self.qa_lab_direct_total = int(payload.get("total", 0) or 0)
+        self.qa_lab_direct_page = int(payload.get("page", 1) or 1)
 
     def _sync_qa_consistency_filters(self) -> None:
         cultivation_options = self.qa_cultivation_consistency_options
@@ -1644,12 +1656,27 @@ class DashboardState(rx.State):
             self.qa_loading = True
             self.qa_error = ""
             self.qa_message = "Loading Quality & Compliance data..."
+            audit_page = self.qa_lab_direct_page
+            audit_page_size = int(self.qa_lab_direct_rows_per_page)
+            audit_include_archive = self.qa_lab_direct_include_archive
+            audit_start_date = self.qa_lab_direct_start_date
+            audit_end_date = self.qa_lab_direct_end_date
         try:
-            payload = await rx.run_in_thread(
-                lambda: load_qa_module_data(force_refresh=force_refresh)
+            payload, audit = await rx.run_in_thread(
+                lambda: (
+                    load_qa_module_data(force_refresh=force_refresh),
+                    load_lab_direct_upload_page(
+                        page=audit_page,
+                        page_size=audit_page_size,
+                        include_archive=audit_include_archive,
+                        start_date=audit_start_date,
+                        end_date=audit_end_date,
+                    ),
+                )
             )
             async with self:
                 self._apply_qa_payload(payload)
+                self._apply_qa_lab_direct_page(audit)
                 self.qa_message = "Quality & Compliance data is ready."
         except Exception as error:
             async with self:
@@ -1750,6 +1777,77 @@ class DashboardState(rx.State):
     @rx.event
     def change_qa_lab_direct_rows_per_page(self, value: str):
         self.qa_lab_direct_rows_per_page = self._validated_table_row_limit(value)
+        self.qa_lab_direct_page = 1
+        yield DashboardState.load_qa_lab_direct_page
+
+    @rx.event
+    def change_qa_lab_direct_include_archive(self, value: bool):
+        self.qa_lab_direct_include_archive = bool(value)
+        self.qa_lab_direct_page = 1
+        yield DashboardState.load_qa_lab_direct_page
+
+    @rx.event
+    def change_qa_lab_direct_start_date(self, value: str):
+        self.qa_lab_direct_start_date = value
+
+    @rx.event
+    def change_qa_lab_direct_end_date(self, value: str):
+        self.qa_lab_direct_end_date = value
+
+    @rx.event
+    def apply_qa_lab_direct_dates(self):
+        self.qa_lab_direct_page = 1
+        yield DashboardState.load_qa_lab_direct_page
+
+    @rx.event
+    def clear_qa_lab_direct_dates(self):
+        self.qa_lab_direct_start_date = ""
+        self.qa_lab_direct_end_date = ""
+        self.qa_lab_direct_page = 1
+        yield DashboardState.load_qa_lab_direct_page
+
+    @rx.event
+    def previous_qa_lab_direct_page(self):
+        self.qa_lab_direct_page = max(self.qa_lab_direct_page - 1, 1)
+        yield DashboardState.load_qa_lab_direct_page
+
+    @rx.event
+    def next_qa_lab_direct_page(self):
+        self.qa_lab_direct_page = min(
+            self.qa_lab_direct_page + 1, self.qa_lab_direct_total_pages
+        )
+        yield DashboardState.load_qa_lab_direct_page
+
+    @rx.event(background=True)
+    async def load_qa_lab_direct_page(self):
+        async with self:
+            if self.qa_lab_direct_loading:
+                return
+            self.qa_lab_direct_loading = True
+            self.qa_lab_direct_error = ""
+            page = self.qa_lab_direct_page
+            page_size = int(self.qa_lab_direct_rows_per_page)
+            include_archive = self.qa_lab_direct_include_archive
+            start_date = self.qa_lab_direct_start_date
+            end_date = self.qa_lab_direct_end_date
+        try:
+            payload = await rx.run_in_thread(
+                lambda: load_lab_direct_upload_page(
+                    page=page,
+                    page_size=page_size,
+                    include_archive=include_archive,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            )
+            async with self:
+                self._apply_qa_lab_direct_page(payload)
+        except Exception as error:
+            async with self:
+                self.qa_lab_direct_error = f"Lab Direct history could not be loaded: {error}"
+        finally:
+            async with self:
+                self.qa_lab_direct_loading = False
 
     @rx.event
     def change_qa_lookup_search(self, value: str):
@@ -2388,10 +2486,20 @@ class DashboardState(rx.State):
             [row.get(column, "") for column in result_columns] for row in results
         ]
         try:
-            payload = await rx.run_in_thread(
-                lambda: load_qa_module_data(force_refresh=True)
+            payload, audit = await rx.run_in_thread(
+                lambda: (
+                    load_qa_module_data(force_refresh=True),
+                    load_lab_direct_upload_page(
+                        page=1,
+                        page_size=int(self.qa_lab_direct_rows_per_page),
+                        include_archive=self.qa_lab_direct_include_archive,
+                        start_date=self.qa_lab_direct_start_date,
+                        end_date=self.qa_lab_direct_end_date,
+                    ),
+                )
             )
             self._apply_qa_payload(payload)
+            self._apply_qa_lab_direct_page(audit)
             self.qa_message = "Lab import finished. Duplicate files were skipped safely."
         except Exception as error:
             self.qa_error = f"The files were processed, but QA could not refresh: {error}"
@@ -2430,10 +2538,20 @@ class DashboardState(rx.State):
             [row.get(column, "") for column in result_columns] for row in results
         ]
         try:
-            payload = await rx.run_in_thread(
-                lambda: load_qa_module_data(force_refresh=True)
+            payload, audit = await rx.run_in_thread(
+                lambda: (
+                    load_qa_module_data(force_refresh=True),
+                    load_lab_direct_upload_page(
+                        page=1,
+                        page_size=int(self.qa_lab_direct_rows_per_page),
+                        include_archive=self.qa_lab_direct_include_archive,
+                        start_date=self.qa_lab_direct_start_date,
+                        end_date=self.qa_lab_direct_end_date,
+                    ),
+                )
             )
             self._apply_qa_payload(payload)
+            self._apply_qa_lab_direct_page(audit)
             self.qa_message = (
                 "Lab Direct import finished. Only records explicitly marked PASSED "
                 "are authorized for label printing."
@@ -2635,6 +2753,20 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def qa_lab_direct_page_size(self) -> int:
         return int(self.qa_lab_direct_rows_per_page)
+
+    @rx.var(cache=True)
+    def qa_lab_direct_total_pages(self) -> int:
+        return max(
+            1,
+            math.ceil(self.qa_lab_direct_total / self.qa_lab_direct_page_size),
+        )
+
+    @rx.var(cache=True)
+    def qa_lab_direct_page_label(self) -> str:
+        return (
+            f"Page {self.qa_lab_direct_page} of {self.qa_lab_direct_total_pages} "
+            f"({self.qa_lab_direct_total:,} uploads)"
+        )
 
     @rx.var(cache=True)
     def qa_cultivation_metrics(self) -> list[dict[str, str]]:
@@ -3718,6 +3850,7 @@ class DashboardState(rx.State):
         auxiliary_tasks = [
             asyncio.create_task(named_load("sales", get_sales_dashboard_data)),
             asyncio.create_task(named_load("qa", load_qa_module_data)),
+            asyncio.create_task(named_load("qa_audit", load_lab_direct_upload_page)),
         ]
         try:
             try:
@@ -3777,6 +3910,14 @@ class DashboardState(rx.State):
                             )
                             self.qa_message = ""
                         self.qa_loading = False
+                    elif name == "qa_audit":
+                        if error is None and payload is not None:
+                            self._apply_qa_lab_direct_page(payload)
+                            self.qa_lab_direct_error = ""
+                        else:
+                            self.qa_lab_direct_error = (
+                                f"Lab Direct history could not be loaded: {error}"
+                            )
         finally:
             async with self:
                 self.loading = False
@@ -15484,31 +15625,131 @@ def qa_lab_direct_summary_panel() -> rx.Component:
         "Imported At", "File", "Sample Tag", "Parent Package", "Product",
         "Result Status", "Active Source", "Total THC %", "Total Terpenes %",
     ]
-    return rx.cond(
-        DashboardState.qa_lab_direct_summary.length() > 0,
-        rx.box(
-            rx.heading("Recent Lab Direct Uploads", size="4", color=DARK),
-            rx.text(
-                "This audit remains visible after refresh. Active Source changes to Metrc "
-                "when matching Metrc lab results arrive.",
-                size="2", color=MUTED,
+    return rx.box(
+        rx.heading("Recent Lab Direct Uploads", size="4", color=DARK),
+        rx.text(
+            "Every upload is retained for compliance history. The default view shows the "
+            "latest 90 days; use a date range or Include Archive to retrieve older records. "
+            "Active Source changes to Metrc when matching final Metrc results arrive.",
+            size="2", color=MUTED,
+        ),
+        rx.grid(
+            rx.box(
+                rx.text("From", size="1", weight="bold", color=MUTED),
+                rx.input(
+                    type="date",
+                    value=DashboardState.qa_lab_direct_start_date,
+                    on_change=DashboardState.change_qa_lab_direct_start_date,
+                    width="100%",
+                ),
             ),
-            limited_data_grid(
+            rx.box(
+                rx.text("Through", size="1", weight="bold", color=MUTED),
+                rx.input(
+                    type="date",
+                    value=DashboardState.qa_lab_direct_end_date,
+                    on_change=DashboardState.change_qa_lab_direct_end_date,
+                    width="100%",
+                ),
+            ),
+            rx.flex(
+                rx.button(
+                    "Apply Dates",
+                    on_click=DashboardState.apply_qa_lab_direct_dates,
+                    background=ACCENT,
+                    color="white",
+                    size="2",
+                ),
+                rx.button(
+                    "Clear Dates",
+                    on_click=DashboardState.clear_qa_lab_direct_dates,
+                    variant="outline",
+                    color_scheme="gray",
+                    size="2",
+                ),
+                align="end",
+                gap="2",
+            ),
+            rx.flex(
+                rx.switch(
+                    checked=DashboardState.qa_lab_direct_include_archive,
+                    on_change=DashboardState.change_qa_lab_direct_include_archive,
+                ),
+                rx.text("Include Archive", size="2", weight="bold", color=DARK),
+                align="center",
+                gap="2",
+                padding_bottom="0.45rem",
+            ),
+            columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+            gap="3",
+            width="100%",
+            margin_top="0.8rem",
+        ),
+        rx.cond(
+            DashboardState.qa_lab_direct_error != "",
+            rx.callout(
+                DashboardState.qa_lab_direct_error,
+                icon="triangle-alert",
+                color_scheme="red",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            DashboardState.qa_lab_direct_summary.length() > 0,
+            data_grid(
                 DashboardState.qa_lab_direct_summary,
                 columns,
-                DashboardState.qa_lab_direct_rows_per_page,
-                DashboardState.change_qa_lab_direct_rows_per_page,
-                DashboardState.qa_lab_direct_page_size,
                 height="430px",
+                show_search=False,
                 class_name="qcc-qa-lab-direct-grid",
                 column_width=170,
                 minimum_width=1530,
+                page_size=50,
+                resizable=False,
+            ),
+            rx.callout(
+                "No Lab Direct uploads match this date selection.",
+                icon="info",
+                color_scheme="gray",
+                width="100%",
+            ),
+        ),
+        rx.flex(
+            table_row_limit_control(
+                DashboardState.qa_lab_direct_rows_per_page,
+                DashboardState.change_qa_lab_direct_rows_per_page,
+            ),
+            rx.spacer(),
+            rx.flex(
+                rx.button(
+                    "Previous",
+                    on_click=DashboardState.previous_qa_lab_direct_page,
+                    disabled=(DashboardState.qa_lab_direct_page <= 1),
+                    variant="outline",
+                    size="1",
+                ),
+                rx.text(DashboardState.qa_lab_direct_page_label, size="1", color=MUTED),
+                rx.button(
+                    "Next",
+                    on_click=DashboardState.next_qa_lab_direct_page,
+                    disabled=(
+                        DashboardState.qa_lab_direct_page
+                        >= DashboardState.qa_lab_direct_total_pages
+                    ),
+                    variant="outline",
+                    size="1",
+                ),
+                align="center",
+                gap="2",
             ),
             width="100%",
-            padding="1rem",
-            border="1px solid #d8dee8",
-            border_radius="12px",
+            align="center",
+            margin_top="0.5rem",
         ),
+        width="100%",
+        padding="1rem",
+        border="1px solid #d8dee8",
+        border_radius="12px",
     )
 
 
