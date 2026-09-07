@@ -222,6 +222,17 @@ body {
   word-break: break-word;
 }
 
+.qcc-aging-band-button {
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.qcc-aging-band-button[aria-pressed="true"] {
+  font-weight: 800;
+}
+
 .qcc-tabs {
   background: #111111;
   border: 1px solid #111111;
@@ -699,6 +710,10 @@ body {
   .qcc-aging-band-layout {
     grid-template-columns: 1fr !important;
     gap: 0.45rem !important;
+  }
+
+  .qcc-aging-band-button {
+    padding: 0.65rem 0.55rem !important;
   }
 
   .qcc-aging-band-layout > :last-child {

@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.46-staging"
+PILOT_VERSION = "0.9.6.47-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -12428,10 +12428,30 @@ def inventory_data_grid(data: rx.Var) -> rx.Component:
     )
 
 
-def aging_band_row(item: rx.Var, select_event: Any) -> rx.Component:
+def aging_band_row(
+    item: rx.Var,
+    active_filter: rx.Var,
+    select_event: Any,
+) -> rx.Component:
+    is_selected = item["Band"] == active_filter
     return rx.button(
         rx.grid(
-            rx.text(item["Band"], weight="bold", size="2", text_align="left"),
+            rx.flex(
+                rx.cond(
+                    is_selected,
+                    rx.icon("check", size=15, color="#0f777b"),
+                    rx.box(width="15px", min_width="15px"),
+                ),
+                rx.text(
+                    item["Band"],
+                    weight="bold",
+                    size="2",
+                    text_align="left",
+                ),
+                gap="2",
+                align="center",
+                min_width="0",
+            ),
             rx.box(
                 rx.box(
                     height="15px",
@@ -12458,6 +12478,24 @@ def aging_band_row(item: rx.Var, select_event: Any) -> rx.Component:
         height="auto",
         padding="0.4rem 0.55rem",
         color=DARK,
+        background=rx.cond(is_selected, "#e6fffb", "transparent"),
+        border=rx.cond(
+            is_selected,
+            "2px solid #14969b",
+            "2px solid transparent",
+        ),
+        border_left=rx.cond(
+            is_selected,
+            "7px solid #14969b",
+            "7px solid transparent",
+        ),
+        box_shadow=rx.cond(
+            is_selected,
+            "0 4px 14px rgba(20, 150, 155, 0.24)",
+            "none",
+        ),
+        class_name="qcc-aging-band-button",
+        aria_pressed=is_selected,
     )
 
 
@@ -12479,15 +12517,35 @@ def aging_distribution_card(
                 rx.spacer(),
                 rx.badge("Filtered: " + active_filter, color_scheme="teal", size="2"),
                 rx.button(
-                    "Show All",
+                    rx.cond(
+                        active_filter == all_label,
+                        rx.flex(
+                            rx.icon("check", size=14),
+                            rx.text("Showing All"),
+                            gap="1",
+                            align="center",
+                        ),
+                        rx.text("Show All"),
+                    ),
                     on_click=select_event(all_label),
-                    variant="outline",
+                    variant=rx.cond(
+                        active_filter == all_label,
+                        "solid",
+                        "outline",
+                    ),
                     size="2",
                 ),
                 class_name="qcc-aging-card-toolbar",
                 width="100%", align="center", gap="2", wrap="wrap",
             ),
-            rx.foreach(data, lambda item: aging_band_row(item, select_event)),
+            rx.foreach(
+                data,
+                lambda item: aging_band_row(
+                    item,
+                    active_filter,
+                    select_event,
+                ),
+            ),
             width="100%", spacing="2",
         ),
         width="100%",
