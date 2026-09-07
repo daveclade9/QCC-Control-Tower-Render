@@ -268,6 +268,24 @@ class InventoryNavigationCacheTest(unittest.TestCase):
         self.assertEqual(cards[0]["packaged_date"], "2026-08-25")
         self.assertEqual(cards[0]["source_harvest"], "F4.10")
 
+    def test_mobile_inventory_cards_support_needs_review_rows(self):
+        columns = DashboardState._inventory_columns_for_view(
+            SimpleNamespace(inventory_weight_unit="Pounds"), "review"
+        )
+        rows = [[
+            "Unassigned", "Unknown Strain", "Not Packaged SKU", 0,
+            3.25, 17, "Needs Review", "NotSubmitted", "tag-review",
+        ]]
+
+        cards = DashboardState._inventory_mobile_cards(
+            rows, columns, page=1, page_size=10
+        )
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["strain"], "Unknown Strain")
+        self.assertEqual(cards[0]["qa_status"], "NotSubmitted")
+        self.assertEqual(cards[0]["metrc_tag"], "tag-review")
+
     def test_navigation_diagnostic_records_slowest_view_transition(self):
         state = SimpleNamespace(
             inventory_view_name="all",

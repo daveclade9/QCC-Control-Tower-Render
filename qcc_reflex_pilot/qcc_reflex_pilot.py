@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.45-staging"
+PILOT_VERSION = "0.9.6.46-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -15560,17 +15560,13 @@ def inventory_view(
             width="100%",
             align="center",
         ),
-        rx.cond(
-            DashboardState.inventory_view_name == "review",
-            inventory_data_grid(rows),
-            rx.fragment(
-                rx.box(
-                    inventory_data_grid(rows),
-                    class_name="qcc-inventory-desktop-grid",
-                    width="100%",
-                ),
-                inventory_mobile_cards(),
+        rx.fragment(
+            rx.box(
+                inventory_data_grid(rows),
+                class_name="qcc-inventory-desktop-grid",
+                width="100%",
             ),
+            inventory_mobile_cards(),
         ),
         rx.flex(
             rx.box(
@@ -21661,7 +21657,7 @@ def protected_dashboard() -> rx.Component:
                     rx.tabs.trigger(
                         "Distribution & Customer Service", value="distribution"
                     ),
-                    class_name="qcc-tabs qcc-tabs-primary",
+                    class_name="qcc-tabs qcc-tabs-primary qcc-main-module-tabs",
                     width="100%",
                 ),
                 rx.tabs.content(
