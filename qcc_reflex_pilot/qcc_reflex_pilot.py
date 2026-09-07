@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.55-staging"
+PILOT_VERSION = "0.9.6.56-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -13665,10 +13665,15 @@ def executive_chart_card(
                 gap="3",
                 wrap="wrap",
             ),
-            chart,
+            rx.box(
+                chart,
+                class_name="qcc-executive-chart-shell",
+                width="100%",
+            ),
             width="100%",
             spacing="3",
         ),
+        class_name="qcc-executive-chart-card",
         width="100%",
         min_width="0",
         padding=rx.breakpoints(initial="0.8rem", md="1.1rem"),

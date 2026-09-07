@@ -739,12 +739,34 @@ body {
 
   .qcc-executive-detail-mobile {
     display: flex !important;
+    contain: layout style;
   }
 
   .qcc-executive-detail-mobile-card {
     border-left: 5px solid #14969b !important;
     box-shadow: 0 5px 16px rgba(15, 23, 42, 0.08) !important;
+    contain: layout paint style;
+    isolation: isolate;
+    min-height: 11rem;
     padding: 0.9rem !important;
+  }
+
+  .qcc-executive-chart-card {
+    backface-visibility: hidden;
+    contain: layout paint style;
+    isolation: isolate;
+    transform: translateZ(0);
+    will-change: transform;
+  }
+
+  .qcc-executive-chart-shell {
+    backface-visibility: hidden;
+    contain: strict;
+    height: 20rem;
+    min-height: 20rem;
+    max-height: 20rem;
+    overflow: hidden;
+    transform: translateZ(0);
   }
 
   .qcc-aging-card-toolbar > div:first-child {
