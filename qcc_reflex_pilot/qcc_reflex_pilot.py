@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.51-staging"
+PILOT_VERSION = "0.9.6.52-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -778,6 +778,9 @@ class DashboardState(rx.State):
     packaging_receive_reference: str = ""
     packaging_receive_notes: str = ""
     executive_action_rows_per_page: str = "10"
+    executive_detail_rows_per_page: str = "10"
+    executive_detail_view: str = "SKU Risk"
+    executive_detail_filter: str = "All Risks"
     top_sku_rows_per_page: str = "10"
     stockout_rows_per_page: str = "10"
     customer_rows_per_page: str = "10"
@@ -1806,6 +1809,28 @@ class DashboardState(rx.State):
     @rx.event
     def change_executive_action_rows_per_page(self, value: str):
         self.executive_action_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def change_executive_detail_rows_per_page(self, value: str):
+        self.executive_detail_rows_per_page = self._validated_table_row_limit(value)
+
+    @rx.event
+    def show_executive_detail(self, value: str):
+        if value not in {
+            "Inventory by Stage", "SKU Risk", "Demand & Supply", "Distribution",
+        }:
+            return
+        self.executive_detail_view = value
+        self.executive_detail_filter = {
+            "Inventory by Stage": "All Stages",
+            "SKU Risk": "All Risks",
+            "Demand & Supply": "All Crops",
+            "Distribution": "All Outcomes",
+        }[value]
+
+    @rx.event
+    def change_executive_detail_filter(self, value: str):
+        self.executive_detail_filter = value
 
     @rx.event
     def change_top_sku_rows_per_page(self, value: str):
@@ -10927,14 +10952,27 @@ class DashboardState(rx.State):
                 row for row in rows
                 if str(row.get("Production Stage", "")) in stages
             ]
-            grams = sum(
+            aging = [
+                row for row in selected
+                if DashboardState._number(row, "Age") >= 75
+            ]
+            total_grams = sum(
                 DashboardState._number(row, "Calculated Weight (g)")
                 for row in selected
             )
+            aging_grams = sum(
+                DashboardState._number(row, "Calculated Weight (g)")
+                for row in aging
+            )
             output.append({
                 "Stage": label,
-                "Pounds": round(grams / 453.59237, 1),
+                "Current Pounds": round(
+                    max(total_grams - aging_grams, 0) / 453.59237, 1
+                ),
+                "Aging 75+ Days": round(aging_grams / 453.59237, 1),
+                "Total Pounds": round(total_grams / 453.59237, 1),
                 "Packages": len(selected),
+                "Aging Packages": len(aging),
             })
         return output
 
@@ -10950,7 +10988,21 @@ class DashboardState(rx.State):
         current_units: dict[tuple[str, str, str], float],
         use_filtered_inventory: bool,
     ) -> list[dict[str, Any]]:
+        detail = DashboardState._executive_supply_risk_detail_data(
+            velocity_rows, current_units, use_filtered_inventory
+        )
         counts = {"Stockout": 0, "Balanced": 0, "Warning": 0, "Excess": 0}
+        for row in detail:
+            counts[str(row["Risk"])] += 1
+        return [{"Scope": "Current SKUs", **counts}]
+
+    @staticmethod
+    def _executive_supply_risk_detail_data(
+        velocity_rows: list[dict[str, Any]],
+        current_units: dict[tuple[str, str, str], float],
+        use_filtered_inventory: bool,
+    ) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
         for row in velocity_rows:
             weekly = DashboardState._number(row, "Avg Weekly Units")
             if weekly <= 0:
@@ -10966,16 +11018,41 @@ class DashboardState(rx.State):
                 else DashboardState._number(row, "Current Units")
             )
             if units <= 0:
-                counts["Stockout"] += 1
-                continue
-            weeks = units / weekly
-            if weeks <= 4:
-                counts["Balanced"] += 1
-            elif weeks <= 8:
-                counts["Warning"] += 1
+                weeks = 0.0
+                risk = "Stockout"
             else:
-                counts["Excess"] += 1
-        return [{"Scope": "Current SKUs", **counts}]
+                weeks = units / weekly
+                if weeks <= 4:
+                    risk = "Balanced"
+                elif weeks <= 8:
+                    risk = "Warning"
+                else:
+                    risk = "Excess"
+            output.append({
+                "Brand": key[0],
+                "Strain": key[1],
+                "SKU Type": key[2],
+                "Current Units": round(units, 1),
+                "Avg Weekly Units": round(weekly, 1),
+                "Weeks of Supply": round(weeks, 1),
+                "Risk": risk,
+                "Recommended Action": {
+                    "Stockout": "Restore supply or confirm discontinuation",
+                    "Balanced": "Monitor and replenish against demand",
+                    "Warning": "Review upcoming production and sell-through",
+                    "Excess": "Reduce production or accelerate sales",
+                }[risk],
+            })
+        risk_order = {"Stockout": 0, "Balanced": 1, "Warning": 2, "Excess": 3}
+        return sorted(
+            output,
+            key=lambda row: (
+                risk_order[str(row["Risk"])],
+                float(row["Weeks of Supply"]),
+                str(row["Brand"]),
+                str(row["Strain"]),
+            ),
+        )
 
     @rx.var(cache=True)
     def executive_supply_risk_chart_rows(self) -> list[dict[str, Any]]:
@@ -11056,6 +11133,131 @@ class DashboardState(rx.State):
                 self.executive_exception_outcome_counts.get("Returned", 0)
             ),
         }]
+
+    @staticmethod
+    def _executive_inventory_detail_data(
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        stage_names = {
+            "Packaged Goods": "CPG",
+            "Pre-WIP-Cultivation": "Cultivation Pre-WIP",
+            "WIP-Cultivation": "Cultivation WIP",
+            "Pre-WIP-Manufacturing": "Manufacturing Pre-WIP",
+            "Pre-WIP": "Manufacturing Pre-WIP",
+            "WIP-Manufacturing": "Manufacturing WIP",
+        }
+        groups: dict[tuple[str, str, str, str, str], dict[str, float]] = {}
+        for row in rows:
+            stage = stage_names.get(str(row.get("Production Stage", "")))
+            if not stage:
+                continue
+            age_band = "Aging 75+ Days" if DashboardState._number(row, "Age") >= 75 else "Under 75 Days"
+            sku_type = str(row.get("SKU Type", "") or "")
+            if sku_type.casefold() in {"", "not packaged sku"}:
+                sku_type = DashboardState._bulk_type(row)
+            key = (
+                stage,
+                age_band,
+                str(row.get("Brand", "") or row.get("Compatible Brand", "")),
+                str(row.get("Strain", "")),
+                sku_type,
+            )
+            group = groups.setdefault(key, {"packages": 0, "grams": 0.0})
+            group["packages"] += 1
+            group["grams"] += DashboardState._number(
+                row, "Calculated Weight (g)"
+            )
+        return [
+            {
+                "Stage": key[0], "Age Band": key[1], "Brand": key[2],
+                "Strain": key[3], "SKU / Bulk Type": key[4],
+                "Packages": int(group["packages"]),
+                "Weight (lb)": round(group["grams"] / 453.59237, 1),
+            }
+            for key, group in sorted(groups.items())
+        ]
+
+    @rx.var(cache=True)
+    def executive_sku_risk_detail_data(self) -> list[dict[str, Any]]:
+        use_filtered_inventory = (
+            self.executive_facility_filter != "All Facilities"
+            or self.executive_ownership_filter != "QCC-Owned Inventory"
+        )
+        return self._executive_supply_risk_detail_data(
+            self.filtered_velocity,
+            self._executive_sku_units(),
+            use_filtered_inventory,
+        )
+
+    @rx.var(cache=True)
+    def executive_detail_filter_options(self) -> list[str]:
+        if self.executive_detail_view == "Inventory by Stage":
+            return [
+                "All Stages", "CPG", "Cultivation Pre-WIP", "Cultivation WIP",
+                "Manufacturing Pre-WIP", "Manufacturing WIP",
+            ]
+        if self.executive_detail_view == "SKU Risk":
+            return ["All Risks", "Stockout", "Balanced", "Warning", "Excess"]
+        if self.executive_detail_view == "Demand & Supply":
+            return [
+                "All Crops",
+                *[str(row.get("Crop", "")) for row in self.executive_demand_supply_chart_rows],
+            ]
+        return ["All Outcomes", "Open", "Rejected", "Returned"]
+
+    @rx.var(cache=True)
+    def executive_inventory_detail_rows(self) -> list[list[Any]]:
+        rows = self._executive_inventory_detail_data(self.executive_inventory_rows)
+        if self.executive_detail_filter != "All Stages":
+            rows = [
+                row for row in rows
+                if row.get("Stage") == self.executive_detail_filter
+            ]
+        columns = [
+            "Stage", "Age Band", "Brand", "Strain", "SKU / Bulk Type",
+            "Packages", "Weight (lb)",
+        ]
+        return [[row.get(column, "") for column in columns] for row in rows]
+
+    @rx.var(cache=True)
+    def executive_sku_risk_detail_rows(self) -> list[list[Any]]:
+        rows = self.executive_sku_risk_detail_data
+        if self.executive_detail_filter != "All Risks":
+            rows = [
+                row for row in rows
+                if row.get("Risk") == self.executive_detail_filter
+            ]
+        columns = [
+            "Brand", "Strain", "SKU Type", "Current Units",
+            "Avg Weekly Units", "Weeks of Supply", "Risk", "Recommended Action",
+        ]
+        return [[row.get(column, "") for column in columns] for row in rows]
+
+    @rx.var(cache=True)
+    def executive_demand_supply_detail_rows(self) -> list[list[Any]]:
+        rows = self.executive_demand_supply_chart_rows
+        if self.executive_detail_filter != "All Crops":
+            rows = [
+                row for row in rows
+                if row.get("Crop") == self.executive_detail_filter
+            ]
+        columns = [
+            "Crop", "Clone Cut", "Scheduled Supply", "Two-Week Demand",
+            "Projected Balance",
+        ]
+        return [[row.get(column, "") for column in columns] for row in rows]
+
+    @rx.var(cache=True)
+    def executive_distribution_detail_rows(self) -> list[list[Any]]:
+        counts = self.executive_exception_chart_rows[0]
+        outcomes = ["Open", "Rejected", "Returned"]
+        if self.executive_detail_filter != "All Outcomes":
+            outcomes = [self.executive_detail_filter]
+        return [[outcome, int(counts.get(outcome, 0))] for outcome in outcomes]
+
+    @rx.var(cache=True)
+    def executive_detail_page_size(self) -> int:
+        return int(self.executive_detail_rows_per_page)
 
     @rx.var(cache=True)
     def executive_needs_review(self) -> str:
@@ -13200,7 +13402,7 @@ def executive_overview_panel() -> rx.Component:
         rx.box(
             rx.heading("Executive Dashboard", size="7", color=DARK),
             rx.text(
-                "A focused view of demand, current inventory, ownership, and the work requiring attention.",
+                "Interactive inventory, demand, cultivation, and distribution intelligence for daily operating decisions.",
                 color=MUTED,
             ),
             width="100%",
@@ -13269,79 +13471,32 @@ def executive_overview_panel() -> rx.Component:
         rx.grid(
             executive_chart_card(
                 "Cannabis Inventory by Stage",
-                "Current pounds across CPG and the principal cultivation and manufacturing stages.",
+                "Current pounds by stage. The red band identifies inventory aged 75 days or more.",
                 executive_inventory_stage_chart(),
+                "Inventory by Stage",
             ),
             executive_chart_card(
                 "SKU Weeks-of-Supply Risk",
                 "Stockout is zero supply; Balanced is over zero through 4 weeks, Warning is over 4 through 8 weeks, and Excess is above 8 weeks.",
                 executive_supply_risk_chart(),
+                "SKU Risk",
             ),
             executive_chart_card(
                 "Cultivation Demand & Supply Outlook",
                 "Scheduled flower, two-week demand, and projected physical balance across the next ten clone-planning periods.",
                 executive_demand_supply_chart(),
+                "Demand & Supply",
             ),
             executive_chart_card(
                 "Distribution Package Outcomes",
                 "Current open, rejected, and returned package-level exception records.",
                 executive_exception_chart(),
+                "Distribution",
             ),
             columns=rx.breakpoints(initial="1", xl="2"),
             gap="4", width="100%",
         ),
-        executive_section(
-            "Ownership and Facility",
-            "Separates QCC-owned inventory from partner material managed for compliance.",
-        ),
-        rx.grid(
-            executive_metric_card("QCC-Owned Packages", DashboardState.executive_qcc_owned_packages, "All QCC ownership classifications", "#0f766e", "#f0fdfa"),
-            executive_metric_card("Partner-Owned / Compliance Managed", DashboardState.executive_partner_managed_packages, "Building 1A material not owned by QCC", "#d97706", "#fffbeb"),
-            executive_metric_card("Purchased 1A in Building 33", DashboardState.executive_purchased_1a_packages, "QCC-owned material purchased from Building 1A", "#2563eb", "#eff6ff"),
-            columns=rx.breakpoints(initial="1", md="3"),
-            gap="4", width="100%",
-        ),
-        executive_section(
-            "Immediate Attention",
-            "Counts are designed for daily operating review and direct follow-up.",
-        ),
-        rx.grid(
-            executive_metric_card("Stockouts", DashboardState.executive_stockout_count, "Demand exists with no current units", "#dc2626", "#fef2f2"),
-            executive_metric_card("Low Supply", DashboardState.executive_low_supply_count, "More than zero and no more than 4 weeks", "#ea580c", "#fff7ed"),
-            executive_metric_card("Aging CPG", DashboardState.executive_aging_cpg_count, "CPG packages at least 75 days old", "#ca8a04", "#fefce8"),
-            executive_metric_card("Aging Bulk", DashboardState.executive_aging_bulk_count, "Bulk packages at least 75 days old", "#a16207", "#fffbeb"),
-            executive_metric_card("Needs Review", DashboardState.executive_needs_review, "Classification or ownership follow-up", "#be123c", "#fff1f2"),
-            executive_metric_card("Shipment Exceptions", DashboardState.exception_manifests_metric, "Rejected or returned manifests", "#9f1239", "#fff1f2"),
-            columns=rx.breakpoints(initial="1", sm="2", lg="3"),
-            gap="4", width="100%",
-        ),
-        rx.flex(
-            rx.box(
-                rx.heading("Stockouts and Low Inventory", size="5", color=DARK),
-                rx.text(
-                    "Only current stockouts and SKU combinations at 4 weeks of supply or less are shown.",
-                    size="2", color=MUTED,
-                ),
-            ),
-            rx.spacer(),
-            rx.button(
-                "Download Action Queue CSV",
-                on_click=DashboardState.download_executive_actions,
-                variant="outline",
-            ),
-            align="center", gap="3", wrap="wrap", width="100%",
-        ),
-        limited_data_grid(
-            DashboardState.executive_action_rows,
-            [
-                "Brand", "Strain", "SKU Type", "Current Units",
-                "Avg Weekly Units", "Weeks of Supply", "Demand Status",
-            ],
-            DashboardState.executive_action_rows_per_page,
-            DashboardState.change_executive_action_rows_per_page,
-            DashboardState.executive_action_page_size,
-            height="520px",
-        ),
+        executive_detail_panel(),
         width="100%", spacing="5",
     )
 
@@ -13350,14 +13505,26 @@ def executive_chart_card(
     title: str,
     caption: str,
     chart: rx.Component,
+    view_key: str,
 ) -> rx.Component:
     """Responsive chart container shared by executive operating views."""
     return rx.card(
         rx.vstack(
-            rx.box(
-                rx.heading(title, size="4", color=DARK),
-                rx.text(caption, size="1", color=MUTED, line_height="1.4"),
+            rx.flex(
+                rx.box(
+                    rx.heading(title, size="4", color=DARK),
+                    rx.text(caption, size="1", color=MUTED, line_height="1.4"),
+                ),
+                rx.spacer(),
+                rx.cond(
+                    DashboardState.executive_detail_view == view_key,
+                    rx.badge("DETAIL SELECTED", color_scheme="teal"),
+                    rx.badge("TAP FOR DETAIL", variant="outline"),
+                ),
                 width="100%",
+                align="start",
+                gap="3",
+                wrap="wrap",
             ),
             chart,
             width="100%",
@@ -13367,6 +13534,20 @@ def executive_chart_card(
         min_width="0",
         padding=rx.breakpoints(initial="0.8rem", md="1.1rem"),
         overflow="hidden",
+        cursor="pointer",
+        on_click=DashboardState.show_executive_detail(view_key),
+        border=rx.cond(
+            DashboardState.executive_detail_view == view_key,
+            f"2px solid {ACCENT}",
+            "1px solid #d8e0e8",
+        ),
+        style={
+            "transition": "transform 160ms ease, box-shadow 160ms ease",
+            "&:hover": {
+                "transform": "translateY(-2px)",
+                "boxShadow": "0 12px 28px rgba(15, 23, 42, 0.13)",
+            },
+        },
         box_shadow="0 8px 22px rgba(15, 23, 42, 0.06)",
     )
 
@@ -13380,8 +13561,18 @@ def executive_inventory_stage_chart() -> rx.Component:
         ),
         rx.recharts.y_axis(font_size=11),
         rx.recharts.graphing_tooltip(),
+        rx.recharts.legend(),
         rx.recharts.bar(
-            data_key="Pounds", fill="#0f766e", radius=[5, 5, 0, 0]
+            data_key="Current Pounds",
+            stack_id="inventory",
+            fill="#0f766e",
+            radius=[0, 0, 0, 0],
+        ),
+        rx.recharts.bar(
+            data_key="Aging 75+ Days",
+            stack_id="inventory",
+            fill="#dc2626",
+            radius=[5, 5, 0, 0],
         ),
         data=DashboardState.executive_inventory_stage_chart_rows,
         width="100%",
@@ -13448,6 +13639,108 @@ def executive_exception_chart() -> rx.Component:
         width="100%",
         height=300,
         margin={"left": -18, "right": 4, "top": 8, "bottom": 2},
+    )
+
+
+def executive_detail_panel() -> rx.Component:
+    """One responsive detail table controlled by the executive infographics."""
+    return rx.card(
+        rx.vstack(
+            rx.flex(
+                rx.box(
+                    rx.heading(
+                        DashboardState.executive_detail_view + " Detail",
+                        size="5",
+                        color=DARK,
+                    ),
+                    rx.text(
+                        "Select an infographic above to replace this table with its supporting detail.",
+                        size="2",
+                        color=MUTED,
+                    ),
+                ),
+                rx.spacer(),
+                rx.box(
+                    rx.text("Detail filter", size="1", color=MUTED, weight="bold"),
+                    rx.select(
+                        DashboardState.executive_detail_filter_options,
+                        value=DashboardState.executive_detail_filter,
+                        on_change=DashboardState.change_executive_detail_filter,
+                        width=rx.breakpoints(initial="100%", md="250px"),
+                    ),
+                    width=rx.breakpoints(initial="100%", md="auto"),
+                ),
+                align="end",
+                gap="4",
+                wrap="wrap",
+                width="100%",
+            ),
+            rx.cond(
+                DashboardState.executive_detail_view == "Inventory by Stage",
+                limited_data_grid(
+                    DashboardState.executive_inventory_detail_rows,
+                    [
+                        "Stage", "Age Band", "Brand", "Strain",
+                        "SKU / Bulk Type", "Packages", "Weight (lb)",
+                    ],
+                    DashboardState.executive_detail_rows_per_page,
+                    DashboardState.change_executive_detail_rows_per_page,
+                    DashboardState.executive_detail_page_size,
+                    height="480px",
+                    column_width=145,
+                    minimum_width=1015,
+                ),
+                rx.cond(
+                    DashboardState.executive_detail_view == "SKU Risk",
+                    limited_data_grid(
+                        DashboardState.executive_sku_risk_detail_rows,
+                        [
+                            "Brand", "Strain", "SKU Type", "Current Units",
+                            "Avg Weekly Units", "Weeks of Supply", "Risk",
+                            "Recommended Action",
+                        ],
+                        DashboardState.executive_detail_rows_per_page,
+                        DashboardState.change_executive_detail_rows_per_page,
+                        DashboardState.executive_detail_page_size,
+                        height="520px",
+                        column_width=150,
+                        minimum_width=1200,
+                    ),
+                    rx.cond(
+                        DashboardState.executive_detail_view == "Demand & Supply",
+                        limited_data_grid(
+                            DashboardState.executive_demand_supply_detail_rows,
+                            [
+                                "Crop", "Clone Cut", "Scheduled Supply",
+                                "Two-Week Demand", "Projected Balance",
+                            ],
+                            DashboardState.executive_detail_rows_per_page,
+                            DashboardState.change_executive_detail_rows_per_page,
+                            DashboardState.executive_detail_page_size,
+                            height="440px",
+                            column_width=155,
+                            minimum_width=775,
+                        ),
+                        limited_data_grid(
+                            DashboardState.executive_distribution_detail_rows,
+                            ["Outcome", "Packages"],
+                            DashboardState.executive_detail_rows_per_page,
+                            DashboardState.change_executive_detail_rows_per_page,
+                            DashboardState.executive_detail_page_size,
+                            height="340px",
+                            column_width=180,
+                            minimum_width=360,
+                            show_search=False,
+                        ),
+                    ),
+                ),
+            ),
+            width="100%",
+            spacing="4",
+        ),
+        width="100%",
+        border_top=f"5px solid {ACCENT}",
+        padding=rx.breakpoints(initial="0.8rem", md="1.1rem"),
     )
 
 

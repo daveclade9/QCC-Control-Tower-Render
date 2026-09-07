@@ -9,20 +9,23 @@ class ExecutiveChartTests(unittest.TestCase):
             {
                 "Production Stage": "Packaged Goods",
                 "Calculated Weight (g)": 453.59237,
+                "Age": 30,
             },
             {
                 "Production Stage": "WIP-Cultivation",
                 "Calculated Weight (g)": 907.18474,
+                "Age": 80,
             },
         ]
 
         chart = DashboardState._executive_inventory_stage_chart_data(rows)
 
-        self.assertEqual(chart[0], {"Stage": "CPG", "Pounds": 1.0, "Packages": 1})
-        self.assertEqual(
-            chart[2],
-            {"Stage": "Cultivation WIP", "Pounds": 2.0, "Packages": 1},
-        )
+        self.assertEqual(chart[0]["Current Pounds"], 1.0)
+        self.assertEqual(chart[0]["Aging 75+ Days"], 0.0)
+        self.assertEqual(chart[0]["Packages"], 1)
+        self.assertEqual(chart[2]["Current Pounds"], 0.0)
+        self.assertEqual(chart[2]["Aging 75+ Days"], 2.0)
+        self.assertEqual(chart[2]["Aging Packages"], 1)
 
     def test_supply_risk_chart_applies_current_weeks_of_supply_rules(self):
         velocity = [
@@ -40,6 +43,33 @@ class ExecutiveChartTests(unittest.TestCase):
         self.assertEqual(chart["Balanced"], 1)
         self.assertEqual(chart["Warning"], 1)
         self.assertEqual(chart["Excess"], 1)
+
+        detail = DashboardState._executive_supply_risk_detail_data(
+            velocity, {}, False
+        )
+        self.assertEqual({row["Risk"] for row in detail}, {
+            "Stockout", "Balanced", "Warning", "Excess",
+        })
+        self.assertTrue(all(row["Recommended Action"] for row in detail))
+
+    def test_inventory_detail_separates_aging_rows(self):
+        detail = DashboardState._executive_inventory_detail_data([
+            {
+                "Production Stage": "WIP-Cultivation",
+                "Calculated Weight (g)": 453.59237,
+                "Age": 90,
+                "Compatible Brand": "Clade9",
+                "Strain": "Diamond Bar",
+                "SKU Type": "Not Packaged SKU",
+                "Item": "Diamond Bar Smalls",
+            },
+        ])
+
+        self.assertEqual(len(detail), 1)
+        self.assertEqual(detail[0]["Stage"], "Cultivation WIP")
+        self.assertEqual(detail[0]["Age Band"], "Aging 75+ Days")
+        self.assertEqual(detail[0]["SKU / Bulk Type"], "MT Smalls")
+        self.assertEqual(detail[0]["Weight (lb)"], 1.0)
 
     def test_demand_supply_chart_skips_history_and_limits_horizon(self):
         periods = [
