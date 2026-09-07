@@ -103,6 +103,40 @@ class ExecutiveChartTests(unittest.TestCase):
         self.assertEqual(chart["Rejected"], 2)
         self.assertEqual(chart["Returned"], 1)
 
+    def test_executive_mobile_cards_preserve_priority_detail(self):
+        sku_card = DashboardState._executive_mobile_card_data("SKU Risk", [{
+            "Brand": "Clade9",
+            "Strain": "Diamond Bar",
+            "SKU Type": "3.5g Flower",
+            "Current Units": 120,
+            "Avg Weekly Units": 30,
+            "Weeks of Supply": 4,
+            "Risk": "Balanced",
+            "Recommended Action": "Monitor and replenish against demand",
+        }])[0]
+
+        self.assertEqual(sku_card["title"], "Diamond Bar")
+        self.assertEqual(sku_card["badge"], "Balanced")
+        self.assertEqual(sku_card["label_1"], "Weeks of Supply")
+        self.assertEqual(sku_card["value_1"], "4")
+        self.assertIn("Monitor", sku_card["detail_value"])
+
+        inventory_card = DashboardState._executive_mobile_card_data(
+            "Inventory by Stage",
+            [{
+                "Stage": "Cultivation WIP",
+                "Age Band": "Aging 75+ Days",
+                "Brand": "Clade9",
+                "Strain": "Diamond Dust",
+                "SKU / Bulk Type": "MT Smalls",
+                "Packages": 2,
+                "Weight (lb)": 14.5,
+            }],
+        )[0]
+
+        self.assertEqual(inventory_card["status"], "Aging 75+ Days")
+        self.assertEqual(inventory_card["value_2"], "14.5 lb")
+
 
 if __name__ == "__main__":
     unittest.main()

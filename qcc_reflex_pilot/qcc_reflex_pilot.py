@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.52-staging"
+PILOT_VERSION = "0.9.6.53-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -781,6 +781,7 @@ class DashboardState(rx.State):
     executive_detail_rows_per_page: str = "10"
     executive_detail_view: str = "SKU Risk"
     executive_detail_filter: str = "All Risks"
+    executive_detail_mobile_page: int = 1
     top_sku_rows_per_page: str = "10"
     stockout_rows_per_page: str = "10"
     customer_rows_per_page: str = "10"
@@ -1813,6 +1814,7 @@ class DashboardState(rx.State):
     @rx.event
     def change_executive_detail_rows_per_page(self, value: str):
         self.executive_detail_rows_per_page = self._validated_table_row_limit(value)
+        self.executive_detail_mobile_page = 1
 
     @rx.event
     def show_executive_detail(self, value: str):
@@ -1827,10 +1829,25 @@ class DashboardState(rx.State):
             "Demand & Supply": "All Crops",
             "Distribution": "All Outcomes",
         }[value]
+        self.executive_detail_mobile_page = 1
 
     @rx.event
     def change_executive_detail_filter(self, value: str):
         self.executive_detail_filter = value
+        self.executive_detail_mobile_page = 1
+
+    @rx.event
+    def previous_executive_detail_mobile_page(self):
+        self.executive_detail_mobile_page = max(
+            self.executive_detail_mobile_page - 1, 1
+        )
+
+    @rx.event
+    def next_executive_detail_mobile_page(self):
+        self.executive_detail_mobile_page = min(
+            self.executive_detail_mobile_page + 1,
+            self.executive_detail_mobile_total_pages,
+        )
 
     @rx.event
     def change_top_sku_rows_per_page(self, value: str):
@@ -11259,6 +11276,163 @@ class DashboardState(rx.State):
     def executive_detail_page_size(self) -> int:
         return int(self.executive_detail_rows_per_page)
 
+    @staticmethod
+    def _executive_mobile_card_data(
+        view: str,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        """Translate executive detail records into a shared phone card shape."""
+        cards: list[dict[str, str]] = []
+        for row in rows:
+            if view == "Inventory by Stage":
+                cards.append({
+                    "title": str(row.get("Strain", "") or "Unassigned Strain"),
+                    "subtitle": " · ".join(filter(None, [
+                        str(row.get("Brand", "") or ""),
+                        str(row.get("SKU / Bulk Type", "") or ""),
+                    ])),
+                    "badge": str(row.get("Stage", "") or "Inventory"),
+                    "status": str(row.get("Age Band", "") or ""),
+                    "label_1": "Packages",
+                    "value_1": str(row.get("Packages", 0)),
+                    "label_2": "Weight",
+                    "value_2": f'{row.get("Weight (lb)", 0)} lb',
+                    "label_3": "Age Band",
+                    "value_3": str(row.get("Age Band", "") or "—"),
+                    "detail_label": "Inventory Stage",
+                    "detail_value": str(row.get("Stage", "") or "—"),
+                })
+            elif view == "SKU Risk":
+                cards.append({
+                    "title": str(row.get("Strain", "") or "Unassigned Strain"),
+                    "subtitle": " · ".join(filter(None, [
+                        str(row.get("Brand", "") or ""),
+                        str(row.get("SKU Type", "") or ""),
+                    ])),
+                    "badge": str(row.get("Risk", "") or "Review"),
+                    "status": str(row.get("Risk", "") or ""),
+                    "label_1": "Weeks of Supply",
+                    "value_1": str(row.get("Weeks of Supply", 0)),
+                    "label_2": "Current Units",
+                    "value_2": str(row.get("Current Units", 0)),
+                    "label_3": "Avg Weekly Units",
+                    "value_3": str(row.get("Avg Weekly Units", 0)),
+                    "detail_label": "Recommended Action",
+                    "detail_value": str(row.get("Recommended Action", "") or "—"),
+                })
+            elif view == "Demand & Supply":
+                cards.append({
+                    "title": str(row.get("Crop", "") or "Planning Period"),
+                    "subtitle": f'Clone cut: {row.get("Clone Cut", "") or "—"}',
+                    "badge": "Cultivation",
+                    "status": "",
+                    "label_1": "Scheduled Supply",
+                    "value_1": f'{row.get("Scheduled Supply", 0)} lb',
+                    "label_2": "Two-Week Demand",
+                    "value_2": f'{row.get("Two-Week Demand", 0)} lb',
+                    "label_3": "Projected Balance",
+                    "value_3": f'{row.get("Projected Balance", 0)} lb',
+                    "detail_label": "Availability Period",
+                    "detail_value": str(row.get("Crop", "") or "—"),
+                })
+            else:
+                outcome = str(row.get("Outcome", "") or "Review")
+                cards.append({
+                    "title": outcome,
+                    "subtitle": "Package outcome",
+                    "badge": outcome,
+                    "status": outcome,
+                    "label_1": "Packages",
+                    "value_1": str(row.get("Packages", 0)),
+                    "label_2": "",
+                    "value_2": "",
+                    "label_3": "",
+                    "value_3": "",
+                    "detail_label": "",
+                    "detail_value": "",
+                })
+        return cards
+
+    @rx.var(cache=True)
+    def executive_detail_mobile_all_cards(self) -> list[dict[str, str]]:
+        if self.executive_detail_view == "Inventory by Stage":
+            rows = self._executive_inventory_detail_data(
+                self.executive_inventory_rows
+            )
+            if self.executive_detail_filter != "All Stages":
+                rows = [
+                    row for row in rows
+                    if row.get("Stage") == self.executive_detail_filter
+                ]
+        elif self.executive_detail_view == "SKU Risk":
+            rows = self.executive_sku_risk_detail_data
+            if self.executive_detail_filter != "All Risks":
+                rows = [
+                    row for row in rows
+                    if row.get("Risk") == self.executive_detail_filter
+                ]
+        elif self.executive_detail_view == "Demand & Supply":
+            rows = self.executive_demand_supply_chart_rows
+            if self.executive_detail_filter != "All Crops":
+                rows = [
+                    row for row in rows
+                    if row.get("Crop") == self.executive_detail_filter
+                ]
+        else:
+            counts = self.executive_exception_chart_rows[0]
+            outcomes = ["Open", "Rejected", "Returned"]
+            if self.executive_detail_filter != "All Outcomes":
+                outcomes = [self.executive_detail_filter]
+            rows = [
+                {"Outcome": outcome, "Packages": int(counts.get(outcome, 0))}
+                for outcome in outcomes
+            ]
+        return self._executive_mobile_card_data(
+            self.executive_detail_view,
+            rows,
+        )
+
+    @rx.var(cache=True)
+    def executive_detail_mobile_total_pages(self) -> int:
+        count = len(self.executive_detail_mobile_all_cards)
+        page_size = self.executive_detail_page_size
+        return max((count + page_size - 1) // page_size, 1)
+
+    @rx.var(cache=True)
+    def executive_detail_mobile_cards(self) -> list[dict[str, str]]:
+        page = min(
+            max(self.executive_detail_mobile_page, 1),
+            self.executive_detail_mobile_total_pages,
+        )
+        start = (page - 1) * self.executive_detail_page_size
+        return self.executive_detail_mobile_all_cards[
+            start:start + self.executive_detail_page_size
+        ]
+
+    @rx.var(cache=True)
+    def executive_detail_mobile_page_label(self) -> str:
+        count = len(self.executive_detail_mobile_all_cards)
+        if count == 0:
+            return "No matching records"
+        page = min(
+            max(self.executive_detail_mobile_page, 1),
+            self.executive_detail_mobile_total_pages,
+        )
+        start = (page - 1) * self.executive_detail_page_size + 1
+        end = min(page * self.executive_detail_page_size, count)
+        return f"Showing {start}–{end} of {count}"
+
+    @rx.var(cache=True)
+    def executive_detail_mobile_previous_disabled(self) -> bool:
+        return self.executive_detail_mobile_page <= 1
+
+    @rx.var(cache=True)
+    def executive_detail_mobile_next_disabled(self) -> bool:
+        return (
+            self.executive_detail_mobile_page
+            >= self.executive_detail_mobile_total_pages
+        )
+
     @rx.var(cache=True)
     def executive_needs_review(self) -> str:
         rows = self._inventory_view_rows("View Needs Review")
@@ -13642,6 +13816,144 @@ def executive_exception_chart() -> rx.Component:
     )
 
 
+def executive_mobile_detail(label: rx.Var, value: rx.Var) -> rx.Component:
+    return rx.box(
+        rx.text(label, size="1", color=MUTED, weight="bold"),
+        rx.text(value, size="2", color=DARK, weight="bold", line_height="1.25"),
+        min_width="0",
+    )
+
+
+def executive_mobile_status_badge(row: rx.Var) -> rx.Component:
+    badge = row["badge"]
+    status = row["status"]
+    return rx.cond(
+        (status == "Stockout") | (status == "Excess")
+        | (status == "Rejected") | (status == "Aging 75+ Days"),
+        rx.badge(badge, color_scheme="red", size="2", variant="solid"),
+        rx.cond(
+            (status == "Warning") | (status == "Returned"),
+            rx.badge(badge, color_scheme="amber", size="2", variant="solid"),
+            rx.cond(
+                status == "Balanced",
+                rx.badge(badge, color_scheme="green", size="2", variant="solid"),
+                rx.badge(badge, color_scheme="teal", size="2", variant="soft"),
+            ),
+        ),
+    )
+
+
+def executive_detail_mobile_card(row: rx.Var) -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.flex(
+                rx.box(
+                    rx.heading(row["title"], size="4", color=DARK, line_height="1.15"),
+                    rx.text(row["subtitle"], size="1", color=MUTED, line_height="1.3"),
+                    min_width="0",
+                ),
+                executive_mobile_status_badge(row),
+                justify="between",
+                align="start",
+                gap="3",
+                width="100%",
+            ),
+            rx.grid(
+                executive_mobile_detail(row["label_1"], row["value_1"]),
+                rx.cond(
+                    row["label_2"] != "",
+                    executive_mobile_detail(row["label_2"], row["value_2"]),
+                ),
+                rx.cond(
+                    row["label_3"] != "",
+                    executive_mobile_detail(row["label_3"], row["value_3"]),
+                ),
+                columns="2",
+                gap="3",
+                width="100%",
+            ),
+            rx.cond(
+                row["detail_label"] != "",
+                rx.box(
+                    rx.text(
+                        row["detail_label"], size="1", color=MUTED, weight="bold"
+                    ),
+                    rx.text(
+                        row["detail_value"], size="2", color=DARK, line_height="1.35"
+                    ),
+                    width="100%",
+                    padding_top="0.15rem",
+                    border_top="1px solid #e2e8f0",
+                ),
+            ),
+            width="100%",
+            spacing="3",
+            align="start",
+        ),
+        class_name="qcc-executive-detail-mobile-card",
+        width="100%",
+    )
+
+
+def executive_detail_mobile_cards() -> rx.Component:
+    return rx.vstack(
+        rx.cond(
+            DashboardState.executive_detail_mobile_cards.length() > 0,
+            rx.foreach(
+                DashboardState.executive_detail_mobile_cards,
+                executive_detail_mobile_card,
+            ),
+            rx.callout(
+                "No records match this detail filter.",
+                icon="search_x",
+                color_scheme="gray",
+                width="100%",
+            ),
+        ),
+        rx.flex(
+            rx.button(
+                "Previous",
+                on_click=DashboardState.previous_executive_detail_mobile_page,
+                disabled=DashboardState.executive_detail_mobile_previous_disabled,
+                variant="outline",
+                flex="1",
+            ),
+            rx.text(
+                DashboardState.executive_detail_mobile_page_label,
+                size="1",
+                color=MUTED,
+                text_align="center",
+                flex="2",
+            ),
+            rx.button(
+                "Next",
+                on_click=DashboardState.next_executive_detail_mobile_page,
+                disabled=DashboardState.executive_detail_mobile_next_disabled,
+                variant="outline",
+                flex="1",
+            ),
+            gap="2",
+            align="center",
+            width="100%",
+        ),
+        rx.flex(
+            rx.text("Cards per page", size="1", weight="bold", color=MUTED),
+            rx.select(
+                ["10", "25", "50"],
+                value=DashboardState.executive_detail_rows_per_page,
+                on_change=DashboardState.change_executive_detail_rows_per_page,
+                width="100px",
+            ),
+            align="center",
+            justify="between",
+            width="100%",
+        ),
+        class_name="qcc-executive-detail-mobile",
+        width="100%",
+        spacing="3",
+    )
+
+
 def executive_detail_panel() -> rx.Component:
     """One responsive detail table controlled by the executive infographics."""
     return rx.card(
@@ -13675,66 +13987,71 @@ def executive_detail_panel() -> rx.Component:
                 wrap="wrap",
                 width="100%",
             ),
-            rx.cond(
-                DashboardState.executive_detail_view == "Inventory by Stage",
-                limited_data_grid(
-                    DashboardState.executive_inventory_detail_rows,
-                    [
-                        "Stage", "Age Band", "Brand", "Strain",
-                        "SKU / Bulk Type", "Packages", "Weight (lb)",
-                    ],
-                    DashboardState.executive_detail_rows_per_page,
-                    DashboardState.change_executive_detail_rows_per_page,
-                    DashboardState.executive_detail_page_size,
-                    height="480px",
-                    column_width=145,
-                    minimum_width=1015,
-                ),
+            rx.box(
                 rx.cond(
-                    DashboardState.executive_detail_view == "SKU Risk",
+                    DashboardState.executive_detail_view == "Inventory by Stage",
                     limited_data_grid(
-                        DashboardState.executive_sku_risk_detail_rows,
+                        DashboardState.executive_inventory_detail_rows,
                         [
-                            "Brand", "Strain", "SKU Type", "Current Units",
-                            "Avg Weekly Units", "Weeks of Supply", "Risk",
-                            "Recommended Action",
+                            "Stage", "Age Band", "Brand", "Strain",
+                            "SKU / Bulk Type", "Packages", "Weight (lb)",
                         ],
                         DashboardState.executive_detail_rows_per_page,
                         DashboardState.change_executive_detail_rows_per_page,
                         DashboardState.executive_detail_page_size,
-                        height="520px",
-                        column_width=150,
-                        minimum_width=1200,
+                        height="480px",
+                        column_width=145,
+                        minimum_width=1015,
                     ),
                     rx.cond(
-                        DashboardState.executive_detail_view == "Demand & Supply",
+                        DashboardState.executive_detail_view == "SKU Risk",
                         limited_data_grid(
-                            DashboardState.executive_demand_supply_detail_rows,
+                            DashboardState.executive_sku_risk_detail_rows,
                             [
-                                "Crop", "Clone Cut", "Scheduled Supply",
-                                "Two-Week Demand", "Projected Balance",
+                                "Brand", "Strain", "SKU Type", "Current Units",
+                                "Avg Weekly Units", "Weeks of Supply", "Risk",
+                                "Recommended Action",
                             ],
                             DashboardState.executive_detail_rows_per_page,
                             DashboardState.change_executive_detail_rows_per_page,
                             DashboardState.executive_detail_page_size,
-                            height="440px",
-                            column_width=155,
-                            minimum_width=775,
+                            height="520px",
+                            column_width=150,
+                            minimum_width=1200,
                         ),
-                        limited_data_grid(
-                            DashboardState.executive_distribution_detail_rows,
-                            ["Outcome", "Packages"],
-                            DashboardState.executive_detail_rows_per_page,
-                            DashboardState.change_executive_detail_rows_per_page,
-                            DashboardState.executive_detail_page_size,
-                            height="340px",
-                            column_width=180,
-                            minimum_width=360,
-                            show_search=False,
+                        rx.cond(
+                            DashboardState.executive_detail_view == "Demand & Supply",
+                            limited_data_grid(
+                                DashboardState.executive_demand_supply_detail_rows,
+                                [
+                                    "Crop", "Clone Cut", "Scheduled Supply",
+                                    "Two-Week Demand", "Projected Balance",
+                                ],
+                                DashboardState.executive_detail_rows_per_page,
+                                DashboardState.change_executive_detail_rows_per_page,
+                                DashboardState.executive_detail_page_size,
+                                height="440px",
+                                column_width=155,
+                                minimum_width=775,
+                            ),
+                            limited_data_grid(
+                                DashboardState.executive_distribution_detail_rows,
+                                ["Outcome", "Packages"],
+                                DashboardState.executive_detail_rows_per_page,
+                                DashboardState.change_executive_detail_rows_per_page,
+                                DashboardState.executive_detail_page_size,
+                                height="340px",
+                                column_width=180,
+                                minimum_width=360,
+                                show_search=False,
+                            ),
                         ),
                     ),
                 ),
+                class_name="qcc-executive-detail-desktop",
+                width="100%",
             ),
+            executive_detail_mobile_cards(),
             width="100%",
             spacing="4",
         ),

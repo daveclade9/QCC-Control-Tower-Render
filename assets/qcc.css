@@ -207,6 +207,10 @@ body {
   display: none;
 }
 
+.qcc-executive-detail-mobile {
+  display: none;
+}
+
 .qcc-inventory-mobile-brand {
   color: #0f777b;
   font-size: 0.72rem;
@@ -724,6 +728,20 @@ body {
   }
 
   .qcc-inventory-mobile-card {
+    border-left: 5px solid #14969b !important;
+    box-shadow: 0 5px 16px rgba(15, 23, 42, 0.08) !important;
+    padding: 0.9rem !important;
+  }
+
+  .qcc-executive-detail-desktop {
+    display: none !important;
+  }
+
+  .qcc-executive-detail-mobile {
+    display: flex !important;
+  }
+
+  .qcc-executive-detail-mobile-card {
     border-left: 5px solid #14969b !important;
     box-shadow: 0 5px 16px rgba(15, 23, 42, 0.08) !important;
     padding: 0.9rem !important;
