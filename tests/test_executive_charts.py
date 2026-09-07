@@ -137,6 +137,33 @@ class ExecutiveChartTests(unittest.TestCase):
         self.assertEqual(inventory_card["status"], "Aging 75+ Days")
         self.assertEqual(inventory_card["value_2"], "14.5 lb")
 
+    def test_executive_mobile_cards_use_default_priority_sorting(self):
+        inventory = DashboardState._executive_mobile_sorted_rows(
+            "Inventory by Stage",
+            [
+                {"Strain": "Small", "Weight (lb)": 5.0},
+                {"Strain": "Large", "Weight (lb)": 25.0},
+                {"Strain": "Medium", "Weight (lb)": 12.5},
+            ],
+        )
+        self.assertEqual(
+            [row["Strain"] for row in inventory],
+            ["Large", "Medium", "Small"],
+        )
+
+        sku_risk = DashboardState._executive_mobile_sorted_rows(
+            "SKU Risk",
+            [
+                {"Strain": "Balanced", "Weeks of Supply": 4.0},
+                {"Strain": "Excess", "Weeks of Supply": 12.0},
+                {"Strain": "Warning", "Weeks of Supply": 7.0},
+            ],
+        )
+        self.assertEqual(
+            [row["Weeks of Supply"] for row in sku_risk],
+            [12.0, 7.0, 4.0],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.53-staging"
+PILOT_VERSION = "0.9.6.54-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -11353,6 +11353,32 @@ class DashboardState(rx.State):
                 })
         return cards
 
+    @staticmethod
+    def _executive_mobile_sorted_rows(
+        view: str,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Apply the default business-priority order to mobile detail cards."""
+        if view == "Inventory by Stage":
+            return sorted(
+                rows,
+                key=lambda row: (
+                    -DashboardState._number(row, "Weight (lb)"),
+                    str(row.get("Strain", "")),
+                    str(row.get("SKU / Bulk Type", "")),
+                ),
+            )
+        if view == "SKU Risk":
+            return sorted(
+                rows,
+                key=lambda row: (
+                    -DashboardState._number(row, "Weeks of Supply"),
+                    str(row.get("Strain", "")),
+                    str(row.get("SKU Type", "")),
+                ),
+            )
+        return rows
+
     @rx.var(cache=True)
     def executive_detail_mobile_all_cards(self) -> list[dict[str, str]]:
         if self.executive_detail_view == "Inventory by Stage":
@@ -11387,6 +11413,10 @@ class DashboardState(rx.State):
                 {"Outcome": outcome, "Packages": int(counts.get(outcome, 0))}
                 for outcome in outcomes
             ]
+        rows = self._executive_mobile_sorted_rows(
+            self.executive_detail_view,
+            rows,
+        )
         return self._executive_mobile_card_data(
             self.executive_detail_view,
             rows,
