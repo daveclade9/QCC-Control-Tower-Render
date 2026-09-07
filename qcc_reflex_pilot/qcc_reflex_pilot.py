@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.56-staging"
+PILOT_VERSION = "0.9.6.57-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -779,6 +779,7 @@ class DashboardState(rx.State):
     packaging_receive_notes: str = ""
     executive_action_rows_per_page: str = "10"
     executive_detail_rows_per_page: str = "10"
+    executive_detail_mobile_rows_per_page: str = "5"
     executive_detail_view: str = "SKU Risk"
     executive_detail_filter: str = "All Risks"
     executive_detail_mobile_page: int = 1
@@ -1814,6 +1815,13 @@ class DashboardState(rx.State):
     @rx.event
     def change_executive_detail_rows_per_page(self, value: str):
         self.executive_detail_rows_per_page = self._validated_table_row_limit(value)
+        self.executive_detail_mobile_page = 1
+
+    @rx.event
+    def change_executive_detail_mobile_rows_per_page(self, value: str):
+        self.executive_detail_mobile_rows_per_page = (
+            value if value in {"5", "10", "25"} else "5"
+        )
         self.executive_detail_mobile_page = 1
 
     @rx.event
@@ -11366,7 +11374,7 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def executive_detail_mobile_total_pages(self) -> int:
         count = len(self.executive_detail_mobile_all_cards)
-        page_size = self.executive_detail_page_size
+        page_size = int(self.executive_detail_mobile_rows_per_page)
         return max((count + page_size - 1) // page_size, 1)
 
     @rx.var(cache=True)
@@ -11375,9 +11383,10 @@ class DashboardState(rx.State):
             max(self.executive_detail_mobile_page, 1),
             self.executive_detail_mobile_total_pages,
         )
-        start = (page - 1) * self.executive_detail_page_size
+        page_size = int(self.executive_detail_mobile_rows_per_page)
+        start = (page - 1) * page_size
         return self.executive_detail_mobile_all_cards[
-            start:start + self.executive_detail_page_size
+            start:start + page_size
         ]
 
     @rx.var(cache=True)
@@ -11389,8 +11398,9 @@ class DashboardState(rx.State):
             max(self.executive_detail_mobile_page, 1),
             self.executive_detail_mobile_total_pages,
         )
-        start = (page - 1) * self.executive_detail_page_size + 1
-        end = min(page * self.executive_detail_page_size, count)
+        page_size = int(self.executive_detail_mobile_rows_per_page)
+        start = (page - 1) * page_size + 1
+        end = min(page * page_size, count)
         return f"Showing {start}–{end} of {count}"
 
     @rx.var(cache=True)
@@ -13604,14 +13614,22 @@ def executive_overview_panel() -> rx.Component:
             executive_metric_card("Last 30-Day Units", DashboardState.executive_last_30_units, "Accepted retail demand", "#0f766e", "#f0fdfa"),
             executive_metric_card("Last 30-Day Value", DashboardState.executive_last_30_value, "Shipper value", "#2563eb", "#eff6ff"),
             executive_metric_card("Customers", DashboardState.executive_last_30_customers, "Unique customer licenses", "#7c3aed", "#f5f3ff"),
-            executive_metric_card("Manifests", DashboardState.executive_last_30_manifests, "Accepted demand manifests", "#0369a1", "#f0f9ff"),
-            executive_metric_card("Open Manifests", DashboardState.open_manifests_metric, "Companywide current transfer status", "#d97706", "#fffbeb"),
+            rx.box(
+                executive_metric_card("Manifests", DashboardState.executive_last_30_manifests, "Accepted demand manifests", "#0369a1", "#f0f9ff"),
+                class_name="qcc-mobile-hidden-card",
+                width="100%",
+            ),
+            rx.box(
+                executive_metric_card("Open Manifests", DashboardState.open_manifests_metric, "Companywide current transfer status", "#d97706", "#fffbeb"),
+                class_name="qcc-mobile-hidden-card",
+                width="100%",
+            ),
             columns=rx.breakpoints(initial="1", sm="2", lg="5"),
             gap="4", width="100%",
         ),
         executive_section(
             "Operating Intelligence",
-            "Inventory, supply risk, cultivation outlook, and distribution exceptions. Existing dashboard filters remain active where relevant.",
+            "Inventory, supply risk, and cultivation outlook. Existing dashboard filters remain active where relevant.",
         ),
         rx.grid(
             executive_chart_card(
@@ -13892,9 +13910,9 @@ def executive_detail_mobile_cards() -> rx.Component:
         rx.flex(
             rx.text("Cards per page", size="1", weight="bold", color=MUTED),
             rx.select(
-                ["10", "25", "50"],
-                value=DashboardState.executive_detail_rows_per_page,
-                on_change=DashboardState.change_executive_detail_rows_per_page,
+                ["5", "10", "25"],
+                value=DashboardState.executive_detail_mobile_rows_per_page,
+                on_change=DashboardState.change_executive_detail_mobile_rows_per_page,
                 width="100px",
             ),
             align="center",
@@ -22859,8 +22877,16 @@ def protected_dashboard() -> rx.Component:
                     snapshot_stat_card("Inventory Snapshot", DashboardState.snapshot_date, "#0f766e"),
                     snapshot_stat_card("Packages", DashboardState.snapshot_packages, "#2563eb"),
                     snapshot_stat_card("SKUs", DashboardState.snapshot_skus, "#7c3aed"),
-                    snapshot_stat_card("Package Detail", DashboardState.snapshot_detail, "#0369a1"),
-                    snapshot_stat_card("CPG Eligible", DashboardState.snapshot_cpg_eligible, "#16a34a"),
+                    rx.box(
+                        snapshot_stat_card("Package Detail", DashboardState.snapshot_detail, "#0369a1"),
+                        class_name="qcc-mobile-hidden-card",
+                        width="100%",
+                    ),
+                    rx.box(
+                        snapshot_stat_card("CPG Eligible", DashboardState.snapshot_cpg_eligible, "#16a34a"),
+                        class_name="qcc-mobile-hidden-card",
+                        width="100%",
+                    ),
                     columns=rx.breakpoints(initial="1", sm="2", lg="5"),
                     gap="4", width="100%",
                 ),

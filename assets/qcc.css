@@ -752,21 +752,20 @@ body {
   }
 
   .qcc-executive-chart-card {
-    backface-visibility: hidden;
     contain: layout paint style;
     isolation: isolate;
-    transform: translateZ(0);
-    will-change: transform;
   }
 
   .qcc-executive-chart-shell {
-    backface-visibility: hidden;
     contain: strict;
     height: 20rem;
     min-height: 20rem;
     max-height: 20rem;
     overflow: hidden;
-    transform: translateZ(0);
+  }
+
+  .qcc-mobile-hidden-card {
+    display: none !important;
   }
 
   .qcc-aging-card-toolbar > div:first-child {
