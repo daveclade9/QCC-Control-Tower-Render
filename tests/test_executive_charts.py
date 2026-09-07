@@ -88,20 +88,7 @@ class ExecutiveChartTests(unittest.TestCase):
         self.assertEqual(chart[0]["Crop"], "F1.11")
         self.assertEqual(chart[0]["Scheduled Supply"], 40)
         self.assertEqual(chart[0]["Two-Week Demand"], 25)
-        self.assertEqual(chart[0]["Projected Balance"], 60)
-
-    def test_distribution_chart_keeps_package_outcomes_separate(self):
-        chart = DashboardState._executive_exception_chart_data([
-            {"State": "Shipped"},
-            {"State": "Rejected"},
-            {"State": "Rejected"},
-            {"State": "Returned"},
-            {"State": "Accepted"},
-        ])[0]
-
-        self.assertEqual(chart["Open"], 1)
-        self.assertEqual(chart["Rejected"], 2)
-        self.assertEqual(chart["Returned"], 1)
+        self.assertEqual(chart[0]["Projected Inventory"], 60)
 
     def test_executive_mobile_cards_preserve_priority_detail(self):
         sku_card = DashboardState._executive_mobile_card_data("SKU Risk", [{

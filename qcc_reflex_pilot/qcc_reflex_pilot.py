@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.54-staging"
+PILOT_VERSION = "0.9.6.55-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -1819,7 +1819,7 @@ class DashboardState(rx.State):
     @rx.event
     def show_executive_detail(self, value: str):
         if value not in {
-            "Inventory by Stage", "SKU Risk", "Demand & Supply", "Distribution",
+            "Inventory by Stage", "SKU Risk", "Demand & Supply",
         }:
             return
         self.executive_detail_view = value
@@ -1827,7 +1827,6 @@ class DashboardState(rx.State):
             "Inventory by Stage": "All Stages",
             "SKU Risk": "All Risks",
             "Demand & Supply": "All Crops",
-            "Distribution": "All Outcomes",
         }[value]
         self.executive_detail_mobile_page = 1
 
@@ -11111,7 +11110,7 @@ class DashboardState(rx.State):
                 "Clone Cut": str(period.get("clone_cut_date", "")),
                 "Scheduled Supply": round(scheduled, 1),
                 "Two-Week Demand": round(demand, 1),
-                "Projected Balance": round(balance, 1),
+                "Projected Inventory": round(balance, 1),
             })
             if len(output) >= 10:
                 break
@@ -11123,33 +11122,6 @@ class DashboardState(rx.State):
             self.cultivation_clone_plan_periods,
             self.cultivation_clone_plan_matrix_rows,
         )
-
-    @staticmethod
-    def _executive_exception_chart_data(
-        rows: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        counts = {"Open": 0, "Rejected": 0, "Returned": 0}
-        state_labels = {
-            "shipped": "Open", "rejected": "Rejected", "returned": "Returned",
-        }
-        for row in rows:
-            label = state_labels.get(str(row.get("State", "")).strip().casefold())
-            if label:
-                counts[label] += 1
-        return [{"Scope": "Package outcomes", **counts}]
-
-    @rx.var(cache=True)
-    def executive_exception_chart_rows(self) -> list[dict[str, Any]]:
-        return [{
-            "Scope": "Package outcomes",
-            "Open": int(self.executive_exception_outcome_counts.get("Open", 0)),
-            "Rejected": int(
-                self.executive_exception_outcome_counts.get("Rejected", 0)
-            ),
-            "Returned": int(
-                self.executive_exception_outcome_counts.get("Returned", 0)
-            ),
-        }]
 
     @staticmethod
     def _executive_inventory_detail_data(
@@ -11220,7 +11192,7 @@ class DashboardState(rx.State):
                 "All Crops",
                 *[str(row.get("Crop", "")) for row in self.executive_demand_supply_chart_rows],
             ]
-        return ["All Outcomes", "Open", "Rejected", "Returned"]
+        return ["All Crops"]
 
     @rx.var(cache=True)
     def executive_inventory_detail_rows(self) -> list[list[Any]]:
@@ -11260,17 +11232,9 @@ class DashboardState(rx.State):
             ]
         columns = [
             "Crop", "Clone Cut", "Scheduled Supply", "Two-Week Demand",
-            "Projected Balance",
+            "Projected Inventory",
         ]
         return [[row.get(column, "") for column in columns] for row in rows]
-
-    @rx.var(cache=True)
-    def executive_distribution_detail_rows(self) -> list[list[Any]]:
-        counts = self.executive_exception_chart_rows[0]
-        outcomes = ["Open", "Rejected", "Returned"]
-        if self.executive_detail_filter != "All Outcomes":
-            outcomes = [self.executive_detail_filter]
-        return [[outcome, int(counts.get(outcome, 0))] for outcome in outcomes]
 
     @rx.var(cache=True)
     def executive_detail_page_size(self) -> int:
@@ -11330,26 +11294,10 @@ class DashboardState(rx.State):
                     "value_1": f'{row.get("Scheduled Supply", 0)} lb',
                     "label_2": "Two-Week Demand",
                     "value_2": f'{row.get("Two-Week Demand", 0)} lb',
-                    "label_3": "Projected Balance",
-                    "value_3": f'{row.get("Projected Balance", 0)} lb',
+                    "label_3": "Projected Inventory",
+                    "value_3": f'{row.get("Projected Inventory", 0)} lb',
                     "detail_label": "Availability Period",
                     "detail_value": str(row.get("Crop", "") or "—"),
-                })
-            else:
-                outcome = str(row.get("Outcome", "") or "Review")
-                cards.append({
-                    "title": outcome,
-                    "subtitle": "Package outcome",
-                    "badge": outcome,
-                    "status": outcome,
-                    "label_1": "Packages",
-                    "value_1": str(row.get("Packages", 0)),
-                    "label_2": "",
-                    "value_2": "",
-                    "label_3": "",
-                    "value_3": "",
-                    "detail_label": "",
-                    "detail_value": "",
                 })
         return cards
 
@@ -11405,14 +11353,7 @@ class DashboardState(rx.State):
                     if row.get("Crop") == self.executive_detail_filter
                 ]
         else:
-            counts = self.executive_exception_chart_rows[0]
-            outcomes = ["Open", "Rejected", "Returned"]
-            if self.executive_detail_filter != "All Outcomes":
-                outcomes = [self.executive_detail_filter]
-            rows = [
-                {"Outcome": outcome, "Packages": int(counts.get(outcome, 0))}
-                for outcome in outcomes
-            ]
+            rows = []
         rows = self._executive_mobile_sorted_rows(
             self.executive_detail_view,
             rows,
@@ -13687,15 +13628,9 @@ def executive_overview_panel() -> rx.Component:
             ),
             executive_chart_card(
                 "Cultivation Demand & Supply Outlook",
-                "Scheduled flower, two-week demand, and projected physical balance across the next ten clone-planning periods.",
+                "Scheduled flower, two-week demand, and projected inventory across the next ten clone-planning periods.",
                 executive_demand_supply_chart(),
                 "Demand & Supply",
-            ),
-            executive_chart_card(
-                "Distribution Package Outcomes",
-                "Current open, rejected, and returned package-level exception records.",
-                executive_exception_chart(),
-                "Distribution",
             ),
             columns=rx.breakpoints(initial="1", xl="2"),
             gap="4", width="100%",
@@ -13820,28 +13755,11 @@ def executive_demand_supply_chart() -> rx.Component:
             data_key="Two-Week Demand", fill="#ea580c", radius=[3, 3, 0, 0]
         ),
         rx.recharts.bar(
-            data_key="Projected Balance", fill="#7c3aed", radius=[3, 3, 0, 0]
+            data_key="Projected Inventory", fill="#7c3aed", radius=[3, 3, 0, 0]
         ),
         data=DashboardState.executive_demand_supply_chart_rows,
         width="100%",
         height=320,
-        margin={"left": -18, "right": 4, "top": 8, "bottom": 2},
-    )
-
-
-def executive_exception_chart() -> rx.Component:
-    return rx.recharts.bar_chart(
-        rx.recharts.cartesian_grid(stroke_dasharray="3 3"),
-        rx.recharts.x_axis(data_key="Scope", font_size=11),
-        rx.recharts.y_axis(allow_decimals=False, font_size=11),
-        rx.recharts.graphing_tooltip(),
-        rx.recharts.legend(),
-        rx.recharts.bar(data_key="Open", fill="#2563eb", radius=[4, 4, 0, 0]),
-        rx.recharts.bar(data_key="Rejected", fill="#dc2626", radius=[4, 4, 0, 0]),
-        rx.recharts.bar(data_key="Returned", fill="#d97706", radius=[4, 4, 0, 0]),
-        data=DashboardState.executive_exception_chart_rows,
-        width="100%",
-        height=300,
         margin={"left": -18, "right": 4, "top": 8, "bottom": 2},
     )
 
@@ -14049,32 +13967,18 @@ def executive_detail_panel() -> rx.Component:
                             column_width=150,
                             minimum_width=1200,
                         ),
-                        rx.cond(
-                            DashboardState.executive_detail_view == "Demand & Supply",
-                            limited_data_grid(
-                                DashboardState.executive_demand_supply_detail_rows,
-                                [
-                                    "Crop", "Clone Cut", "Scheduled Supply",
-                                    "Two-Week Demand", "Projected Balance",
-                                ],
-                                DashboardState.executive_detail_rows_per_page,
-                                DashboardState.change_executive_detail_rows_per_page,
-                                DashboardState.executive_detail_page_size,
-                                height="440px",
-                                column_width=155,
-                                minimum_width=775,
-                            ),
-                            limited_data_grid(
-                                DashboardState.executive_distribution_detail_rows,
-                                ["Outcome", "Packages"],
-                                DashboardState.executive_detail_rows_per_page,
-                                DashboardState.change_executive_detail_rows_per_page,
-                                DashboardState.executive_detail_page_size,
-                                height="340px",
-                                column_width=180,
-                                minimum_width=360,
-                                show_search=False,
-                            ),
+                        limited_data_grid(
+                            DashboardState.executive_demand_supply_detail_rows,
+                            [
+                                "Crop", "Clone Cut", "Scheduled Supply",
+                                "Two-Week Demand", "Projected Inventory",
+                            ],
+                            DashboardState.executive_detail_rows_per_page,
+                            DashboardState.change_executive_detail_rows_per_page,
+                            DashboardState.executive_detail_page_size,
+                            height="440px",
+                            column_width=155,
+                            minimum_width=775,
                         ),
                     ),
                 ),
