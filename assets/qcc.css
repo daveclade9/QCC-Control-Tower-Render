@@ -223,10 +223,36 @@ body {
 }
 
 .qcc-aging-band-button {
+  cursor: pointer;
   transition:
     background-color 150ms ease,
     border-color 150ms ease,
-    box-shadow 150ms ease;
+    box-shadow 150ms ease,
+    transform 150ms ease;
+}
+
+.qcc-aging-click-icon {
+  margin-left: auto;
+  opacity: 0;
+  transform: translateX(-5px) scale(0.9);
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.qcc-aging-tap-hint {
+  display: none;
+}
+
+.qcc-aging-band-button:hover,
+.qcc-aging-band-button:focus-visible {
+  border-color: #14969b !important;
+  box-shadow: 0 6px 16px rgba(20, 150, 155, 0.24) !important;
+  transform: translateX(3px);
+}
+
+.qcc-aging-band-button:hover .qcc-aging-click-icon,
+.qcc-aging-band-button:focus-visible .qcc-aging-click-icon {
+  opacity: 1;
+  transform: translateX(0) scale(1);
 }
 
 .qcc-aging-band-button[aria-pressed="true"] {
@@ -714,6 +740,17 @@ body {
 
   .qcc-aging-band-button {
     padding: 0.65rem 0.55rem !important;
+  }
+
+  .qcc-aging-click-icon {
+    margin-left: 0;
+    opacity: 1;
+    transform: none;
+  }
+
+  .qcc-aging-tap-hint {
+    display: inline;
+    margin-left: auto;
   }
 
   .qcc-aging-band-layout > :last-child {

@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.47-staging"
+PILOT_VERSION = "0.9.6.49-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -12448,6 +12448,19 @@ def aging_band_row(
                     size="2",
                     text_align="left",
                 ),
+                rx.icon(
+                    "mouse-pointer-click",
+                    size=16,
+                    color="#0f777b",
+                    class_name="qcc-aging-click-icon",
+                ),
+                rx.text(
+                    "Tap to filter",
+                    size="1",
+                    color="#0f777b",
+                    weight="bold",
+                    class_name="qcc-aging-tap-hint",
+                ),
                 gap="2",
                 align="center",
                 min_width="0",
@@ -21946,11 +21959,31 @@ app = rx.App(
         radius="medium",
     ),
     stylesheets=["/qcc.css"],
+    head_components=[
+        rx.el.link(rel="manifest", href="/manifest.webmanifest"),
+        rx.el.link(rel="icon", href="/icons/favicon.png", type="image/png"),
+        rx.el.link(
+            rel="apple-touch-icon",
+            href="/icons/apple-touch-icon.png",
+        ),
+        rx.el.meta(name="theme-color", content="#05080a"),
+        rx.el.meta(name="mobile-web-app-capable", content="yes"),
+        rx.el.meta(name="apple-mobile-web-app-capable", content="yes"),
+        rx.el.meta(
+            name="apple-mobile-web-app-status-bar-style",
+            content="black-translucent",
+        ),
+        rx.el.meta(
+            name="apple-mobile-web-app-title",
+            content="QCC Control Tower",
+        ),
+    ],
 )
 app.add_page(
     dashboard,
     route="/",
     title="QCC Control Tower - Reflex Inventory, Production & QA",
+    image="/icons/favicon.png",
     on_load=DashboardState.load_dashboard,
 )
 app.add_page(
