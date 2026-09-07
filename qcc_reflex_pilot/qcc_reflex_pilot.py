@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.50-staging"
+PILOT_VERSION = "0.9.6.51-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -999,6 +999,9 @@ class DashboardState(rx.State):
     retailer_locations: list[dict[str, Any]] = []
     exceptions: list[dict[str, Any]] = []
     exception_packages: list[dict[str, Any]] = []
+    executive_exception_outcome_counts: dict[str, int] = {
+        "Open": 0, "Rejected": 0, "Returned": 0,
+    }
     shipment_exception_view: str = "Open Transfers"
     shipment_exception_view_options: list[str] = [
         "Open Transfers", "Rejected Transfers", "Returned Transfers"
@@ -4089,6 +4092,10 @@ class DashboardState(rx.State):
         self.retailer_locations = payload.get("retailer_locations", [])
         self.exceptions = payload.get("exceptions", [])
         self.exception_packages = payload.get("exception_packages", [])
+        self.executive_exception_outcome_counts = payload.get(
+            "exception_outcome_counts",
+            {"Open": 0, "Rejected": 0, "Returned": 0},
+        )
         self._transfer_data = payload.get("transfer_data", [])
         self.transfer_import_log = payload.get("transfer_import_log", [])
         self.cpg_inventory = payload.get("cpg_inventory", [])
@@ -4244,6 +4251,10 @@ class DashboardState(rx.State):
         )
         self.availability_demand_weekly = payload.get(
             "availability_demand_weekly", []
+        )
+        self.executive_exception_outcome_counts = payload.get(
+            "exception_outcome_counts",
+            {"Open": 0, "Rejected": 0, "Returned": 0},
         )
         self.retailer_locations = payload.get(
             "retailer_locations", self.retailer_locations
@@ -4435,6 +4446,10 @@ class DashboardState(rx.State):
         self.customers = payload.get("customers", [])
         self.exceptions = payload.get("exceptions", [])
         self.exception_packages = payload.get("exception_packages", [])
+        self.executive_exception_outcome_counts = payload.get(
+            "exception_outcome_counts",
+            {"Open": 0, "Rejected": 0, "Returned": 0},
+        )
         self._transfer_data = payload.get("transfer_data", [])
         self.availability_demand_summary = payload.get(
             "availability_demand_summary", []
@@ -10894,6 +10909,154 @@ class DashboardState(rx.State):
         )
         return f"{len(self.executive_retention_rows):,} pkg / {units:,.0f} units"
 
+    @staticmethod
+    def _executive_inventory_stage_chart_data(
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Summarize executive inventory into operational ERP stages."""
+        stage_groups = [
+            ("CPG", {"Packaged Goods"}),
+            ("Cultivation Pre-WIP", {"Pre-WIP-Cultivation"}),
+            ("Cultivation WIP", {"WIP-Cultivation"}),
+            ("Manufacturing Pre-WIP", {"Pre-WIP-Manufacturing", "Pre-WIP"}),
+            ("Manufacturing WIP", {"WIP-Manufacturing"}),
+        ]
+        output: list[dict[str, Any]] = []
+        for label, stages in stage_groups:
+            selected = [
+                row for row in rows
+                if str(row.get("Production Stage", "")) in stages
+            ]
+            grams = sum(
+                DashboardState._number(row, "Calculated Weight (g)")
+                for row in selected
+            )
+            output.append({
+                "Stage": label,
+                "Pounds": round(grams / 453.59237, 1),
+                "Packages": len(selected),
+            })
+        return output
+
+    @rx.var(cache=True)
+    def executive_inventory_stage_chart_rows(self) -> list[dict[str, Any]]:
+        return self._executive_inventory_stage_chart_data(
+            self.executive_inventory_rows
+        )
+
+    @staticmethod
+    def _executive_supply_risk_chart_data(
+        velocity_rows: list[dict[str, Any]],
+        current_units: dict[tuple[str, str, str], float],
+        use_filtered_inventory: bool,
+    ) -> list[dict[str, Any]]:
+        counts = {"Stockout": 0, "Balanced": 0, "Warning": 0, "Excess": 0}
+        for row in velocity_rows:
+            weekly = DashboardState._number(row, "Avg Weekly Units")
+            if weekly <= 0:
+                continue
+            key = (
+                str(row.get("Brand", "")),
+                str(row.get("Strain", "")),
+                str(row.get("SKU Type", "")),
+            )
+            units = (
+                current_units.get(key, 0.0)
+                if use_filtered_inventory
+                else DashboardState._number(row, "Current Units")
+            )
+            if units <= 0:
+                counts["Stockout"] += 1
+                continue
+            weeks = units / weekly
+            if weeks <= 4:
+                counts["Balanced"] += 1
+            elif weeks <= 8:
+                counts["Warning"] += 1
+            else:
+                counts["Excess"] += 1
+        return [{"Scope": "Current SKUs", **counts}]
+
+    @rx.var(cache=True)
+    def executive_supply_risk_chart_rows(self) -> list[dict[str, Any]]:
+        use_filtered_inventory = (
+            self.executive_facility_filter != "All Facilities"
+            or self.executive_ownership_filter != "QCC-Owned Inventory"
+        )
+        return self._executive_supply_risk_chart_data(
+            self.filtered_velocity,
+            self._executive_sku_units(),
+            use_filtered_inventory,
+        )
+
+    @staticmethod
+    def _executive_demand_supply_chart_data(
+        periods: list[dict[str, Any]],
+        matrix_rows: list[ClonePlanMatrixRow],
+    ) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
+        for index, period in enumerate(periods):
+            if bool(period.get("is_historical", False)):
+                continue
+            scheduled = 0.0
+            demand = 0.0
+            balance = 0.0
+            for row in matrix_rows:
+                values = row.get("values", [])
+                if index >= len(values):
+                    continue
+                value = float(values[index].get("value", 0) or 0)
+                if row.get("metric") == "Scheduled":
+                    scheduled += value
+                elif row.get("metric") == "Two-Week Demand":
+                    demand += value
+                elif row.get("metric") == "Current Pounds":
+                    balance += value
+            output.append({
+                "Crop": str(period.get("crop", "")),
+                "Clone Cut": str(period.get("clone_cut_date", "")),
+                "Scheduled Supply": round(scheduled, 1),
+                "Two-Week Demand": round(demand, 1),
+                "Projected Balance": round(balance, 1),
+            })
+            if len(output) >= 10:
+                break
+        return output
+
+    @rx.var(cache=True)
+    def executive_demand_supply_chart_rows(self) -> list[dict[str, Any]]:
+        return self._executive_demand_supply_chart_data(
+            self.cultivation_clone_plan_periods,
+            self.cultivation_clone_plan_matrix_rows,
+        )
+
+    @staticmethod
+    def _executive_exception_chart_data(
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        counts = {"Open": 0, "Rejected": 0, "Returned": 0}
+        state_labels = {
+            "shipped": "Open", "rejected": "Rejected", "returned": "Returned",
+        }
+        for row in rows:
+            label = state_labels.get(str(row.get("State", "")).strip().casefold())
+            if label:
+                counts[label] += 1
+        return [{"Scope": "Package outcomes", **counts}]
+
+    @rx.var(cache=True)
+    def executive_exception_chart_rows(self) -> list[dict[str, Any]]:
+        return [{
+            "Scope": "Package outcomes",
+            "Open": int(self.executive_exception_outcome_counts.get("Open", 0)),
+            "Rejected": int(
+                self.executive_exception_outcome_counts.get("Rejected", 0)
+            ),
+            "Returned": int(
+                self.executive_exception_outcome_counts.get("Returned", 0)
+            ),
+        }]
+
     @rx.var(cache=True)
     def executive_needs_review(self) -> str:
         rows = self._inventory_view_rows("View Needs Review")
@@ -13050,7 +13213,8 @@ def executive_overview_panel() -> rx.Component:
                         "QCC-owned active inventory is the default. Facility and ownership affect inventory position and the action queue. Global Brand, Strain, and SKU filters remain active.",
                         size="1", color=MUTED,
                     ),
-                    min_width="320px",
+                    width=rx.breakpoints(initial="100%", md="auto"),
+                    flex="1",
                 ),
                 rx.spacer(),
                 rx.box(
@@ -13059,8 +13223,9 @@ def executive_overview_panel() -> rx.Component:
                         DashboardState.executive_facility_options,
                         value=DashboardState.executive_facility_filter,
                         on_change=DashboardState.change_executive_facility_filter,
-                        width="260px",
+                        width=rx.breakpoints(initial="100%", md="260px"),
                     ),
+                    width=rx.breakpoints(initial="100%", md="auto"),
                 ),
                 rx.box(
                     rx.text("Ownership Status", size="1", color=MUTED, weight="bold"),
@@ -13068,13 +13233,15 @@ def executive_overview_panel() -> rx.Component:
                         DashboardState.executive_ownership_options,
                         value=DashboardState.executive_ownership_filter,
                         on_change=DashboardState.change_executive_ownership_filter,
-                        width="340px",
+                        width=rx.breakpoints(initial="100%", md="340px"),
                     ),
+                    width=rx.breakpoints(initial="100%", md="auto"),
                 ),
                 rx.button(
                     "Reset Executive Scope",
                     on_click=DashboardState.reset_executive_filters,
                     variant="outline",
+                    width=rx.breakpoints(initial="100%", md="auto"),
                 ),
                 align="end", gap="4", wrap="wrap", width="100%",
             ),
@@ -13096,18 +13263,31 @@ def executive_overview_panel() -> rx.Component:
             gap="4", width="100%",
         ),
         executive_section(
-            "Current Inventory Position",
-            "The latest published Streamlit 81.4 snapshot, using the selected executive scope.",
+            "Operating Intelligence",
+            "Inventory, supply risk, cultivation outlook, and distribution exceptions. Existing dashboard filters remain active where relevant.",
         ),
         rx.grid(
-            executive_metric_card("Active CPG Packages", DashboardState.executive_cpg_packages, "Positive-quantity Packaged Goods; retention excluded", "#0f766e", "#f0fdfa"),
-            executive_metric_card("Active CPG Units", DashboardState.executive_cpg_units, "Current sellable packaged quantity", "#0891b2", "#ecfeff"),
-            executive_metric_card("Sellable Bulk", DashboardState.executive_sellable_bulk_weight, "Passed bulk available for sale", "#16a34a", "#f0fdf4"),
-            executive_metric_card("WIP-Cultivation", DashboardState.executive_wip_cultivation_weight, "Potential cultivation input", "#65a30d", "#f7fee7"),
-            executive_metric_card("WIP-Manufacturing", DashboardState.executive_wip_manufacturing_weight, "Potential manufacturing input", "#4f46e5", "#eef2ff"),
-            executive_metric_card("Pre-WIP", DashboardState.executive_pre_wip_summary, "Packages and testing/pending weight", "#9333ea", "#faf5ff"),
-            executive_metric_card("Retention / Stability", DashboardState.executive_retention_summary, "Tracked separately from active CPG", "#64748b", "#f8fafc"),
-            columns=rx.breakpoints(initial="1", sm="2", lg="3"),
+            executive_chart_card(
+                "Cannabis Inventory by Stage",
+                "Current pounds across CPG and the principal cultivation and manufacturing stages.",
+                executive_inventory_stage_chart(),
+            ),
+            executive_chart_card(
+                "SKU Weeks-of-Supply Risk",
+                "Stockout is zero supply; Balanced is over zero through 4 weeks, Warning is over 4 through 8 weeks, and Excess is above 8 weeks.",
+                executive_supply_risk_chart(),
+            ),
+            executive_chart_card(
+                "Cultivation Demand & Supply Outlook",
+                "Scheduled flower, two-week demand, and projected physical balance across the next ten clone-planning periods.",
+                executive_demand_supply_chart(),
+            ),
+            executive_chart_card(
+                "Distribution Package Outcomes",
+                "Current open, rejected, and returned package-level exception records.",
+                executive_exception_chart(),
+            ),
+            columns=rx.breakpoints(initial="1", xl="2"),
             gap="4", width="100%",
         ),
         executive_section(
@@ -13163,6 +13343,111 @@ def executive_overview_panel() -> rx.Component:
             height="520px",
         ),
         width="100%", spacing="5",
+    )
+
+
+def executive_chart_card(
+    title: str,
+    caption: str,
+    chart: rx.Component,
+) -> rx.Component:
+    """Responsive chart container shared by executive operating views."""
+    return rx.card(
+        rx.vstack(
+            rx.box(
+                rx.heading(title, size="4", color=DARK),
+                rx.text(caption, size="1", color=MUTED, line_height="1.4"),
+                width="100%",
+            ),
+            chart,
+            width="100%",
+            spacing="3",
+        ),
+        width="100%",
+        min_width="0",
+        padding=rx.breakpoints(initial="0.8rem", md="1.1rem"),
+        overflow="hidden",
+        box_shadow="0 8px 22px rgba(15, 23, 42, 0.06)",
+    )
+
+
+def executive_inventory_stage_chart() -> rx.Component:
+    return rx.recharts.bar_chart(
+        rx.recharts.cartesian_grid(stroke_dasharray="3 3"),
+        rx.recharts.x_axis(
+            data_key="Stage", angle=-18, text_anchor="end", height=78,
+            interval=0, font_size=11,
+        ),
+        rx.recharts.y_axis(font_size=11),
+        rx.recharts.graphing_tooltip(),
+        rx.recharts.bar(
+            data_key="Pounds", fill="#0f766e", radius=[5, 5, 0, 0]
+        ),
+        data=DashboardState.executive_inventory_stage_chart_rows,
+        width="100%",
+        height=300,
+        margin={"left": -18, "right": 4, "top": 8, "bottom": 2},
+    )
+
+
+def executive_supply_risk_chart() -> rx.Component:
+    return rx.recharts.bar_chart(
+        rx.recharts.cartesian_grid(stroke_dasharray="3 3"),
+        rx.recharts.x_axis(data_key="Scope", font_size=11),
+        rx.recharts.y_axis(allow_decimals=False, font_size=11),
+        rx.recharts.graphing_tooltip(),
+        rx.recharts.legend(),
+        rx.recharts.bar(data_key="Stockout", fill="#991b1b", radius=[4, 4, 0, 0]),
+        rx.recharts.bar(data_key="Balanced", fill="#16a34a", radius=[4, 4, 0, 0]),
+        rx.recharts.bar(data_key="Warning", fill="#eab308", radius=[4, 4, 0, 0]),
+        rx.recharts.bar(data_key="Excess", fill="#dc2626", radius=[4, 4, 0, 0]),
+        data=DashboardState.executive_supply_risk_chart_rows,
+        width="100%",
+        height=300,
+        margin={"left": -18, "right": 4, "top": 8, "bottom": 2},
+    )
+
+
+def executive_demand_supply_chart() -> rx.Component:
+    return rx.recharts.bar_chart(
+        rx.recharts.cartesian_grid(stroke_dasharray="3 3"),
+        rx.recharts.x_axis(
+            data_key="Crop", angle=-18, text_anchor="end", height=58,
+            interval=0, font_size=11,
+        ),
+        rx.recharts.y_axis(font_size=11),
+        rx.recharts.graphing_tooltip(),
+        rx.recharts.legend(),
+        rx.recharts.bar(
+            data_key="Scheduled Supply", fill="#0f766e", radius=[3, 3, 0, 0]
+        ),
+        rx.recharts.bar(
+            data_key="Two-Week Demand", fill="#ea580c", radius=[3, 3, 0, 0]
+        ),
+        rx.recharts.bar(
+            data_key="Projected Balance", fill="#7c3aed", radius=[3, 3, 0, 0]
+        ),
+        data=DashboardState.executive_demand_supply_chart_rows,
+        width="100%",
+        height=320,
+        margin={"left": -18, "right": 4, "top": 8, "bottom": 2},
+    )
+
+
+def executive_exception_chart() -> rx.Component:
+    return rx.recharts.bar_chart(
+        rx.recharts.cartesian_grid(stroke_dasharray="3 3"),
+        rx.recharts.x_axis(data_key="Scope", font_size=11),
+        rx.recharts.y_axis(allow_decimals=False, font_size=11),
+        rx.recharts.graphing_tooltip(),
+        rx.recharts.legend(),
+        rx.recharts.bar(data_key="Open", fill="#2563eb", radius=[4, 4, 0, 0]),
+        rx.recharts.bar(data_key="Rejected", fill="#dc2626", radius=[4, 4, 0, 0]),
+        rx.recharts.bar(data_key="Returned", fill="#d97706", radius=[4, 4, 0, 0]),
+        data=DashboardState.executive_exception_chart_rows,
+        width="100%",
+        height=300,
+        margin={"left": -18, "right": 4, "top": 8, "bottom": 2},
     )
 
 

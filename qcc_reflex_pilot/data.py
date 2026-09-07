@@ -5323,6 +5323,9 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
             "availability_demand_summary": [],
             "availability_demand_weekly": [],
             "stockouts": [], "customers": [], "exceptions": [],
+            "exception_outcome_counts": {
+                "Open": 0, "Rejected": 0, "Returned": 0,
+            },
             "retail_delivery_history": [],
             "retailer_locations": [],
             "transfer_data": [], "transfer_import_log": [],
@@ -5511,6 +5514,15 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
     retailer_locations = load_retailer_locations()
     exceptions = build_shipment_exceptions(analysis)
     exception_packages = build_shipment_exception_packages(analysis)
+    exception_states = (
+        exception_packages.get("State", pd.Series(dtype=str))
+        .fillna("").astype(str).str.strip().str.casefold()
+    )
+    exception_outcome_counts = {
+        "Open": int(exception_states.eq("shipped").sum()),
+        "Rejected": int(exception_states.eq("rejected").sum()),
+        "Returned": int(exception_states.eq("returned").sum()),
+    }
     transfer_display = build_transfer_display(analysis)
     # Keep the complete derived transfer views on the server. Distribution
     # tabs request only their selected state and visible page, rather than
@@ -5591,6 +5603,7 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
         "retail_delivery_history": record_list(retail_delivery_history),
         "retailer_locations": retailer_locations,
         "exceptions": record_list(exceptions),
+        "exception_outcome_counts": exception_outcome_counts,
         "exception_packages": record_list(exception_packages),
         "transfer_data": record_list(transfer_display.head(2000)),
         "transfer_import_log": record_list(transfer_import_log),
@@ -5870,6 +5883,9 @@ def demo_dashboard_data() -> dict[str, Any]:
         "retail_delivery_history": [],
         "retailer_locations": _directory_retailer_location_rows(),
         "exceptions": [],
+        "exception_outcome_counts": {
+            "Open": 0, "Rejected": 0, "Returned": 0,
+        },
         "exception_packages": [],
         "transfer_data": [],
         "transfer_import_log": [],
