@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.42-staging"
+PILOT_VERSION = "0.9.6.43-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -15357,33 +15357,9 @@ def inventory_view(
     )
 
 
-def active_inventory_context() -> rx.Component:
-    """Render only the active inventory tab's specialized summary."""
-    return rx.cond(
-        DashboardState.inventory_view_name == "cpg",
-        rx.card(
-            rx.flex(
-                rx.box(
-                    rx.text("Include Retention/Stability Samples", weight="bold"),
-                    rx.text(
-                        "Off by default to match Streamlit active CPG totals. Excluded retention packages: "
-                        + DashboardState.excluded_retention_count,
-                        size="1", color=MUTED,
-                    ),
-                ),
-                rx.spacer(),
-                rx.switch(
-                    checked=DashboardState.inventory_include_retention,
-                    on_change=DashboardState.change_inventory_include_retention,
-                    size="3",
-                ),
-                align="center", width="100%",
-            ),
-            width="100%",
-        ),
-        rx.cond(
-            DashboardState.inventory_view_name == "wip",
-            rx.grid(
+def wip_pre_wip_summary_cards() -> rx.Component:
+    """Shared WIP summary used by operational and aging inventory views."""
+    return rx.grid(
                 metric_card(
                     "Cultivation WIP", DashboardState.cultivation_wip_summary,
                     "Passed Building 33 flower used by Clone Allocation",
@@ -15419,7 +15395,36 @@ def active_inventory_context() -> rx.Component:
                 ),
                 columns=rx.breakpoints(initial="1", sm="2", lg="4"),
                 gap="4", width="100%",
+            )
+
+
+def active_inventory_context() -> rx.Component:
+    """Render only the active inventory tab's specialized summary."""
+    return rx.cond(
+        DashboardState.inventory_view_name == "cpg",
+        rx.card(
+            rx.flex(
+                rx.box(
+                    rx.text("Include Retention/Stability Samples", weight="bold"),
+                    rx.text(
+                        "Off by default to match Streamlit active CPG totals. Excluded retention packages: "
+                        + DashboardState.excluded_retention_count,
+                        size="1", color=MUTED,
+                    ),
+                ),
+                rx.spacer(),
+                rx.switch(
+                    checked=DashboardState.inventory_include_retention,
+                    on_change=DashboardState.change_inventory_include_retention,
+                    size="3",
+                ),
+                align="center", width="100%",
             ),
+            width="100%",
+        ),
+        rx.cond(
+            DashboardState.inventory_view_name == "wip",
+            wip_pre_wip_summary_cards(),
             rx.cond(
                 DashboardState.inventory_view_name == "all",
                 rx.grid(
@@ -15473,13 +15478,18 @@ def active_inventory_context() -> rx.Component:
                     ),
                     rx.cond(
                         DashboardState.inventory_view_name == "aging_bulk",
-                        aging_distribution_card(
-                            "Bulk Inventory by Age",
-                            "Click a bar to filter the table by absolute package age.",
-                            DashboardState.aging_bulk_distribution,
-                            DashboardState.aging_bulk_band_filter,
-                            "All Age Bands",
-                            DashboardState.change_aging_bulk_band,
+                        rx.vstack(
+                            aging_distribution_card(
+                                "Bulk Inventory by Age",
+                                "Click a bar to filter the table by absolute package age.",
+                                DashboardState.aging_bulk_distribution,
+                                DashboardState.aging_bulk_band_filter,
+                                "All Age Bands",
+                                DashboardState.change_aging_bulk_band,
+                            ),
+                            wip_pre_wip_summary_cards(),
+                            width="100%",
+                            spacing="4",
                         ),
                         rx.box(),
                     ),
