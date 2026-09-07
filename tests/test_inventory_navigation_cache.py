@@ -219,6 +219,55 @@ class InventoryNavigationCacheTest(unittest.TestCase):
                 state.inventory_view_name = view_name
                 self.assertIs(getter(state), expected)
 
+    def test_mobile_inventory_cards_map_cpg_fields_and_page_rows(self):
+        columns = [
+            "Brand", "Strain", "SKU Type", "Unit Count",
+            "Total Weight (lb)", "Age (Days)", "Location", "QA Status",
+            "Metrc Tag",
+        ]
+        rows = [
+            ["Clade9", "Blue Dream", "3.5g Flower", 24, 0.19, 10,
+             "Vault", "TestPassed", "tag-1"],
+            ["Clade9", "Diamond Bar", "7g Flower", 12, 0.19, 20,
+             "Vault", "TestPassed", "tag-2"],
+        ]
+
+        cards = DashboardState._inventory_mobile_cards(
+            rows, columns, page=2, page_size=1
+        )
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["strain"], "Diamond Bar")
+        self.assertEqual(cards[0]["product_type"], "7g Flower")
+        self.assertEqual(cards[0]["amount_label"], "Units")
+        self.assertEqual(cards[0]["amount"], "12")
+        self.assertEqual(cards[0]["weight_label"], "Total Weight (lb)")
+        self.assertEqual(cards[0]["metrc_tag"], "tag-2")
+
+    def test_mobile_inventory_cards_map_all_inventory_optional_fields(self):
+        columns = [
+            "Brand", "Compatible Brand", "Strain",
+            "SKU Type / Bulk Type", "Unit Count / Inventory Class",
+            "Total Weight (lb)", "Age (Days)", "Packaged Date", "Location",
+            "Source Harvest", "QA Status", "Metrc Tag",
+        ]
+        rows = [[
+            "", "Clade9", "Diamond Dust", "MT Smalls",
+            "Cultivation WIP", 4.6, 12, "2026-08-25", "Vault",
+            "F4.10", "TestPassed", "tag-3",
+        ]]
+
+        cards = DashboardState._inventory_mobile_cards(
+            rows, columns, page=1, page_size=10
+        )
+
+        self.assertEqual(cards[0]["brand"], "Clade9")
+        self.assertEqual(cards[0]["product_type"], "MT Smalls")
+        self.assertEqual(cards[0]["amount_label"], "Inventory Class")
+        self.assertEqual(cards[0]["amount"], "Cultivation WIP")
+        self.assertEqual(cards[0]["packaged_date"], "2026-08-25")
+        self.assertEqual(cards[0]["source_harvest"], "F4.10")
+
     def test_navigation_diagnostic_records_slowest_view_transition(self):
         state = SimpleNamespace(
             inventory_view_name="all",

@@ -201,6 +201,27 @@ body {
   line-height: 1.2;
 }
 
+/* Inventory uses the existing data grid on larger screens and a paged card
+   view on phones. Needs Review intentionally keeps its existing table. */
+.qcc-inventory-mobile-cards {
+  display: none;
+}
+
+.qcc-inventory-mobile-brand {
+  color: #0f777b;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.qcc-inventory-mobile-tag {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .qcc-tabs {
   background: #111111;
   border: 1px solid #111111;
@@ -566,6 +587,100 @@ body {
 
   .qcc-tabs-primary button[role="tab"] {
     flex: 0 0 auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .qcc-inventory-module {
+    min-width: 0;
+  }
+
+  .qcc-inventory-tabs {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-x: visible;
+    gap: 5px;
+  }
+
+  .qcc-inventory-tabs button[role="tab"] {
+    justify-content: center;
+    min-width: 0;
+    min-height: 46px;
+    padding: 0.45rem 0.5rem;
+    text-align: center;
+    white-space: normal;
+  }
+
+  .qcc-inventory-filter-controls,
+  .qcc-inventory-lookup-controls {
+    align-items: stretch !important;
+    flex-direction: column !important;
+  }
+
+  .qcc-inventory-filter-control,
+  .qcc-inventory-lookup-input,
+  .qcc-inventory-lookup-action,
+  .qcc-inventory-reset-button {
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  .qcc-inventory-retention-control {
+    align-items: flex-start !important;
+  }
+
+  .qcc-inventory-table-toolbar,
+  .qcc-inventory-weight-toolbar {
+    align-items: stretch !important;
+    flex-direction: column !important;
+  }
+
+  .qcc-inventory-table-toolbar > button,
+  .qcc-inventory-weight-toolbar [role="combobox"] {
+    width: 100% !important;
+  }
+
+  .qcc-inventory-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 0.65rem !important;
+  }
+
+  .qcc-inventory-metric-grid [data-radix-card] {
+    min-width: 0;
+    padding: 0.8rem !important;
+  }
+
+  .qcc-inventory-metric-grid h1,
+  .qcc-inventory-metric-grid h2,
+  .qcc-inventory-metric-grid h3 {
+    font-size: 1.25rem !important;
+  }
+
+  .qcc-inventory-desktop-grid {
+    display: none !important;
+  }
+
+  .qcc-inventory-mobile-cards {
+    display: flex !important;
+  }
+
+  .qcc-inventory-mobile-card {
+    border-left: 5px solid #14969b !important;
+    box-shadow: 0 5px 16px rgba(15, 23, 42, 0.08) !important;
+    padding: 0.9rem !important;
+  }
+
+  .qcc-aging-card-toolbar > div:first-child {
+    flex: 1 0 100%;
+  }
+
+  .qcc-aging-band-layout {
+    grid-template-columns: 1fr !important;
+    gap: 0.45rem !important;
+  }
+
+  .qcc-aging-band-layout > :last-child {
+    text-align: left !important;
   }
 }
 .qcc-compact-package-dialog {

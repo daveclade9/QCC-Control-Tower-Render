@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.44-staging"
+PILOT_VERSION = "0.9.6.45-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -11522,6 +11522,80 @@ class DashboardState(rx.State):
         # the visible row count without a second server-side pager.
         return self.active_inventory_all_rows
 
+    @staticmethod
+    def _inventory_mobile_cards(
+        rows: list[list[Any]],
+        columns: list[str],
+        page: int,
+        page_size: int,
+    ) -> list[dict[str, str]]:
+        """Convert the active inventory matrix into phone-readable cards."""
+        safe_size = max(int(page_size or 10), 1)
+        total_pages = max((len(rows) + safe_size - 1) // safe_size, 1)
+        safe_page = min(max(int(page or 1), 1), total_pages)
+        start = (safe_page - 1) * safe_size
+        weight_column = next(
+            (column for column in columns if column.startswith("Total Weight")),
+            "",
+        )
+        cards: list[dict[str, str]] = []
+        for values in rows[start:start + safe_size]:
+            record = {
+                column: values[index] if index < len(values) else ""
+                for index, column in enumerate(columns)
+            }
+            compatible_brand = str(record.get("Compatible Brand", "") or "")
+            brand = str(record.get("Brand", "") or "")
+            type_value = record.get(
+                "SKU Type",
+                record.get(
+                    "Bulk Type",
+                    record.get("SKU Type / Bulk Type", ""),
+                ),
+            )
+            amount_value = record.get(
+                "Inventory Class",
+                record.get(
+                    "Unit Count",
+                    record.get("Unit Count / Inventory Class", ""),
+                ),
+            )
+            amount_label = (
+                "Inventory Class"
+                if isinstance(amount_value, str) and amount_value.strip()
+                else "Units"
+            )
+            cards.append({
+                "brand": brand or compatible_brand or "Unassigned Brand",
+                "compatible_brand": (
+                    compatible_brand
+                    if compatible_brand and compatible_brand != brand
+                    else ""
+                ),
+                "strain": str(record.get("Strain", "") or "Unassigned Strain"),
+                "product_type": str(type_value or "Unclassified"),
+                "amount_label": amount_label,
+                "amount": str(amount_value if amount_value != "" else "—"),
+                "weight": str(record.get(weight_column, "") or "—"),
+                "weight_label": weight_column or "Total Weight",
+                "age": str(record.get("Age (Days)", "") or "—"),
+                "location": str(record.get("Location", "") or "—"),
+                "qa_status": str(record.get("QA Status", "") or "Not listed"),
+                "metrc_tag": str(record.get("Metrc Tag", "") or "—"),
+                "packaged_date": str(record.get("Packaged Date", "") or ""),
+                "source_harvest": str(record.get("Source Harvest", "") or ""),
+            })
+        return cards
+
+    @rx.var(cache=True)
+    def active_inventory_mobile_cards(self) -> list[dict[str, str]]:
+        return self._inventory_mobile_cards(
+            self.active_inventory_all_rows,
+            self.inventory_columns,
+            self.inventory_page,
+            self.inventory_page_size,
+        )
+
     @rx.var(cache=True)
     def inventory_total_pages(self) -> int:
         count = len(self.active_inventory_all_rows)
@@ -12374,6 +12448,7 @@ def aging_band_row(item: rx.Var, select_event: Any) -> rx.Component:
                 item["Packages"].to_string() + " packages · " + item["Weight"].to_string(),
                 size="1", color=MUTED, text_align="right",
             ),
+            class_name="qcc-aging-band-layout",
             columns="210px minmax(180px, 1fr) 170px",
             gap="3", align_items="center", width="100%",
         ),
@@ -12396,7 +12471,7 @@ def aging_distribution_card(
 ) -> rx.Component:
     return rx.card(
         rx.vstack(
-            rx.hstack(
+            rx.flex(
                 rx.box(
                     rx.heading(title, size="3"),
                     rx.text(caption, size="1", color=MUTED),
@@ -12409,7 +12484,8 @@ def aging_distribution_card(
                     variant="outline",
                     size="2",
                 ),
-                width="100%", align="center",
+                class_name="qcc-aging-card-toolbar",
+                width="100%", align="center", gap="2", wrap="wrap",
             ),
             rx.foreach(data, lambda item: aging_band_row(item, select_event)),
             width="100%", spacing="2",
@@ -15162,15 +15238,16 @@ def package_lineage_panel() -> rx.Component:
 def inventory_filters() -> rx.Component:
     return rx.card(
         rx.vstack(
-            rx.hstack(
+            rx.flex(
                 rx.heading("Inventory Filters", size="3"),
                 rx.spacer(),
                 rx.button(
                     "Reset Inventory Filters",
                     on_click=DashboardState.reset_inventory_filters,
                     variant="outline",
+                    class_name="qcc-inventory-reset-button",
                 ),
-                width="100%",
+                width="100%", align="center", gap="2", wrap="wrap",
             ),
             rx.flex(
                 rx.select(
@@ -15179,6 +15256,7 @@ def inventory_filters() -> rx.Component:
                     on_change=DashboardState.change_inventory_stage_filter,
                     placeholder="Production Stage",
                     width="230px",
+                    class_name="qcc-inventory-filter-control",
                 ),
                 rx.select(
                     DashboardState.inventory_license_options,
@@ -15186,6 +15264,7 @@ def inventory_filters() -> rx.Component:
                     on_change=DashboardState.change_inventory_license_filter,
                     placeholder="License",
                     width="190px",
+                    class_name="qcc-inventory-filter-control",
                 ),
                 rx.select(
                     DashboardState.inventory_qa_options,
@@ -15193,6 +15272,7 @@ def inventory_filters() -> rx.Component:
                     on_change=DashboardState.change_inventory_qa_filter,
                     placeholder="QA Status",
                     width="210px",
+                    class_name="qcc-inventory-filter-control",
                 ),
                 rx.select(
                     DashboardState.inventory_category_options,
@@ -15200,6 +15280,7 @@ def inventory_filters() -> rx.Component:
                     on_change=DashboardState.change_inventory_category_filter,
                     placeholder="Category",
                     width="250px",
+                    class_name="qcc-inventory-filter-control",
                 ),
                 rx.select(
                     DashboardState.inventory_location_options,
@@ -15207,6 +15288,7 @@ def inventory_filters() -> rx.Component:
                     on_change=DashboardState.change_inventory_location_filter,
                     placeholder="Location",
                     width="260px",
+                    class_name="qcc-inventory-filter-control",
                 ),
                 rx.select(
                     DashboardState.inventory_ownership_options,
@@ -15214,7 +15296,9 @@ def inventory_filters() -> rx.Component:
                     on_change=DashboardState.change_inventory_ownership_filter,
                     placeholder="Ownership Status",
                     width="340px",
+                    class_name="qcc-inventory-filter-control",
                 ),
+                class_name="qcc-inventory-filter-controls",
                 gap="3", wrap="wrap", width="100%",
             ),
             width="100%", spacing="3",
@@ -15234,18 +15318,22 @@ def package_lookup() -> rx.Component:
                     value=DashboardState.inventory_lookup_text,
                     on_change=DashboardState.change_inventory_lookup_text,
                     width="420px",
+                    class_name="qcc-inventory-lookup-input",
                 ),
                 rx.button(
                     "Find Package",
                     on_click=DashboardState.find_inventory_package,
                     background=ACCENT,
                     color="white",
+                    class_name="qcc-inventory-lookup-action",
                 ),
                 rx.button(
                     "Clear Package Lookup",
                     on_click=DashboardState.clear_inventory_lookup,
                     variant="outline",
+                    class_name="qcc-inventory-lookup-action",
                 ),
+                class_name="qcc-inventory-lookup-controls",
                 gap="3", align="center", wrap="wrap",
             ),
             rx.text(DashboardState.inventory_lookup_message, color=MUTED),
@@ -15256,6 +15344,127 @@ def package_lookup() -> rx.Component:
             spacing="3", width="100%",
         ),
         width="100%",
+    )
+
+
+def inventory_mobile_detail(label: Any, value: rx.Var) -> rx.Component:
+    return rx.box(
+        rx.text(label, size="1", color=MUTED, weight="bold"),
+        rx.text(value, size="2", color=DARK, weight="medium"),
+        min_width="0",
+    )
+
+
+def inventory_mobile_card(row: rx.Var) -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.flex(
+                rx.box(
+                    rx.text(
+                        row["brand"],
+                        class_name="qcc-inventory-mobile-brand",
+                    ),
+                    rx.heading(row["strain"], size="4", line_height="1.15"),
+                    min_width="0",
+                ),
+                rx.badge(
+                    row["qa_status"],
+                    color_scheme="teal",
+                    variant="soft",
+                    size="2",
+                ),
+                justify="between",
+                align="start",
+                gap="2",
+                width="100%",
+            ),
+            rx.text(
+                row["product_type"], size="2", weight="bold", color="#334155"
+            ),
+            rx.grid(
+                inventory_mobile_detail(row["amount_label"], row["amount"]),
+                inventory_mobile_detail(row["weight_label"], row["weight"]),
+                inventory_mobile_detail("Age (Days)", row["age"]),
+                inventory_mobile_detail("Location", row["location"]),
+                columns="2",
+                gap="3",
+                width="100%",
+            ),
+            rx.cond(
+                row["compatible_brand"] != "",
+                inventory_mobile_detail("Compatible Brand", row["compatible_brand"]),
+            ),
+            rx.cond(
+                row["packaged_date"] != "",
+                inventory_mobile_detail("Packaged Date", row["packaged_date"]),
+            ),
+            rx.cond(
+                row["source_harvest"] != "",
+                inventory_mobile_detail("Source Harvest", row["source_harvest"]),
+            ),
+            rx.box(
+                rx.text("Metrc Tag", size="1", color=MUTED, weight="bold"),
+                rx.text(
+                    row["metrc_tag"],
+                    class_name="qcc-inventory-mobile-tag",
+                    size="2",
+                    color=DARK,
+                ),
+                width="100%",
+            ),
+            width="100%",
+            spacing="3",
+            align="start",
+        ),
+        class_name="qcc-inventory-mobile-card",
+        width="100%",
+    )
+
+
+def inventory_mobile_cards() -> rx.Component:
+    return rx.vstack(
+        rx.cond(
+            DashboardState.active_inventory_mobile_cards.length() > 0,
+            rx.foreach(
+                DashboardState.active_inventory_mobile_cards,
+                inventory_mobile_card,
+            ),
+            rx.callout(
+                "No inventory records match the current filters.",
+                icon="search_x",
+                color_scheme="gray",
+                width="100%",
+            ),
+        ),
+        rx.flex(
+            rx.button(
+                "Previous",
+                on_click=DashboardState.previous_inventory_page,
+                disabled=DashboardState.inventory_previous_disabled,
+                variant="outline",
+                flex="1",
+            ),
+            rx.text(
+                DashboardState.inventory_page_label,
+                size="1",
+                color=MUTED,
+                text_align="center",
+                flex="2",
+            ),
+            rx.button(
+                "Next",
+                on_click=DashboardState.next_inventory_page,
+                disabled=DashboardState.inventory_next_disabled,
+                variant="outline",
+                flex="1",
+            ),
+            gap="2",
+            align="center",
+            width="100%",
+        ),
+        class_name="qcc-inventory-mobile-cards",
+        width="100%",
+        spacing="3",
     )
 
 
@@ -15284,6 +15493,7 @@ def inventory_view(
                     weight,
                     DashboardState.inventory_weight_caption,
                 ),
+                class_name="qcc-inventory-metric-grid",
                 columns=rx.breakpoints(initial="1", sm="2", lg="4"),
                 gap="4", width="100%",
             ),
@@ -15295,11 +15505,12 @@ def inventory_view(
                     weight,
                     DashboardState.inventory_weight_caption,
                 ),
+                class_name="qcc-inventory-metric-grid",
                 columns=rx.breakpoints(initial="1", sm="3"),
                 gap="4", width="100%",
             ),
         ),
-        rx.hstack(
+        rx.flex(
             rx.badge("Click any column heading to sort", color_scheme="teal", size="3"),
             rx.spacer(),
             rx.flex(
@@ -15317,13 +15528,17 @@ def inventory_view(
                 on_click=download_event,
                 variant="outline",
             ),
+            class_name="qcc-inventory-table-toolbar",
+            gap="3",
+            wrap="wrap",
+            align="center",
             width="100%",
         ),
         rx.text(
             DashboardState.inventory_grouping_caption,
             size="1", color=MUTED,
         ),
-        rx.hstack(
+        rx.flex(
             rx.box(
                 rx.text("Table Weight Display", weight="bold", size="2"),
                 rx.text(
@@ -15339,10 +15554,24 @@ def inventory_view(
                 on_change=DashboardState.change_inventory_weight_unit,
                 width="140px",
             ),
+            class_name="qcc-inventory-weight-toolbar",
+            gap="3",
+            wrap="wrap",
             width="100%",
             align="center",
         ),
-        inventory_data_grid(rows),
+        rx.cond(
+            DashboardState.inventory_view_name == "review",
+            inventory_data_grid(rows),
+            rx.fragment(
+                rx.box(
+                    inventory_data_grid(rows),
+                    class_name="qcc-inventory-desktop-grid",
+                    width="100%",
+                ),
+                inventory_mobile_cards(),
+            ),
+        ),
         rx.flex(
             rx.box(
                 rx.text("Rows per page", size="1", weight="bold", color=MUTED),
@@ -15400,6 +15629,7 @@ def wip_pre_wip_summary_cards() -> rx.Component:
                     DashboardState.mt_smalls_weight_summary,
                     "Cultivation WIP and Pre-WIP with Smalls in the Item name",
                 ),
+                class_name="qcc-inventory-metric-grid",
                 columns=rx.breakpoints(initial="1", sm="2", lg="4"),
                 gap="4", width="100%",
             )
@@ -15425,7 +15655,8 @@ def active_inventory_context() -> rx.Component:
                     on_change=DashboardState.change_inventory_include_retention,
                     size="3",
                 ),
-                align="center", width="100%",
+                class_name="qcc-inventory-retention-control",
+                align="center", gap="3", wrap="wrap", width="100%",
             ),
             width="100%",
         ),
@@ -15470,6 +15701,7 @@ def active_inventory_context() -> rx.Component:
                         DashboardState.all_inventory_cpg_manufacturing_weight_summary,
                         "Packaged goods on the manufacturing license",
                     ),
+                    class_name="qcc-inventory-metric-grid",
                     columns=rx.breakpoints(initial="1", sm="2", lg="4"),
                     gap="4", width="100%",
                 ),
@@ -15598,6 +15830,7 @@ def wip_inventory_view() -> rx.Component:
                 "Pre-WIP Weight", DashboardState.pre_wip_inventory_weight,
                 "Filtered testing or pending material",
             ),
+            class_name="qcc-inventory-metric-grid",
             columns=rx.breakpoints(initial="1", sm="2"),
             gap="4", width="100%",
         ),
@@ -15647,7 +15880,7 @@ def inventory_panel() -> rx.Component:
                 rx.tabs.trigger("Aging Risk Bulk", value="aging_bulk"),
                 rx.tabs.trigger("All Inventory", value="all"),
                 rx.tabs.trigger("Needs Review", value="review"),
-                class_name="qcc-tabs",
+                class_name="qcc-tabs qcc-inventory-tabs",
                 width="100%",
             ),
             value=DashboardState.inventory_view_name,
@@ -15892,6 +16125,7 @@ def qa_operation_panel(
             ),
             rx.callout("No potency ranges are available.", icon="circle_help"),
         ),
+        class_name="qcc-inventory-module",
         width="100%", spacing="4",
     )
 
