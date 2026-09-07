@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.49-staging"
+PILOT_VERSION = "0.9.6.50-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -822,6 +822,7 @@ class DashboardState(rx.State):
     cultivation_history_table_view: str = "Individual Harvests"
     cultivation_history_rows_per_page: str = "10"
     cultivation_history_strain_filter: str = "All Strains"
+    cultivation_history_room_strain_filter: str = "All Strains"
     cultivation_demand_brand_filter: str = "All Brands"
     cultivation_demand_strain_filter: str = "All Strains"
     cultivation_demand_sku_filter: str = "All Compared SKUs"
@@ -6335,7 +6336,6 @@ class DashboardState(rx.State):
             dry = float(record.get("dry_flower_lbs", 0) or 0)
             net_canopy = float(ff["net_dry_canopy_sqft"] or 0)
             output.append({
-                "Record ID": record.get("harvest_id", ""),
                 "Crop": record.get("crop", ""), "Room": record.get("room", ""),
                 "Strain": record.get("strain", "") or "Room total",
                 "Harvest Date": record.get("harvest_date", ""),
@@ -6348,6 +6348,197 @@ class DashboardState(rx.State):
                 "Source": record.get("data_source", "Manual"),
             })
         return output
+
+    @staticmethod
+    def _historical_yield_label(record: dict[str, Any]) -> str:
+        """Return a readable editor label while keeping the key internal."""
+        crop = str(record.get("crop", "") or "Unassigned crop")
+        room = str(record.get("room", "") or "Unassigned room")
+        strain = str(record.get("strain", "") or "Room total")
+        harvest_date = str(record.get("harvest_date", "") or "No date")
+        return f"{crop} · {room} · {strain} · {harvest_date}"
+
+    @rx.var(cache=True)
+    def cultivation_historical_yield_options(self) -> list[str]:
+        _ = self.cultivation_registry_revision
+        return [
+            self._historical_yield_label(row)
+            for row in self._registry_payload().get("historical_yields", [])
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_history_room_options(self) -> list[str]:
+        _ = self.cultivation_registry_revision
+        rooms = {
+            "Flower Room 1", "Flower Room 2", "Flower Room 3",
+            "Flower Room 4", "Flower Room 5",
+        }
+        rooms.update(
+            str(row.get("name", "") or "")
+            for row in self._registry_payload().get("rooms", [])
+            if str(row.get("name", "") or "")
+        )
+        rooms.update(
+            str(row.get("room", "") or "")
+            for row in self._registry_payload().get("historical_yields", [])
+            if str(row.get("room", "") or "")
+        )
+        return ["All Flower Rooms", *sorted(rooms)]
+
+    @rx.var(cache=True)
+    def cultivation_history_room_strain_options(self) -> list[str]:
+        _ = self.cultivation_registry_revision
+        strains = {
+            str(row.get("strain", "") or "").strip()
+            for row in self._registry_payload().get("historical_yields", [])
+            if str(row.get("strain", "") or "").strip()
+        }
+        return ["All Strains", *sorted(strains)]
+
+    @staticmethod
+    def _historical_yield_extended_rows(
+        records: list[dict[str, Any]],
+        room_filter: str,
+    ) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
+        for record in records:
+            room = str(record.get("room", "") or "")
+            if room_filter != "All Flower Rooms" and room != room_filter:
+                continue
+            ff = fresh_frozen_canopy(
+                planted_canopy_sqft=record.get("planted_canopy_sqft"),
+                planted_plants=record.get("planted_plants"),
+                fresh_frozen_plants=(
+                    record.get("actual_ff_plants")
+                    or record.get("planned_ff_plants")
+                ),
+                actual_fresh_frozen_canopy_sqft=record.get(
+                    "actual_ff_canopy_sqft"
+                ),
+            )
+            dry = float(record.get("dry_flower_lbs", 0) or 0)
+            ab = float(record.get("ab_flower_lbs", 0) or 0)
+            c_flower = float(record.get("c_flower_lbs", 0) or 0)
+            net_canopy = float(ff["net_dry_canopy_sqft"] or 0)
+            classified = ab + c_flower
+            output.append({
+                "Crop": record.get("crop", ""),
+                "Room": room,
+                "Strain": record.get("strain", "") or "Room total",
+                "Harvest Date": record.get("harvest_date", ""),
+                "Physical Canopy": round(float(record.get("physical_canopy_sqft", 0) or 0), 1),
+                "Planted Canopy": round(float(ff["planted_canopy_sqft"] or 0), 1),
+                "Planted Plants": int(record.get("planted_plants", 0) or 0),
+                "Planned FF Plants": int(record.get("planned_ff_plants", 0) or 0),
+                "Actual FF Plants": int(record.get("actual_ff_plants", 0) or 0),
+                "Actual FF Canopy": round(float(record.get("actual_ff_canopy_sqft", 0) or 0), 1),
+                "FF Canopy Used": round(float(ff["fresh_frozen_canopy_sqft"] or 0), 1),
+                "Net Dry Canopy": round(net_canopy, 1),
+                "Wet Yield (lb)": round(float(record.get("wet_yield_lbs", 0) or 0), 2),
+                "Dry Flower (lb)": round(dry, 2),
+                "AB Flower (lb)": round(ab, 2),
+                "AB %": round(ab / dry * 100, 1) if dry else 0,
+                "C Flower (lb)": round(c_flower, 2),
+                "C %": round(c_flower / dry * 100, 1) if dry else 0,
+                "Unclassified Dry (lb)": round(max(dry - classified, 0), 2),
+                "Trim (lb)": round(float(record.get("trim_lbs", 0) or 0), 2),
+                "Yield (g/sqft)": round(dry * 453.59237 / net_canopy, 1) if net_canopy else 0,
+                "Quality Score": round(float(record.get("quality_score", 0) or 0), 2),
+                "Source": record.get("data_source", "Manual"),
+                "Notes": record.get("notes", ""),
+            })
+        return output
+
+    @rx.var(cache=True)
+    def cultivation_history_extended_rows(self) -> list[dict[str, Any]]:
+        _ = self.cultivation_registry_revision
+        return self._historical_yield_extended_rows(
+            self._registry_payload().get("historical_yields", []),
+            self.cultivation_history_room_filter,
+        )
+
+    @staticmethod
+    def _room_strain_performance_rows(
+        records: list[dict[str, Any]],
+        room_filter: str,
+        strain_filter: str,
+    ) -> list[dict[str, Any]]:
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for record in records:
+            room = str(record.get("room", "") or "")
+            strain = str(record.get("strain", "") or "").strip()
+            if not strain:
+                continue
+            if room_filter != "All Flower Rooms" and room != room_filter:
+                continue
+            if strain_filter != "All Strains" and strain != strain_filter:
+                continue
+            ff = fresh_frozen_canopy(
+                planted_canopy_sqft=record.get("planted_canopy_sqft"),
+                planted_plants=record.get("planted_plants"),
+                fresh_frozen_plants=(
+                    record.get("actual_ff_plants")
+                    or record.get("planned_ff_plants")
+                ),
+                actual_fresh_frozen_canopy_sqft=record.get(
+                    "actual_ff_canopy_sqft"
+                ),
+            )
+            group = groups.setdefault((room, strain), {
+                "harvests": 0,
+                "latest": "",
+                "canopy": 0.0,
+                "dry": 0.0,
+                "ab": 0.0,
+                "c": 0.0,
+                "trim": 0.0,
+                "quality_total": 0.0,
+                "quality_count": 0,
+            })
+            group["harvests"] += 1
+            group["latest"] = max(
+                group["latest"], str(record.get("harvest_date", "") or "")
+            )
+            group["canopy"] += float(ff["net_dry_canopy_sqft"] or 0)
+            group["dry"] += float(record.get("dry_flower_lbs", 0) or 0)
+            group["ab"] += float(record.get("ab_flower_lbs", 0) or 0)
+            group["c"] += float(record.get("c_flower_lbs", 0) or 0)
+            group["trim"] += float(record.get("trim_lbs", 0) or 0)
+            quality = float(record.get("quality_score", 0) or 0)
+            if quality > 0:
+                group["quality_total"] += quality
+                group["quality_count"] += 1
+        output: list[dict[str, Any]] = []
+        for (room, strain), group in groups.items():
+            canopy = group["canopy"]
+            output.append({
+                "Room": room,
+                "Strain": strain,
+                "Harvests": group["harvests"],
+                "Latest Harvest": group["latest"],
+                "Net Dry Canopy": round(canopy, 1),
+                "Dry Flower (lb)": round(group["dry"], 2),
+                "AB Flower (lb)": round(group["ab"], 2),
+                "AB %": round(group["ab"] / group["dry"] * 100, 1) if group["dry"] else 0,
+                "C Flower (lb)": round(group["c"], 2),
+                "C %": round(group["c"] / group["dry"] * 100, 1) if group["dry"] else 0,
+                "Trim (lb)": round(group["trim"], 2),
+                "Yield (g/sqft)": round(group["dry"] * 453.59237 / canopy, 1) if canopy else 0,
+                "Avg Quality": (
+                    round(group["quality_total"] / group["quality_count"], 2)
+                    if group["quality_count"] else "—"
+                ),
+            })
+        return sorted(output, key=lambda row: (row["Room"], row["Strain"]))
+
+    @rx.var(cache=True)
+    def cultivation_history_room_strain_rows(self) -> list[dict[str, Any]]:
+        _ = self.cultivation_registry_revision
+        return self._room_strain_performance_rows(
+            self._registry_payload().get("historical_yields", []),
+            self.cultivation_history_room_filter,
+            self.cultivation_history_room_strain_filter,
+        )
 
     @rx.var(cache=True)
     def cultivation_program_options(self) -> list[str]:
@@ -6408,11 +6599,6 @@ class DashboardState(rx.State):
         _ = self.cultivation_registry_revision
         room = self._current_clone_period()["room"].replace("Flower Room ", "F")
         return f"{room} Room Capacity"
-
-    @rx.var(cache=True)
-    def cultivation_historical_yield_id_options(self) -> list[str]:
-        _ = self.cultivation_registry_revision
-        return [str(row.get("harvest_id", "")) for row in self._registry_payload().get("historical_yields", [])]
 
     @rx.var(cache=True)
     def cultivation_schedule_future_count(self) -> int:
@@ -6694,11 +6880,19 @@ class DashboardState(rx.State):
             self.cultivation_registry_error = str(error)
 
     @rx.event
-    def load_historical_yield_editor(self, harvest_id: str):
-        row = next((item for item in self._registry_payload().get("historical_yields", []) if str(item.get("harvest_id")) == harvest_id), None)
+    def load_historical_yield_editor(self, selection: str):
+        row = next(
+            (
+                item
+                for item in self._registry_payload().get("historical_yields", [])
+                if str(item.get("harvest_id")) == selection
+                or self._historical_yield_label(item) == selection
+            ),
+            None,
+        )
         if not row:
             return
-        self.cultivation_yield_edit_id = harvest_id
+        self.cultivation_yield_edit_id = str(row.get("harvest_id", ""))
         self.cultivation_yield_crop = str(row.get("crop", ""))
         self.cultivation_yield_room = str(row.get("room", ""))
         self.cultivation_yield_strain = str(row.get("strain", ""))
@@ -6718,6 +6912,30 @@ class DashboardState(rx.State):
         self.cultivation_yield_notes = str(row.get("notes", ""))
 
     @rx.event
+    def clear_historical_yield_editor(self):
+        """Start a new yield record without exposing its internal database key."""
+        self.cultivation_yield_edit_id = ""
+        self.cultivation_yield_crop = ""
+        self.cultivation_yield_room = "Flower Room 1"
+        self.cultivation_yield_strain = ""
+        self.cultivation_yield_harvest_date = ""
+        self.cultivation_yield_physical_canopy = 0.0
+        self.cultivation_yield_planted_canopy = 0.0
+        self.cultivation_yield_planted_plants = 0
+        self.cultivation_yield_planned_ff_plants = 0
+        self.cultivation_yield_actual_ff_plants = 0
+        self.cultivation_yield_actual_ff_canopy = 0.0
+        self.cultivation_yield_wet_lbs = 0.0
+        self.cultivation_yield_dry_lbs = 0.0
+        self.cultivation_yield_ab_lbs = 0.0
+        self.cultivation_yield_c_lbs = 0.0
+        self.cultivation_yield_trim_lbs = 0.0
+        self.cultivation_yield_quality = 0.0
+        self.cultivation_yield_notes = ""
+        self.cultivation_registry_message = "Ready for a new historical yield entry."
+        self.cultivation_registry_error = ""
+
+    @rx.event
     def save_historical_yield_editor(self):
         try:
             harvest_id = save_historical_yield({
@@ -6735,6 +6953,7 @@ class DashboardState(rx.State):
                 "trim_lbs": self.cultivation_yield_trim_lbs, "quality_score": self.cultivation_yield_quality,
                 "data_source": "Manual", "notes": self.cultivation_yield_notes,
             }, self.auth_name or self.auth_email or "QCC Reflex User")
+            self.cultivation_yield_edit_id = harvest_id
             self._cultivation_registry = load_registry(); self.cultivation_registry_revision += 1
             self.cultivation_registry_message = f"Saved historical yield {harvest_id}."
             self.cultivation_registry_error = ""
@@ -7160,6 +7379,10 @@ class DashboardState(rx.State):
     @rx.event
     def change_cultivation_history_strain_filter(self, value: str):
         self.cultivation_history_strain_filter = value
+
+    @rx.event
+    def change_cultivation_history_room_strain_filter(self, value: str):
+        self.cultivation_history_room_strain_filter = value
 
     @rx.event
     def change_cultivation_demand_strain_filter(self, value: str):
@@ -20715,21 +20938,38 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
         rx.vstack(
             rx.heading("Historical Yield Entry", size="4", color=DARK),
             rx.text("Enter room totals or strain-level results. Actual Fresh Frozen canopy overrides the planned plant proportion without changing the physical bench registry.", size="2", color=MUTED),
-            rx.cond(
-                DashboardState.cultivation_historical_yield_id_options.length() > 0,
-                rx.hstack(
+            rx.hstack(
+                rx.cond(
+                    DashboardState.cultivation_historical_yield_options.length() > 0,
+                    rx.hstack(
                     rx.text("Edit existing yield", size="1", weight="bold", color=MUTED),
                     rx.select(
-                        DashboardState.cultivation_historical_yield_id_options,
-                        placeholder="Select record ID",
+                        DashboardState.cultivation_historical_yield_options,
+                        placeholder="Select crop, room, strain, and harvest date",
                         on_change=DashboardState.load_historical_yield_editor,
-                        width="360px",
+                        width="min(100%, 620px)",
                     ),
                     gap="3", align="center",
+                    ),
                 ),
+                rx.button(
+                    "New Yield Entry",
+                    on_click=DashboardState.clear_historical_yield_editor,
+                    variant="outline",
+                    color_scheme="teal",
+                ),
+                gap="3",
+                align="center",
+                wrap="wrap",
+                width="100%",
+            ),
+            rx.callout(
+                "For strain-specific room performance, select the flower room and enter the strain. Leave Strain blank only when saving a room-total result.",
+                icon="chart-no-axes-combined",
+                color_scheme="teal",
+                width="100%",
             ),
             rx.grid(
-                cultivation_registry_field("Record ID (blank creates)", DashboardState.cultivation_yield_edit_id, DashboardState.set_cultivation_yield_edit_id),
                 cultivation_registry_field("Crop", DashboardState.cultivation_yield_crop, DashboardState.set_cultivation_yield_crop, placeholder="F5.10"),
                 rx.box(rx.text("Room", size="1", weight="bold", color=MUTED), rx.select(DashboardState.cultivation_registry_room_options, value=DashboardState.cultivation_yield_room, on_change=DashboardState.set_cultivation_yield_room, width="100%"), width="100%"),
                 cultivation_registry_field("Strain (blank for room total)", DashboardState.cultivation_yield_strain, DashboardState.set_cultivation_yield_strain),
@@ -20752,7 +20992,7 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
             rx.button("Save Historical Yield", on_click=DashboardState.save_historical_yield_editor, background=ACCENT, color="white"),
             rx.cond(
                 DashboardState.cultivation_historical_entry_rows.length() > 0,
-                data_grid(DashboardState.cultivation_historical_entry_rows, ["Record ID", "Crop", "Room", "Strain", "Harvest Date", "Planted Canopy", "Fresh Frozen Plants", "Fresh Frozen Canopy", "Net Dry Canopy", "Dry Flower (lb)", "Yield (g/sqft)", "Source"], height="440px", minimum_width=1900, page_size=10),
+                data_grid(DashboardState.cultivation_historical_entry_rows, ["Crop", "Room", "Strain", "Harvest Date", "Planted Canopy", "Fresh Frozen Plants", "Fresh Frozen Canopy", "Net Dry Canopy", "Dry Flower (lb)", "Yield (g/sqft)", "Source"], height="440px", minimum_width=1740, page_size=10),
             ),
             width="100%", spacing="3",
         ),
@@ -20981,14 +21221,7 @@ def cultivation_historical_yield_panel() -> rx.Component:
                 rx.box(
                     rx.text("Room filter", size="1", weight="bold", color=MUTED),
                     rx.select(
-                        [
-                            "All Flower Rooms",
-                            "Flower Room 1",
-                            "Flower Room 2",
-                            "Flower Room 3",
-                            "Flower Room 4",
-                            "Flower Room 5",
-                        ],
+                        DashboardState.cultivation_history_room_options,
                         value=DashboardState.cultivation_history_room_filter,
                         on_change=DashboardState.change_cultivation_history_room_filter,
                         width="210px",
@@ -21036,6 +21269,7 @@ def cultivation_historical_yield_panel() -> rx.Component:
             rx.tabs.list(
                 rx.tabs.trigger("Rooms & Harvests", value="rooms"),
                 rx.tabs.trigger("Strain Benchmarks", value="strains"),
+                rx.tabs.trigger("Room × Strain Performance", value="room_strains"),
                 class_name="qcc-tabs",
             ),
             rx.tabs.content(
@@ -21055,7 +21289,7 @@ def cultivation_historical_yield_panel() -> rx.Component:
                                 width="100%",
                             ),
                             rx.callout(
-                                "The room filter changes the KPIs and applies to Individual Harvests and Combine Rooms. Combine Cycles always shows complete cycles across all rooms.",
+                                "The room filter changes the KPIs and applies to Individual Harvests, Extended Harvest Data, Combine Rooms, and Room × Strain Performance. Combine Cycles always shows complete cycles across all rooms.",
                                 icon="info",
                                 color_scheme="blue",
                                 width="100%",
@@ -21091,6 +21325,7 @@ def cultivation_historical_yield_panel() -> rx.Component:
                                     rx.select(
                                         [
                                             "Individual Harvests",
+                                            "Extended Harvest Data",
                                             "Combine Rooms",
                                             "Combine Cycles",
                                         ],
@@ -21118,33 +21353,53 @@ def cultivation_historical_yield_panel() -> rx.Component:
                             ),
                             rx.cond(
                                 DashboardState.cultivation_history_table_view
-                                == "Combine Rooms",
+                                == "Extended Harvest Data",
                                 cultivation_history_data_grid(
-                                    DashboardState.cultivation_history_room_table_data,
-                                    HISTORICAL_ROOM_COLUMNS,
-                                    height="470px",
-                                    class_name="qcc-historical-room-grid",
-                                    column_width=132,
-                                    minimum_width=1320,
+                                    DashboardState.cultivation_history_extended_rows,
+                                    [
+                                        "Crop", "Room", "Strain", "Harvest Date",
+                                        "Physical Canopy", "Planted Canopy", "Planted Plants",
+                                        "Planned FF Plants", "Actual FF Plants", "Actual FF Canopy", "FF Canopy Used",
+                                        "Net Dry Canopy", "Wet Yield (lb)", "Dry Flower (lb)",
+                                        "AB Flower (lb)", "AB %", "C Flower (lb)", "C %",
+                                        "Unclassified Dry (lb)", "Trim (lb)",
+                                        "Yield (g/sqft)", "Quality Score", "Source", "Notes",
+                                    ],
+                                    height="600px",
+                                    class_name="qcc-historical-extended-grid",
+                                    column_width=150,
+                                    minimum_width=3600,
                                 ),
                                 rx.cond(
                                     DashboardState.cultivation_history_table_view
-                                    == "Combine Cycles",
+                                    == "Combine Rooms",
                                     cultivation_history_data_grid(
-                                        DashboardState.cultivation_history_cycle_table_data,
-                                        HISTORICAL_CYCLE_COLUMNS,
+                                        DashboardState.cultivation_history_room_table_data,
+                                        HISTORICAL_ROOM_COLUMNS,
                                         height="470px",
-                                        class_name="qcc-historical-cycle-grid",
+                                        class_name="qcc-historical-room-grid",
                                         column_width=132,
-                                        minimum_width=1056,
+                                        minimum_width=1320,
                                     ),
-                                    cultivation_history_data_grid(
-                                        DashboardState.cultivation_history_harvest_table_data,
-                                        HISTORICAL_HARVEST_COLUMNS,
-                                        height="540px",
-                                        class_name="qcc-historical-harvest-grid",
-                                        column_width=140,
-                                        minimum_width=980,
+                                    rx.cond(
+                                        DashboardState.cultivation_history_table_view
+                                        == "Combine Cycles",
+                                        cultivation_history_data_grid(
+                                            DashboardState.cultivation_history_cycle_table_data,
+                                            HISTORICAL_CYCLE_COLUMNS,
+                                            height="470px",
+                                            class_name="qcc-historical-cycle-grid",
+                                            column_width=132,
+                                            minimum_width=1056,
+                                        ),
+                                        cultivation_history_data_grid(
+                                            DashboardState.cultivation_history_harvest_table_data,
+                                            HISTORICAL_HARVEST_COLUMNS,
+                                            height="540px",
+                                            class_name="qcc-historical-harvest-grid",
+                                            column_width=140,
+                                            minimum_width=980,
+                                        ),
                                     ),
                                 ),
                             ),
@@ -21224,6 +21479,69 @@ def cultivation_historical_yield_panel() -> rx.Component:
                     spacing="4",
                 ),
                 value="strains",
+                padding_top="1rem",
+            ),
+            rx.tabs.content(
+                rx.card(
+                    rx.vstack(
+                        rx.heading("Strain Performance by Flower Room", size="4", color=DARK),
+                        rx.text(
+                            "This view aggregates strain-specific Historical Yield entries by room. Room-total entries are excluded so each result reflects the selected strain's actual canopy and flower output.",
+                            size="2",
+                            color=MUTED,
+                        ),
+                        rx.flex(
+                            rx.box(
+                                rx.text("Room", size="1", weight="bold", color=MUTED),
+                                rx.select(
+                                    DashboardState.cultivation_history_room_options,
+                                    value=DashboardState.cultivation_history_room_filter,
+                                    on_change=DashboardState.change_cultivation_history_room_filter,
+                                    width="230px",
+                                ),
+                            ),
+                            rx.box(
+                                rx.text("Strain", size="1", weight="bold", color=MUTED),
+                                rx.select(
+                                    DashboardState.cultivation_history_room_strain_options,
+                                    value=DashboardState.cultivation_history_room_strain_filter,
+                                    on_change=DashboardState.change_cultivation_history_room_strain_filter,
+                                    width="240px",
+                                ),
+                            ),
+                            gap="3",
+                            wrap="wrap",
+                            align="end",
+                            width="100%",
+                        ),
+                        rx.cond(
+                            DashboardState.cultivation_history_room_strain_rows.length() > 0,
+                            cultivation_history_data_grid(
+                                DashboardState.cultivation_history_room_strain_rows,
+                                [
+                                    "Room", "Strain", "Harvests", "Latest Harvest",
+                                    "Net Dry Canopy", "Dry Flower (lb)", "AB Flower (lb)",
+                                    "AB %", "C Flower (lb)", "C %", "Trim (lb)", "Yield (g/sqft)",
+                                    "Avg Quality",
+                                ],
+                                height="580px",
+                                class_name="qcc-historical-room-strain-grid",
+                                column_width=155,
+                                minimum_width=2015,
+                            ),
+                            rx.callout(
+                                "No strain-specific Historical Yield entries match these filters. Add one above by selecting a room and entering a strain.",
+                                icon="info",
+                                color_scheme="blue",
+                                width="100%",
+                            ),
+                        ),
+                        width="100%",
+                        spacing="4",
+                    ),
+                    width="100%",
+                ),
+                value="room_strains",
                 padding_top="1rem",
             ),
             default_value="rooms",

@@ -1,5 +1,9 @@
 """Regression tests for the bundled cultivation yield history."""
 
+import unittest
+
+from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
+
 from qcc_reflex_pilot.historical_yield import (
     HISTORICAL_CYCLE_COLUMNS,
     HISTORICAL_HARVEST_COLUMNS,
@@ -69,6 +73,82 @@ def test_combined_room_table_contains_class_and_lighting_metrics() -> None:
     assert row["C %"] == 17.0
     assert row["Upgraded Lighting Harvests"] == 2
     assert row["Upgraded Lighting Yield (g/sqft)"] == 91.64
+
+
+def test_historical_yield_editor_label_hides_technical_record_id() -> None:
+    record = {
+        "harvest_id": "QCC-HY-F5-10-DIAMOND-BAR",
+        "crop": "F5.10",
+        "room": "Flower Room 5",
+        "strain": "Diamond Bar",
+        "harvest_date": "2026-10-05",
+    }
+
+    label = DashboardState._historical_yield_label(record)
+
+    assert label == "F5.10 · Flower Room 5 · Diamond Bar · 2026-10-05"
+    assert record["harvest_id"] not in label
+
+
+def test_extended_harvest_data_exposes_ab_c_and_unclassified_flower() -> None:
+    records = [{
+        "crop": "F5.10", "room": "Flower Room 5", "strain": "Diamond Bar",
+        "harvest_date": "2026-10-05", "planted_canopy_sqft": 200,
+        "planted_plants": 150, "actual_ff_plants": 0,
+        "dry_flower_lbs": 40, "ab_flower_lbs": 30,
+        "c_flower_lbs": 8, "trim_lbs": 9,
+    }]
+
+    rows = DashboardState._historical_yield_extended_rows(
+        records, "Flower Room 5"
+    )
+
+    assert rows[0]["AB Flower (lb)"] == 30
+    assert rows[0]["C Flower (lb)"] == 8
+    assert rows[0]["Unclassified Dry (lb)"] == 2
+
+
+def test_room_strain_performance_aggregates_only_matching_room_and_strain() -> None:
+    records = [
+        {
+            "room": "Flower Room 5", "strain": "Diamond Bar",
+            "harvest_date": "2026-10-05", "planted_canopy_sqft": 200,
+            "dry_flower_lbs": 40, "ab_flower_lbs": 30,
+            "c_flower_lbs": 8, "trim_lbs": 9, "quality_score": 8,
+        },
+        {
+            "room": "Flower Room 5", "strain": "Diamond Bar",
+            "harvest_date": "2027-01-01", "planted_canopy_sqft": 200,
+            "dry_flower_lbs": 42, "ab_flower_lbs": 31,
+            "c_flower_lbs": 9, "trim_lbs": 10, "quality_score": 9,
+        },
+        {
+            "room": "Flower Room 4", "strain": "Diamond Bar",
+            "harvest_date": "2026-09-01", "planted_canopy_sqft": 200,
+            "dry_flower_lbs": 50,
+        },
+    ]
+
+    rows = DashboardState._room_strain_performance_rows(
+        records, "Flower Room 5", "Diamond Bar"
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["Harvests"] == 2
+    assert rows[0]["Dry Flower (lb)"] == 82
+    assert rows[0]["Avg Quality"] == 8.5
+    assert rows[0]["Latest Harvest"] == "2027-01-01"
+
+
+class HistoricalYieldRegistryTests(unittest.TestCase):
+    def test_editor_label_hides_technical_record_id(self):
+        test_historical_yield_editor_label_hides_technical_record_id()
+
+    def test_extended_data_exposes_flower_classes(self):
+        test_extended_harvest_data_exposes_ab_c_and_unclassified_flower()
+
+    def test_room_strain_performance_aggregation(self):
+        test_room_strain_performance_aggregates_only_matching_room_and_strain()
 
 
 def test_combined_cycle_table_uses_workbook_class_pounds() -> None:
