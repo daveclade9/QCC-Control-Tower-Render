@@ -185,7 +185,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.43-staging"
+PILOT_VERSION = "0.9.6.44-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -11274,6 +11274,13 @@ class DashboardState(rx.State):
             if row.get("Production Stage") == stage
         ]
 
+    @rx.var(cache=True)
+    def wip_summary_source_rows(self) -> list[dict[str, Any]]:
+        """Use the active age-band subset for cards on Aging Risk Bulk."""
+        if self.inventory_view_name == "aging_bulk":
+            return self.filtered_aging_bulk
+        return self.filtered_wip_inventory
+
     @staticmethod
     def _stage_package_weight_summary(
         rows: list[dict[str, Any]], stage: str
@@ -11289,7 +11296,7 @@ class DashboardState(rx.State):
 
     def _inventory_stage_summary(self, stage: str) -> str:
         return self._stage_package_weight_summary(
-            self.filtered_wip_inventory, stage
+            self.wip_summary_source_rows, stage
         )
 
     @staticmethod
@@ -11303,37 +11310,37 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def cultivation_wip_summary(self) -> str:
-        _ = self.filtered_wip_inventory
+        _ = self.wip_summary_source_rows
         return self._inventory_stage_summary("WIP-Cultivation")
 
     @rx.var(cache=True)
     def cultivation_pre_wip_summary(self) -> str:
-        _ = self.filtered_wip_inventory
+        _ = self.wip_summary_source_rows
         return self._inventory_stage_summary("Pre-WIP-Cultivation")
 
     @rx.var(cache=True)
     def manufacturing_wip_summary(self) -> str:
-        _ = self.filtered_wip_inventory
+        _ = self.wip_summary_source_rows
         return self._inventory_stage_summary("WIP-Manufacturing")
 
     @rx.var(cache=True)
     def manufacturing_pre_wip_summary(self) -> str:
-        _ = self.filtered_wip_inventory
+        _ = self.wip_summary_source_rows
         return self._inventory_stage_summary("Pre-WIP-Manufacturing")
 
     @rx.var(cache=True)
     def purchased_1a_wip_summary(self) -> str:
-        _ = self.filtered_wip_inventory
+        _ = self.wip_summary_source_rows
         return self._inventory_stage_summary("WIP-Purchased 1A")
 
     @rx.var(cache=True)
     def purchased_1a_pre_wip_summary(self) -> str:
-        _ = self.filtered_wip_inventory
+        _ = self.wip_summary_source_rows
         return self._inventory_stage_summary("Pre-WIP-Purchased 1A")
 
     @rx.var(cache=True)
     def mt_smalls_weight_summary(self) -> str:
-        return self._mt_smalls_weight_summary(self.filtered_wip_inventory)
+        return self._mt_smalls_weight_summary(self.wip_summary_source_rows)
 
     @rx.var(cache=True)
     def all_inventory_cultivation_pre_wip_summary(self) -> str:
