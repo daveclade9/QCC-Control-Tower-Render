@@ -1,6 +1,7 @@
 """Regression tests for the bundled cultivation yield history."""
 
 import unittest
+from unittest.mock import patch
 
 from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
 from qcc_reflex_pilot.cultivation_registry import default_room_rows
@@ -162,6 +163,51 @@ def test_crop_name_selects_its_flower_room_and_manual_room_selection_persists() 
     assert "Room mismatch" in state.cultivation_yield_entry_warning
 
 
+def test_historical_yield_save_reports_success_and_surfaces_saved_record() -> None:
+    state = DashboardState(_reflex_internal_init=True)
+    state.cultivation_yield_crop = "F4.8"
+    state.cultivation_yield_room = "Flower Room 4"
+    state.cultivation_yield_harvest_date = "2026-08-01"
+    saved = {
+        "harvest_id": "QCC-HY-TEST", "crop": "F4.8",
+        "room": "Flower Room 4", "strain": "Diamond Bar",
+        "record_scope": "Strain Detail", "harvest_date": "2026-08-01",
+        "dry_flower_lbs": 40, "updated_by": "Tester",
+    }
+    payload = {
+        "programs": [], "rooms": default_room_rows(), "benches": [],
+        "schedule": [], "historical_yields": [saved],
+        "voided_historical_yields": [], "historical_yield_revisions": [],
+    }
+
+    with patch(
+        "qcc_reflex_pilot.qcc_reflex_pilot.save_historical_yield",
+        return_value="QCC-HY-TEST",
+    ), patch(
+        "qcc_reflex_pilot.qcc_reflex_pilot.load_registry",
+        return_value=payload,
+    ):
+        list(state.save_historical_yield_editor())
+
+    assert state.cultivation_yield_error == ""
+    assert "Saved F4.8 historical yield" in state.cultivation_yield_message
+    assert state.cultivation_historical_manage_rows[0]["record_id"] == "QCC-HY-TEST"
+
+
+def test_historical_yield_save_displays_database_error() -> None:
+    state = DashboardState(_reflex_internal_init=True)
+    with patch(
+        "qcc_reflex_pilot.qcc_reflex_pilot.save_historical_yield",
+        side_effect=ValueError("Matching record already exists."),
+    ):
+        list(state.save_historical_yield_editor())
+
+    assert state.cultivation_yield_message == ""
+    assert state.cultivation_yield_error == (
+        "Historical yield was not saved: Matching record already exists."
+    )
+
+
 class HistoricalYieldRegistryTests(unittest.TestCase):
     def test_editor_label_hides_technical_record_id(self):
         test_historical_yield_editor_label_hides_technical_record_id()
@@ -174,6 +220,12 @@ class HistoricalYieldRegistryTests(unittest.TestCase):
 
     def test_crop_room_link_and_manual_selection(self):
         test_crop_name_selects_its_flower_room_and_manual_room_selection_persists()
+
+    def test_save_feedback_and_visible_record(self):
+        test_historical_yield_save_reports_success_and_surfaces_saved_record()
+
+    def test_save_error_feedback(self):
+        test_historical_yield_save_displays_database_error()
 
 
 def test_combined_cycle_table_uses_workbook_class_pounds() -> None:

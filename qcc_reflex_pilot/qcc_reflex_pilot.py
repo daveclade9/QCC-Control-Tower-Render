@@ -187,7 +187,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.60-staging"
+PILOT_VERSION = "0.9.6.61-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -969,6 +969,9 @@ class DashboardState(rx.State):
     cultivation_yield_quality: float = 0.0
     cultivation_yield_notes: str = ""
     cultivation_yield_void_reason: str = ""
+    cultivation_yield_saving: bool = False
+    cultivation_yield_message: str = ""
+    cultivation_yield_error: str = ""
 
     units_metric: str = "0"
     value_metric: str = "$0"
@@ -6426,6 +6429,14 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def cultivation_historical_manage_rows(self) -> list[dict[str, Any]]:
         _ = self.cultivation_registry_revision
+        records = list(
+            self._registry_payload().get("historical_yields", [])
+        )
+        if self.cultivation_yield_edit_id:
+            records.sort(
+                key=lambda row: str(row.get("harvest_id", ""))
+                != self.cultivation_yield_edit_id
+            )
         return [
             {
                 "record_id": str(row.get("harvest_id", "")),
@@ -6439,7 +6450,7 @@ class DashboardState(rx.State):
                 "dry_flower": f'{float(row.get("dry_flower_lbs", 0) or 0):,.2f} lb',
                 "updated_by": str(row.get("updated_by", "") or "Unknown"),
             }
-            for row in self._registry_payload().get("historical_yields", [])
+            for row in records
         ]
 
     @rx.var(cache=True)
@@ -7100,6 +7111,8 @@ class DashboardState(rx.State):
         self.cultivation_yield_quality = float(row.get("quality_score", 0) or 0)
         self.cultivation_yield_notes = str(row.get("notes", ""))
         self.cultivation_yield_void_reason = ""
+        self.cultivation_yield_message = ""
+        self.cultivation_yield_error = ""
 
     @rx.event
     def clear_historical_yield_editor(self):
@@ -7124,6 +7137,8 @@ class DashboardState(rx.State):
         self.cultivation_yield_quality = 0.0
         self.cultivation_yield_notes = ""
         self.cultivation_yield_void_reason = ""
+        self.cultivation_yield_message = ""
+        self.cultivation_yield_error = ""
         self.cultivation_registry_message = "Ready for a new historical yield entry."
         self.cultivation_registry_error = ""
 
@@ -7157,6 +7172,17 @@ class DashboardState(rx.State):
 
     @rx.event
     def save_historical_yield_editor(self):
+        if self.cultivation_yield_saving:
+            return
+        self.cultivation_yield_saving = True
+        self.cultivation_yield_message = ""
+        self.cultivation_yield_error = ""
+        yield
+        yield rx.toast.loading(
+            "Saving historical yield...",
+            id="qcc-historical-yield-save",
+            duration=20000,
+        )
         try:
             harvest_id = save_historical_yield({
                 "harvest_id": self.cultivation_yield_edit_id, "crop": self.cultivation_yield_crop,
@@ -7176,10 +7202,31 @@ class DashboardState(rx.State):
             }, self.auth_name or self.auth_email or "QCC Reflex User")
             self.cultivation_yield_edit_id = harvest_id
             self._cultivation_registry = load_registry(); self.cultivation_registry_revision += 1
-            self.cultivation_registry_message = f"Saved historical yield {harvest_id}."
+            self.cultivation_yield_message = (
+                f"Saved {self.cultivation_yield_crop} historical yield for "
+                f"{self.cultivation_yield_room}. It is now first under Saved Yield Records."
+            )
+            self.cultivation_yield_error = ""
+            self.cultivation_registry_message = self.cultivation_yield_message
             self.cultivation_registry_error = ""
+            yield rx.toast.success(
+                self.cultivation_yield_message,
+                id="qcc-historical-yield-save",
+                duration=7000,
+            )
         except Exception as error:
-            self.cultivation_registry_error = str(error)
+            self.cultivation_yield_message = ""
+            self.cultivation_yield_error = (
+                "Historical yield was not saved: " + str(error)
+            )
+            self.cultivation_registry_error = self.cultivation_yield_error
+            yield rx.toast.error(
+                self.cultivation_yield_error,
+                id="qcc-historical-yield-save",
+                duration=10000,
+            )
+        finally:
+            self.cultivation_yield_saving = False
 
     @rx.event
     def void_selected_historical_yield(self):
@@ -22116,6 +22163,33 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
                     width="100%",
                 ),
             ),
+            rx.cond(
+                DashboardState.cultivation_yield_error != "",
+                rx.callout(
+                    DashboardState.cultivation_yield_error,
+                    icon="triangle-alert",
+                    color_scheme="red",
+                    width="100%",
+                ),
+            ),
+            rx.cond(
+                DashboardState.cultivation_yield_saving,
+                rx.callout(
+                    "Saving historical yield...",
+                    icon="loader-circle",
+                    color_scheme="blue",
+                    width="100%",
+                ),
+            ),
+            rx.cond(
+                DashboardState.cultivation_yield_message != "",
+                rx.callout(
+                    DashboardState.cultivation_yield_message,
+                    icon="circle-check",
+                    color_scheme="green",
+                    width="100%",
+                ),
+            ),
             rx.flex(
                 rx.button(
                     rx.cond(
@@ -22126,6 +22200,8 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
                     on_click=DashboardState.save_historical_yield_editor,
                     background=ACCENT,
                     color="white",
+                    loading=DashboardState.cultivation_yield_saving,
+                    disabled=DashboardState.cultivation_yield_saving,
                 ),
                 rx.cond(
                     DashboardState.cultivation_yield_edit_id != "",
