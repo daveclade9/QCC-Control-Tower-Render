@@ -210,6 +210,45 @@ def test_historical_yield_save_displays_database_error() -> None:
     )
 
 
+def test_saved_yields_feed_historical_harvest_table_without_double_counting() -> None:
+    state = DashboardState(_reflex_internal_init=True)
+    state._cultivation_registry = {
+        "programs": [], "rooms": default_room_rows(), "benches": [],
+        "schedule": [], "voided_historical_yields": [],
+        "historical_yield_revisions": [],
+        "historical_yields": [
+            {
+                "harvest_id": "strain-1", "crop": "F4.8",
+                "room": "Flower Room 4", "strain": "Diamond Bar",
+                "record_scope": "Strain Detail", "harvest_date": "2026-08-10",
+                "planted_canopy_sqft": 200, "dry_flower_lbs": 40,
+            },
+            {
+                "harvest_id": "strain-2", "crop": "F4.8",
+                "room": "Flower Room 4", "strain": "J1",
+                "record_scope": "Strain Detail", "harvest_date": "2026-08-10",
+                "planted_canopy_sqft": 200, "dry_flower_lbs": 45,
+            },
+            {
+                "harvest_id": "room-total", "crop": "F4.8",
+                "room": "Flower Room 4", "strain": "",
+                "record_scope": "Room Total", "harvest_date": "2026-08-10",
+                "planted_canopy_sqft": 1250, "dry_flower_lbs": 90,
+            },
+        ],
+    }
+    state.cultivation_registry_loaded = True
+    state.cultivation_registry_revision += 1
+
+    row = next(
+        row for row in state.cultivation_history_harvest_table_data
+        if row[0] == "F4.8"
+    )
+
+    assert row[5] == 90
+    assert row[3] == 1250
+
+
 class HistoricalYieldRegistryTests(unittest.TestCase):
     def test_editor_label_hides_technical_record_id(self):
         test_historical_yield_editor_label_hides_technical_record_id()
@@ -228,6 +267,9 @@ class HistoricalYieldRegistryTests(unittest.TestCase):
 
     def test_save_error_feedback(self):
         test_historical_yield_save_displays_database_error()
+
+    def test_saved_yields_feed_historical_table_once(self):
+        test_saved_yields_feed_historical_harvest_table_without_double_counting()
 
 
 def test_combined_cycle_table_uses_workbook_class_pounds() -> None:
