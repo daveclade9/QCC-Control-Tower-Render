@@ -165,9 +165,6 @@ def test_crop_name_selects_its_flower_room_and_manual_room_selection_persists() 
 
 def test_historical_yield_save_reports_success_and_surfaces_saved_record() -> None:
     state = DashboardState(_reflex_internal_init=True)
-    state.cultivation_yield_crop = "F4.8"
-    state.cultivation_yield_room = "Flower Room 4"
-    state.cultivation_yield_harvest_date = "2026-08-01"
     saved = {
         "harvest_id": "QCC-HY-TEST", "crop": "F4.8",
         "room": "Flower Room 4", "strain": "Diamond Bar",
@@ -183,15 +180,20 @@ def test_historical_yield_save_reports_success_and_surfaces_saved_record() -> No
     with patch(
         "qcc_reflex_pilot.qcc_reflex_pilot.save_historical_yield",
         return_value="QCC-HY-TEST",
-    ), patch(
+    ) as save_mock, patch(
         "qcc_reflex_pilot.qcc_reflex_pilot.load_registry",
         return_value=payload,
     ):
-        list(state.save_historical_yield_editor())
+        list(state.save_historical_yield_editor({
+            "crop": "F4.8", "room": "Flower Room 4",
+            "record_scope": "Strain Detail", "strain": "Diamond Bar",
+            "harvest_date": "2026-08-01", "dry_flower_lbs": "40",
+        }))
 
     assert state.cultivation_yield_error == ""
     assert "Saved F4.8 historical yield" in state.cultivation_yield_message
     assert state.cultivation_historical_manage_rows[0]["record_id"] == "QCC-HY-TEST"
+    assert save_mock.call_args.args[0]["harvest_date"] == "2026-08-01"
 
 
 def test_historical_yield_save_displays_database_error() -> None:
@@ -200,7 +202,7 @@ def test_historical_yield_save_displays_database_error() -> None:
         "qcc_reflex_pilot.qcc_reflex_pilot.save_historical_yield",
         side_effect=ValueError("Matching record already exists."),
     ):
-        list(state.save_historical_yield_editor())
+        list(state.save_historical_yield_editor({}))
 
     assert state.cultivation_yield_message == ""
     assert state.cultivation_yield_error == (

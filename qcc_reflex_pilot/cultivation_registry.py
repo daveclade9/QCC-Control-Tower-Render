@@ -711,8 +711,13 @@ def save_historical_yield(record: dict[str, Any], updated_by: str) -> str:
     crop = str(record.get("crop", "")).strip()
     room = str(record.get("room", "")).strip()
     harvest_date = str(record.get("harvest_date", "")).strip()
-    if not crop or not room or not harvest_date:
-        raise ValueError("Crop, room, and harvest date are required.")
+    missing = [
+        label for label, value in (
+            ("Crop", crop), ("Room", room), ("Harvest Date", harvest_date)
+        ) if not value
+    ]
+    if missing:
+        raise ValueError("Missing required field(s): " + ", ".join(missing) + ".")
     scope = str(record.get("record_scope", "") or "").strip()
     strain = " ".join(str(record.get("strain", "")).split())
     if scope not in {"Room Total", "Strain Detail"}:

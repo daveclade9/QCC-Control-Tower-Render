@@ -187,7 +187,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.61-staging"
+PILOT_VERSION = "0.9.6.62-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -7171,9 +7171,27 @@ class DashboardState(rx.State):
         self.cultivation_yield_void_reason = value
 
     @rx.event
-    def save_historical_yield_editor(self):
+    def save_historical_yield_editor(self, form_data: dict[str, Any]):
         if self.cultivation_yield_saving:
             return
+        form_data = dict(form_data or {})
+        self.cultivation_yield_crop = str(
+            form_data.get("crop", self.cultivation_yield_crop) or ""
+        ).strip()
+        self.cultivation_yield_room = str(
+            form_data.get("room", self.cultivation_yield_room) or ""
+        ).strip()
+        self.cultivation_yield_scope = str(
+            form_data.get("record_scope", self.cultivation_yield_scope)
+            or "Strain Detail"
+        )
+        self.cultivation_yield_strain = str(
+            form_data.get("strain", self.cultivation_yield_strain) or ""
+        ).strip()
+        self.cultivation_yield_harvest_date = str(
+            form_data.get("harvest_date", self.cultivation_yield_harvest_date)
+            or ""
+        ).strip()
         self.cultivation_yield_saving = True
         self.cultivation_yield_message = ""
         self.cultivation_yield_error = ""
@@ -7189,16 +7207,20 @@ class DashboardState(rx.State):
                 "room": self.cultivation_yield_room, "record_scope": self.cultivation_yield_scope,
                 "strain": self.cultivation_yield_strain,
                 "harvest_date": self.cultivation_yield_harvest_date,
-                "physical_canopy_sqft": self.cultivation_yield_physical_canopy,
-                "planted_canopy_sqft": self.cultivation_yield_planted_canopy,
-                "planted_plants": self.cultivation_yield_planted_plants,
-                "planned_ff_plants": self.cultivation_yield_planned_ff_plants,
-                "actual_ff_plants": self.cultivation_yield_actual_ff_plants,
-                "actual_ff_canopy_sqft": self.cultivation_yield_actual_ff_canopy,
-                "wet_yield_lbs": self.cultivation_yield_wet_lbs, "dry_flower_lbs": self.cultivation_yield_dry_lbs,
-                "ab_flower_lbs": self.cultivation_yield_ab_lbs, "c_flower_lbs": self.cultivation_yield_c_lbs,
-                "trim_lbs": self.cultivation_yield_trim_lbs, "quality_score": self.cultivation_yield_quality,
-                "data_source": "Manual", "notes": self.cultivation_yield_notes,
+                "physical_canopy_sqft": form_data.get("physical_canopy_sqft", self.cultivation_yield_physical_canopy),
+                "planted_canopy_sqft": form_data.get("planted_canopy_sqft", self.cultivation_yield_planted_canopy),
+                "planted_plants": form_data.get("planted_plants", self.cultivation_yield_planted_plants),
+                "planned_ff_plants": form_data.get("planned_ff_plants", self.cultivation_yield_planned_ff_plants),
+                "actual_ff_plants": form_data.get("actual_ff_plants", self.cultivation_yield_actual_ff_plants),
+                "actual_ff_canopy_sqft": form_data.get("actual_ff_canopy_sqft", self.cultivation_yield_actual_ff_canopy),
+                "wet_yield_lbs": form_data.get("wet_yield_lbs", self.cultivation_yield_wet_lbs),
+                "dry_flower_lbs": form_data.get("dry_flower_lbs", self.cultivation_yield_dry_lbs),
+                "ab_flower_lbs": form_data.get("ab_flower_lbs", self.cultivation_yield_ab_lbs),
+                "c_flower_lbs": form_data.get("c_flower_lbs", self.cultivation_yield_c_lbs),
+                "trim_lbs": form_data.get("trim_lbs", self.cultivation_yield_trim_lbs),
+                "quality_score": form_data.get("quality_score", self.cultivation_yield_quality),
+                "data_source": "Manual",
+                "notes": form_data.get("notes", self.cultivation_yield_notes),
             }, self.auth_name or self.auth_email or "QCC Reflex User")
             self.cultivation_yield_edit_id = harvest_id
             self._cultivation_registry = load_registry(); self.cultivation_registry_revision += 1
@@ -22116,44 +22138,47 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
                 color_scheme="teal",
                 width="100%",
             ),
-            rx.grid(
-                cultivation_registry_field("Crop", DashboardState.cultivation_yield_crop, DashboardState.change_cultivation_yield_crop, placeholder="F5.10"),
-                rx.box(rx.text("Room", size="1", weight="bold", color=MUTED), rx.select(DashboardState.cultivation_registry_room_options, value=DashboardState.cultivation_yield_room, on_change=DashboardState.change_cultivation_yield_room, width="100%"), width="100%"),
+            rx.form(
+              rx.vstack(
+                rx.grid(
+                cultivation_registry_field("Crop", DashboardState.cultivation_yield_crop, DashboardState.change_cultivation_yield_crop, name="crop", placeholder="F5.10"),
+                rx.box(rx.text("Room", size="1", weight="bold", color=MUTED), rx.select(DashboardState.cultivation_registry_room_options, value=DashboardState.cultivation_yield_room, on_change=DashboardState.change_cultivation_yield_room, name="room", width="100%"), width="100%"),
                 rx.box(
                     rx.text("Record Scope", size="1", weight="bold", color=MUTED),
                     rx.select(
                         ["Strain Detail", "Room Total"],
                         value=DashboardState.cultivation_yield_scope,
                         on_change=DashboardState.change_cultivation_yield_scope,
+                        name="record_scope",
                         width="100%",
                     ),
                     width="100%",
                 ),
                 rx.cond(
                     DashboardState.cultivation_yield_scope == "Strain Detail",
-                    cultivation_registry_field("Strain", DashboardState.cultivation_yield_strain, DashboardState.set_cultivation_yield_strain, placeholder="Diamond Bar"),
+                    cultivation_registry_field("Strain", DashboardState.cultivation_yield_strain, DashboardState.set_cultivation_yield_strain, name="strain", placeholder="Diamond Bar"),
                     rx.box(
                         rx.text("Strain", size="1", weight="bold", color=MUTED),
                         rx.input(value="Room total — no strain", disabled=True, width="100%"),
                         width="100%",
                     ),
                 ),
-                cultivation_registry_field("Harvest date", DashboardState.cultivation_yield_harvest_date, DashboardState.set_cultivation_yield_harvest_date, input_type="date"),
-                cultivation_registry_field("Physical canopy sqft", DashboardState.cultivation_yield_physical_canopy, DashboardState.set_cultivation_yield_physical_canopy, input_type="number"),
-                cultivation_registry_field("Planted canopy sqft", DashboardState.cultivation_yield_planted_canopy, DashboardState.set_cultivation_yield_planted_canopy, input_type="number"),
-                cultivation_registry_field("Planted plants", DashboardState.cultivation_yield_planted_plants, DashboardState.set_cultivation_yield_planted_plants, input_type="number", step="1"),
-                cultivation_registry_field("Planned FF plants", DashboardState.cultivation_yield_planned_ff_plants, DashboardState.set_cultivation_yield_planned_ff_plants, input_type="number", step="1"),
-                cultivation_registry_field("Actual FF plants", DashboardState.cultivation_yield_actual_ff_plants, DashboardState.set_cultivation_yield_actual_ff_plants, input_type="number", step="1"),
-                cultivation_registry_field("Actual FF canopy sqft", DashboardState.cultivation_yield_actual_ff_canopy, DashboardState.set_cultivation_yield_actual_ff_canopy, input_type="number"),
-                cultivation_registry_field("Wet yield lb", DashboardState.cultivation_yield_wet_lbs, DashboardState.set_cultivation_yield_wet_lbs, input_type="number"),
-                cultivation_registry_field("Dry flower lb", DashboardState.cultivation_yield_dry_lbs, DashboardState.set_cultivation_yield_dry_lbs, input_type="number"),
-                cultivation_registry_field("AB flower lb", DashboardState.cultivation_yield_ab_lbs, DashboardState.set_cultivation_yield_ab_lbs, input_type="number"),
-                cultivation_registry_field("C flower lb", DashboardState.cultivation_yield_c_lbs, DashboardState.set_cultivation_yield_c_lbs, input_type="number"),
-                cultivation_registry_field("Trim lb", DashboardState.cultivation_yield_trim_lbs, DashboardState.set_cultivation_yield_trim_lbs, input_type="number"),
-                cultivation_registry_field("Quality score", DashboardState.cultivation_yield_quality, DashboardState.set_cultivation_yield_quality, input_type="number"),
+                cultivation_registry_field("Harvest date", DashboardState.cultivation_yield_harvest_date, DashboardState.set_cultivation_yield_harvest_date, name="harvest_date", input_type="date"),
+                cultivation_registry_field("Physical canopy sqft", DashboardState.cultivation_yield_physical_canopy, DashboardState.set_cultivation_yield_physical_canopy, name="physical_canopy_sqft", input_type="number"),
+                cultivation_registry_field("Planted canopy sqft", DashboardState.cultivation_yield_planted_canopy, DashboardState.set_cultivation_yield_planted_canopy, name="planted_canopy_sqft", input_type="number"),
+                cultivation_registry_field("Planted plants", DashboardState.cultivation_yield_planted_plants, DashboardState.set_cultivation_yield_planted_plants, name="planted_plants", input_type="number", step="1"),
+                cultivation_registry_field("Planned FF plants", DashboardState.cultivation_yield_planned_ff_plants, DashboardState.set_cultivation_yield_planned_ff_plants, name="planned_ff_plants", input_type="number", step="1"),
+                cultivation_registry_field("Actual FF plants", DashboardState.cultivation_yield_actual_ff_plants, DashboardState.set_cultivation_yield_actual_ff_plants, name="actual_ff_plants", input_type="number", step="1"),
+                cultivation_registry_field("Actual FF canopy sqft", DashboardState.cultivation_yield_actual_ff_canopy, DashboardState.set_cultivation_yield_actual_ff_canopy, name="actual_ff_canopy_sqft", input_type="number"),
+                cultivation_registry_field("Wet yield lb", DashboardState.cultivation_yield_wet_lbs, DashboardState.set_cultivation_yield_wet_lbs, name="wet_yield_lbs", input_type="number"),
+                cultivation_registry_field("Dry flower lb", DashboardState.cultivation_yield_dry_lbs, DashboardState.set_cultivation_yield_dry_lbs, name="dry_flower_lbs", input_type="number"),
+                cultivation_registry_field("AB flower lb", DashboardState.cultivation_yield_ab_lbs, DashboardState.set_cultivation_yield_ab_lbs, name="ab_flower_lbs", input_type="number"),
+                cultivation_registry_field("C flower lb", DashboardState.cultivation_yield_c_lbs, DashboardState.set_cultivation_yield_c_lbs, name="c_flower_lbs", input_type="number"),
+                cultivation_registry_field("Trim lb", DashboardState.cultivation_yield_trim_lbs, DashboardState.set_cultivation_yield_trim_lbs, name="trim_lbs", input_type="number"),
+                cultivation_registry_field("Quality score", DashboardState.cultivation_yield_quality, DashboardState.set_cultivation_yield_quality, name="quality_score", input_type="number"),
                 columns=rx.breakpoints(initial="1", md="3", xl="5"), gap="3", width="100%",
             ),
-            cultivation_registry_field("Notes", DashboardState.cultivation_yield_notes, DashboardState.set_cultivation_yield_notes),
+            cultivation_registry_field("Notes", DashboardState.cultivation_yield_notes, DashboardState.set_cultivation_yield_notes, name="notes"),
             rx.cond(
                 DashboardState.cultivation_yield_entry_warning != "",
                 rx.callout(
@@ -22197,7 +22222,7 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
                         "Save Changes",
                         "Save Historical Yield",
                     ),
-                    on_click=DashboardState.save_historical_yield_editor,
+                    type="submit",
                     background=ACCENT,
                     color="white",
                     loading=DashboardState.cultivation_yield_saving,
@@ -22208,12 +22233,20 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
                     rx.button(
                         "Cancel Edit",
                         on_click=DashboardState.clear_historical_yield_editor,
+                        type="button",
                         variant="outline",
                     ),
                 ),
                 gap="3",
                 wrap="wrap",
                 width="100%",
+            ),
+              width="100%",
+              spacing="3",
+              ),
+              on_submit=DashboardState.save_historical_yield_editor,
+              reset_on_submit=False,
+              width="100%",
             ),
             rx.cond(
                 DashboardState.cultivation_yield_edit_id != "",
