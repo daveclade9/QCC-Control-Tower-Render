@@ -468,6 +468,68 @@ def exact_bench_allocations(
     }
 
 
+def proposed_bench_plans_from_allocations(
+    bench_plans: list[dict[str, Any]],
+    allocations: dict[str, Any],
+) -> list[BenchPlan]:
+    """Place a rolling plan into physical benches as an editable proposal.
+
+    Rolling plans store bench equivalents by strain, while the Room Bench Map
+    stores percentages of each registered physical bench.  This translation is
+    used only when an approved plan has no finalized bench map of its own.
+    Existing saved bench assignments therefore remain authoritative.
+    """
+    pending = [
+        [" ".join(str(strain).strip().split()), max(0.0, float(value or 0)) * 185.0]
+        for strain, value in allocations.items()
+        if str(strain).strip() and float(value or 0) > 0
+    ]
+    pending_index = 0
+    proposed: list[BenchPlan] = []
+    tolerance = 0.01
+
+    for source in bench_plans:
+        bench = dict(source)
+        capacity = max(0.0, float(bench.get("square_feet", 0) or 0))
+        remaining_capacity = capacity
+        slots: list[tuple[str, float]] = []
+
+        # Keep one slot available for unassigned canopy on partially filled
+        # benches.  That makes the proposal honest and keeps all fields editable.
+        while (
+            capacity > 0
+            and remaining_capacity > tolerance
+            and pending_index < len(pending)
+            and len(slots) < 2
+        ):
+            strain, remaining_square_feet = pending[pending_index]
+            used_square_feet = min(remaining_capacity, remaining_square_feet)
+            slots.append((str(strain), used_square_feet / capacity * 100.0))
+            remaining_capacity -= used_square_feet
+            pending[pending_index][1] = remaining_square_feet - used_square_feet
+            if pending[pending_index][1] <= tolerance:
+                pending_index += 1
+
+        if remaining_capacity > tolerance and slots:
+            slots.append(("", remaining_capacity / capacity * 100.0))
+
+        if not slots:
+            slots = [("", 100.0)]
+
+        bench["strain_count"] = len(slots)
+        for slot_index in range(1, 4):
+            if slot_index <= len(slots):
+                strain, percent = slots[slot_index - 1]
+                bench[f"strain_{slot_index}"] = strain
+                bench[f"percent_{slot_index}"] = round(percent, 2)
+            else:
+                bench[f"strain_{slot_index}"] = ""
+                bench[f"percent_{slot_index}"] = 0.0
+        proposed.append(bench)  # type: ignore[arg-type]
+
+    return proposed
+
+
 def estimated_yield_g_per_sqft(strain: str, room: str) -> float:
     """Blend cultivar history (70%) with the selected room history (30%)."""
     provisional_rate = PROVISIONAL_STRAIN_YIELD_G_PER_SQFT.get(

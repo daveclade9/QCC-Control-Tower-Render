@@ -16,6 +16,7 @@ from qcc_reflex_pilot.cultivation import (
     estimated_yield_pounds,
     inventory_counts_as_current_cultivation_supply,
     normalized_strain,
+    proposed_bench_plans_from_allocations,
     projected_harvest_dates,
     projected_risk,
     forecast_two_week_balances,
@@ -114,6 +115,39 @@ def test_exact_room_map_replaces_planning_values_with_physical_benches():
     allocations = exact_bench_allocations(benches)
 
     assert allocations == {"Diamond Bar": 1.6, "J1": 0.4}
+
+
+def test_approved_plan_totals_prefill_an_editable_physical_room_map():
+    proposed = proposed_bench_plans_from_allocations(
+        room_bench_plans("Flower Room 5"),
+        {"Diamond Bar": 1.0, "Fig Bar": 0.5, "Hood Candy": 0.5},
+    )
+
+    assert proposed[0]["strain_1"] == "Diamond Bar"
+    assert proposed[0]["percent_1"] == 100.0
+    assert proposed[1]["strain_count"] == 2
+    assert proposed[1]["strain_1"] == "Fig Bar"
+    assert proposed[1]["percent_1"] == 50.0
+    assert proposed[1]["strain_2"] == "Hood Candy"
+    assert proposed[1]["percent_2"] == 50.0
+    assert exact_bench_allocations(proposed) == {
+        "Diamond Bar": 1.0,
+        "Fig Bar": 0.5,
+        "Hood Candy": 0.5,
+    }
+
+
+def test_unfilled_proposed_canopy_remains_visible_and_unassigned():
+    proposed = proposed_bench_plans_from_allocations(
+        room_bench_plans("Flower Room 5"), {"J1": 0.25}
+    )
+
+    assert proposed[0]["strain_count"] == 2
+    assert proposed[0]["strain_1"] == "J1"
+    assert proposed[0]["percent_1"] == 25.0
+    assert proposed[0]["strain_2"] == ""
+    assert proposed[0]["percent_2"] == 75.0
+    assert exact_bench_allocations(proposed) == {"J1": 0.25}
 
 
 def test_yield_estimate_blends_strain_and_room_history():

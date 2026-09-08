@@ -117,6 +117,7 @@ from .cultivation import (
     estimated_yield_pounds,
     inventory_counts_as_current_cultivation_supply,
     normalized_strain,
+    proposed_bench_plans_from_allocations,
     projected_harvest_dates,
     projected_risk,
     scheduled_supply_reconciliation,
@@ -187,7 +188,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.64-staging"
+PILOT_VERSION = "0.9.6.65-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -8265,8 +8266,11 @@ class DashboardState(rx.State):
         self.cultivation_flower_room = period["room"]
         self.cultivation_cycle_name = period["crop"]
         self.cultivation_flower_entry_date = period["flower_entry_date"]
-        self.cultivation_bench_plans = self._registered_room_bench_plans(
-            period["room"], self.cultivation_plant_density
+        self.cultivation_bench_plans = proposed_bench_plans_from_allocations(
+            self._registered_room_bench_plans(
+                period["room"], self.cultivation_plant_density
+            ),
+            self.cultivation_clone_plan_allocations,
         )
         self.cultivation_view = "clone_allocation"
         self.cultivation_error = ""
@@ -8423,14 +8427,17 @@ class DashboardState(rx.State):
                 restored.append(merged)  # type: ignore[arg-type]
             self.cultivation_bench_plans = restored
         else:
-            self.cultivation_bench_plans = list(defaults.values())  # type: ignore[assignment]
+            self.cultivation_bench_plans = proposed_bench_plans_from_allocations(
+                list(defaults.values()), self.cultivation_clone_plan_allocations
+            )
         self.cultivation_layout_editing = False
         self.cultivation_error = ""
         self.cultivation_message = (
             f"{self.cultivation_cycle_name}'s saved room bench map is loaded and ready to print."
             if stored_benches
             else f"Approved plan {self.cultivation_cycle_name} is loaded. "
-            "Assign its strains to the exact physical benches, then print and save it."
+            "A proposed room map was filled from its strain totals. Review or adjust "
+            "the exact physical benches, then print and save it."
         )
 
     @rx.event
