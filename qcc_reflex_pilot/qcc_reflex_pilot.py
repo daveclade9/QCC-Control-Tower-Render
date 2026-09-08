@@ -188,7 +188,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.65-staging"
+PILOT_VERSION = "0.9.6.66-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -499,6 +499,7 @@ ClonePlanMatrixValue = TypedDict(
         "editable_allocation": bool,
         "historical_allocation": bool,
         "historical_editable": bool,
+        "editable_demand_assumption": bool,
         "crop": str,
         "scheduled_details": list[ScheduledSupplyDetail],
     },
@@ -844,6 +845,7 @@ class DashboardState(rx.State):
     cultivation_clone_plan_product_scope: str = "Flower + Pre-Rolls"
     cultivation_clone_plan_include_pre_wip: bool = False
     cultivation_clone_plan_demand_revision: int = 0
+    cultivation_clone_plan_demand_assumptions: dict[str, float] = {}
     cultivation_clone_plan_allocations: dict[str, float] = {}
     cultivation_clone_plan_entry_version: int = 0
     cultivation_clone_plan_status: str = "Draft"
@@ -7867,6 +7869,31 @@ class DashboardState(rx.State):
         self.cultivation_clone_plan_dirty = True
 
     @rx.event
+    def change_cultivation_clone_plan_demand_assumption(
+        self, strain: str, value: str
+    ):
+        """Set two-week pounds only when a strain has no calculated demand."""
+        self.cultivation_clone_plan_error = ""
+        try:
+            pounds = round(max(0.0, float(value or 0)), 1)
+        except (TypeError, ValueError):
+            self.cultivation_clone_plan_error = (
+                "The two-week demand assumption must be a non-negative pound value."
+            )
+            return
+        updated = {
+            label: float(amount or 0)
+            for label, amount in self.cultivation_clone_plan_demand_assumptions.items()
+            if normalized_strain(label) != normalized_strain(strain)
+        }
+        if pounds > 0:
+            updated[strain] = pounds
+        self.cultivation_clone_plan_demand_assumptions = updated
+        self.cultivation_clone_plan_demand_revision += 1
+        self.cultivation_clone_plan_status = "Draft"
+        self.cultivation_clone_plan_dirty = True
+
+    @rx.event
     def change_cultivation_clone_plan_override_reason(self, value: str):
         self.cultivation_clone_plan_override_reason = value
 
@@ -7884,10 +7911,12 @@ class DashboardState(rx.State):
             float(value or 0)
             for value in self.cultivation_clone_plan_allocations.values()
         )
-        if planned > available + 0.05:
+        planning_capacity = float(math.ceil(max(0.0, available - 0.001)))
+        if planned > planning_capacity + 0.05:
             return (
-                f"{period['crop']} has {available:.1f} full-bench equivalents in "
-                f"{period['room']}; the plan currently assigns {planned:.1f}."
+                f"{period['crop']} has {available:.1f} measured bench equivalents "
+                f"({planning_capacity:.0f} planning benches) in {period['room']}; "
+                f"the plan currently assigns {planned:.1f}."
             )
         return ""
 
@@ -7927,6 +7956,11 @@ class DashboardState(rx.State):
         self.cultivation_clone_plan_allocations = {
             str(strain): float(value or 0)
             for strain, value in dict(plan.get("allocations") or {}).items()
+            if float(value or 0) > 0
+        }
+        self.cultivation_clone_plan_demand_assumptions = {
+            str(strain): max(0.0, float(value or 0))
+            for strain, value in dict(plan.get("demand_assumptions") or {}).items()
             if float(value or 0) > 0
         }
         self.cultivation_clone_plan_demand_model = self._normalized_clone_demand_model(
@@ -8216,6 +8250,7 @@ class DashboardState(rx.State):
             clone_cut_date=period["clone_cut_date"],
             demand_model=self.cultivation_clone_plan_demand_model,
             demand_product_scope=self.cultivation_clone_plan_product_scope,
+            demand_assumptions=dict(self.cultivation_clone_plan_demand_assumptions),
             status=status,
             allocations=dict(self.cultivation_clone_plan_allocations),
             bench_assignments=[],
@@ -8332,6 +8367,11 @@ class DashboardState(rx.State):
             for strain, value in dict(plan.get("allocations") or {}).items()
             if float(value or 0) > 0
         }
+        self.cultivation_clone_plan_demand_assumptions = {
+            str(strain): max(0.0, float(value or 0))
+            for strain, value in dict(plan.get("demand_assumptions") or {}).items()
+            if float(value or 0) > 0
+        }
         self.cultivation_clone_plan_demand_model = self._normalized_clone_demand_model(
             plan.get("demand_model", "Availability-Adjusted")
         )
@@ -8366,6 +8406,11 @@ class DashboardState(rx.State):
         self.cultivation_clone_plan_allocations = {
             str(strain): float(value or 0)
             for strain, value in dict(plan.get("allocations") or {}).items()
+            if float(value or 0) > 0
+        }
+        self.cultivation_clone_plan_demand_assumptions = {
+            str(strain): max(0.0, float(value or 0))
+            for strain, value in dict(plan.get("demand_assumptions") or {}).items()
             if float(value or 0) > 0
         }
         self.cultivation_clone_plan_demand_model = self._normalized_clone_demand_model(
@@ -8478,6 +8523,7 @@ class DashboardState(rx.State):
                 clone_cut_date=self.cultivation_cut_date,
                 demand_model=self.cultivation_clone_plan_demand_model,
                 demand_product_scope=self.cultivation_clone_plan_product_scope,
+                demand_assumptions=dict(self.cultivation_clone_plan_demand_assumptions),
                 status="Approved",
                 allocations=allocations,
                 bench_assignments=saved_benches,
@@ -8992,6 +9038,7 @@ class DashboardState(rx.State):
         periods: list[dict[str, Any]],
         demand_model: str | None = None,
         product_scope: str | None = None,
+        include_assumptions: bool = True,
     ) -> dict[str, list[float]]:
         """Return period-specific demand while preserving legacy flat models."""
         selected_model = demand_model or self.cultivation_clone_plan_demand_model
@@ -9008,18 +9055,31 @@ class DashboardState(rx.State):
                 ),
                 product_scope=selected_scope,
             )
-            if forecast:
-                return forecast
-        weekly = self._clone_plan_weekly_demand_by_strain(
-            selected_model, selected_scope
-        )
-        return {
-            strain: [
-                0.0 if bool(period.get("is_historical", False)) else 2.0 * value
-                for period in periods
-            ]
-            for strain, value in weekly.items()
-        }
+            result = forecast
+        else:
+            result = {}
+        if not result:
+            weekly = self._clone_plan_weekly_demand_by_strain(
+                selected_model, selected_scope
+            )
+            result = {
+                strain: [
+                    0.0 if bool(period.get("is_historical", False)) else 2.0 * value
+                    for period in periods
+                ]
+                for strain, value in weekly.items()
+            }
+        if include_assumptions:
+            for strain, pounds in self.cultivation_clone_plan_demand_assumptions.items():
+                key = normalized_strain(strain)
+                calculated = result.get(key, [])
+                if key and not any(float(value or 0) > 0 for value in calculated):
+                    result[key] = [
+                        0.0 if bool(period.get("is_historical", False))
+                        else max(0.0, float(pounds or 0))
+                        for period in periods
+                    ]
+        return result
 
     def _clone_plan_actual_crop_lbs(self) -> dict[tuple[str, str], float]:
         totals: dict[tuple[str, str], float] = {}
@@ -9348,6 +9408,7 @@ class DashboardState(rx.State):
         _ = self.cultivation_clone_plan_demand_model
         _ = self.cultivation_clone_plan_product_scope
         _ = self.cultivation_clone_plan_include_pre_wip
+        _ = self.cultivation_clone_plan_demand_assumptions
         _ = self.velocity
         _ = self.velocity_windows
         _ = self.availability_adjusted_velocity_windows
@@ -9358,6 +9419,9 @@ class DashboardState(rx.State):
             key: float(values.get("total_lbs", 0) or 0)
             for key, values in current_breakdown.items()
         }
+        calculated_two_week_demand = self._clone_plan_two_week_demand_by_strain(
+            periods, include_assumptions=False
+        )
         two_week_demand = self._clone_plan_two_week_demand_by_strain(periods)
         scheduled, scheduled_details = self._clone_plan_scheduled_by_period(periods)
         historical_allocations = self._clone_plan_allocations_by_crop()
@@ -9387,6 +9451,7 @@ class DashboardState(rx.State):
             editable_allocation: bool = False,
             historical_allocation: bool = False,
             historical_editable: bool = False,
+            editable_demand_assumption: bool = False,
             crop: str = "",
             details: list[ScheduledSupplyDetail] | None = None,
         ) -> dict[str, Any]:
@@ -9405,12 +9470,17 @@ class DashboardState(rx.State):
                 "editable_allocation": editable_allocation,
                 "historical_allocation": historical_allocation,
                 "historical_editable": historical_editable,
+                "editable_demand_assumption": editable_demand_assumption,
                 "crop": crop,
                 "scheduled_details": list(details or []),
             }
 
         for strain in strains:
             key = normalized_strain(strain)
+            has_calculated_demand = any(
+                float(value or 0) > 0
+                for value in calculated_two_week_demand.get(key, [])
+            )
             breakdown = current_breakdown.get(key, {})
             demand_values = list(
                 two_week_demand.get(key, [0.0] * len(periods))
@@ -9574,6 +9644,10 @@ class DashboardState(rx.State):
                         matrix_value(
                             round(demand_values[index], 1),
                             available=not bool(period.get("is_historical", False)),
+                            editable_demand_assumption=(
+                                bool(period.get("is_current", False))
+                                and not has_calculated_demand
+                            ),
                         )
                         for index, period in enumerate(periods)
                     ],
@@ -20515,6 +20589,25 @@ def cultivation_clone_plan_value_cell(
             rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
         ),
     )
+    demand_assumption_content = rx.input(
+        type="number",
+        min="0",
+        step="0.1",
+        default_value=value.to_string(),
+        key=(
+            "demand-"
+            + DashboardState.cultivation_clone_plan_demand_revision.to_string()
+            + "-" + strain.to_string()
+        ),
+        on_blur=lambda input_value: DashboardState.change_cultivation_clone_plan_demand_assumption(
+            strain, input_value
+        ),
+        disabled=~DashboardState.cultivation_clone_plan_editable,
+        width="100%",
+        size="1",
+        text_align="center",
+        color_scheme="purple",
+    )
     value_content = rx.cond(
         ~cell["available"],
         rx.text("—", color="#9ca3af"),
@@ -20522,9 +20615,15 @@ def cultivation_clone_plan_value_cell(
             metric == "Clone Allocation",
             allocation_content,
             rx.cond(
-                (metric == "Scheduled") & (cell["scheduled_details"].length() > 0),
-                scheduled_content,
-                current_breakdown_content,
+                (metric == "Two-Week Demand")
+                & cell["editable_demand_assumption"],
+                demand_assumption_content,
+                rx.cond(
+                    (metric == "Scheduled")
+                    & (cell["scheduled_details"].length() > 0),
+                    scheduled_content,
+                    current_breakdown_content,
+                ),
             ),
         ),
     )
@@ -20556,12 +20655,20 @@ def cultivation_clone_plan_value_cell(
             ),
         ),
         outline=rx.cond(
-            cell["editable_allocation"] | cell["historical_editable"] | cell["highlight"],
+            cell["editable_allocation"]
+            | cell["historical_editable"]
+            | cell["editable_demand_assumption"]
+            | cell["highlight"],
             "3px solid #8b5cf6",
             "none",
         ),
         outline_offset=rx.cond(
-            cell["editable_allocation"] | cell["historical_editable"] | cell["highlight"], "-3px", "0"
+            cell["editable_allocation"]
+            | cell["historical_editable"]
+            | cell["editable_demand_assumption"]
+            | cell["highlight"],
+            "-3px",
+            "0",
         ),
         min_width="102px",
         white_space="nowrap",
@@ -20811,7 +20918,7 @@ def cultivation_new_strain_control() -> rx.Component:
                     align="center",
                 ),
                 rx.text(
-                    "Add a cultivar that has not harvested or shipped yet. It becomes available in both planning and exact bench assignment.",
+                    "Add a cultivar that has not harvested or shipped yet. It becomes available in planning and exact bench assignment; its purple Two-Week Demand cell remains editable until calculated velocity exists.",
                     size="1",
                     color=MUTED,
                 ),

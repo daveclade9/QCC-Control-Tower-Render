@@ -235,6 +235,47 @@ class CloneDemandModelTest(unittest.TestCase):
         expected_lbs = 5.0 * 3.5 / 453.59237
         self.assertAlmostEqual(demand["diamond bar"], expected_lbs)
 
+    def test_manual_two_week_demand_fills_only_a_missing_velocity(self):
+        periods = [
+            {"is_historical": False},
+            {"is_historical": False},
+        ]
+        self.state.cultivation_clone_plan_demand_assumptions = {
+            "New Strain": 6.5,
+            "Diamond Bar": 99.0,
+        }
+
+        demand = self.state._clone_plan_two_week_demand_by_strain(periods)
+
+        self.assertEqual(demand["new strain"], [6.5, 6.5])
+        self.assertNotEqual(demand["diamond bar"], [99.0, 99.0])
+
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
+    def test_preliminary_plan_capacity_rounds_measured_canopy_up(
+        self, current_schedule_mock
+    ):
+        current_schedule_mock.return_value = {
+            "crop": "F2.11",
+            "room": "Flower Room 2",
+            "clone_cut_date": "2026-09-25",
+            "flower_entry_date": "2026-11-04",
+            "harvest_date": "2027-01-11",
+            "available_date": "2027-02-10",
+            "source": "Generated",
+        }
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": [],
+            "historical_yields": [],
+        }
+        self.state.cultivation_clone_plan_allocations = {"Diamond Bar": 7.0}
+
+        self.assertEqual(self.state._clone_plan_capacity_error(), "")
+        self.state.cultivation_clone_plan_allocations = {"Diamond Bar": 7.1}
+        self.assertIn("7 planning benches", self.state._clone_plan_capacity_error())
+
     def test_cached_matrix_recalculates_when_demand_model_changes(self):
         self.state._cultivation_registry = {
             "programs": [default_cycle_program()],
@@ -391,6 +432,36 @@ class CloneDemandModelTest(unittest.TestCase):
         self.assertEqual(self.state.cultivation_clone_plan_error, "")
         self.assertIn("F1.11 Clone Allocation Plan", self.state.cultivation_clone_plan_message)
         self.assertEqual(save_mock.call_args.kwargs["crop"], "F1.11")
+
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.load_clone_plans")
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.save_clone_plan")
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
+    def test_approval_saves_manual_demand_assumptions(
+        self, current_schedule_mock, save_mock, load_mock
+    ):
+        period = next(row for row in default_schedule(26) if row["crop"] == "F1.11")
+        current_schedule_mock.return_value = period
+        save_mock.return_value = "QCC-CLONE-F1-11"
+        load_mock.return_value = []
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": default_schedule(26),
+            "historical_yields": [],
+        }
+        self.state.cultivation_clone_plan_allocations = {"New Strain": 1.0}
+        self.state.cultivation_clone_plan_demand_assumptions = {"New Strain": 4.5}
+        self.state.cultivation_clone_plan_override = True
+        self.state.cultivation_clone_plan_override_reason = "Demand assumption test"
+        self.state.auth_role = "Administrator"
+
+        list(self.state.approve_cultivation_clone_plan())
+
+        self.assertEqual(
+            save_mock.call_args.kwargs["demand_assumptions"],
+            {"New Strain": 4.5},
+        )
 
 
 if __name__ == "__main__":
