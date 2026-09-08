@@ -187,7 +187,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.58-staging"
+PILOT_VERSION = "0.9.6.59-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -22026,12 +22026,6 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
                     ),
                     gap="3", align="center",
                     ),
-                ),
-                rx.button(
-                    "New Yield Entry",
-                    on_click=DashboardState.clear_historical_yield_editor,
-                    variant="outline",
-                    color_scheme="teal",
                 ),
                 gap="3",
                 align="center",
