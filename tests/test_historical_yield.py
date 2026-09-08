@@ -127,6 +127,11 @@ def test_room_strain_performance_aggregates_only_matching_room_and_strain() -> N
             "harvest_date": "2026-09-01", "planted_canopy_sqft": 200,
             "dry_flower_lbs": 50,
         },
+        {
+            "room": "Flower Room 5", "strain": "",
+            "record_scope": "Room Total", "harvest_date": "2027-01-01",
+            "planted_canopy_sqft": 1400, "dry_flower_lbs": 250,
+        },
     ]
 
     rows = DashboardState._room_strain_performance_rows(

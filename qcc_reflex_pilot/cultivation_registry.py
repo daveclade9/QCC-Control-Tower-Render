@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 import json
 import re
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 try:
@@ -410,6 +411,34 @@ def _ensure_schema(cursor: Any) -> None:
             data_source TEXT NOT NULL DEFAULT 'Manual', notes TEXT NOT NULL DEFAULT '',
             updated_by TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)
     """)
+    cursor.execute("""
+        ALTER TABLE qcc_cultivation_historical_yields
+        ADD COLUMN IF NOT EXISTS record_scope TEXT NOT NULL DEFAULT 'Room Total',
+        ADD COLUMN IF NOT EXISTS is_void BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS void_reason TEXT NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ
+    """)
+    cursor.execute("""
+        UPDATE qcc_cultivation_historical_yields
+        SET record_scope=CASE WHEN trim(strain)='' THEN 'Room Total' ELSE 'Strain Detail' END,
+            created_by=CASE WHEN created_by='' THEN updated_by ELSE created_by END,
+            created_at=COALESCE(created_at, updated_at)
+        WHERE record_scope NOT IN ('Room Total','Strain Detail')
+           OR (record_scope='Room Total' AND trim(strain)<>'')
+           OR (record_scope='Strain Detail' AND trim(strain)='')
+           OR created_by='' OR created_at IS NULL
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS qcc_cultivation_historical_yield_revisions (
+            revision_id BIGSERIAL PRIMARY KEY,
+            harvest_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            record_snapshot JSONB NOT NULL,
+            changed_by TEXT NOT NULL,
+            changed_at TIMESTAMPTZ NOT NULL
+        )
+    """)
 
 
 def _fetch_dicts(cursor: Any) -> list[dict[str, Any]]:
@@ -425,6 +454,8 @@ def load_registry() -> dict[str, list[dict[str, Any]]]:
         "benches": default_bench_rows(),
         "schedule": default_schedule(),
         "historical_yields": [],
+        "voided_historical_yields": [],
+        "historical_yield_revisions": [],
     }
     if psycopg is None or not database_url():
         return fallback
@@ -467,8 +498,12 @@ def load_registry() -> dict[str, list[dict[str, Any]]]:
             benches = _fetch_dicts(cursor)
             cursor.execute("SELECT * FROM qcc_cultivation_schedule ORDER BY clone_cut_date,crop")
             schedule = _fetch_dicts(cursor)
-            cursor.execute("SELECT * FROM qcc_cultivation_historical_yields ORDER BY harvest_date DESC,crop,strain")
+            cursor.execute("SELECT * FROM qcc_cultivation_historical_yields WHERE is_void=FALSE ORDER BY harvest_date DESC,crop,strain")
             yields = _fetch_dicts(cursor)
+            cursor.execute("SELECT * FROM qcc_cultivation_historical_yields WHERE is_void=TRUE ORDER BY updated_at DESC")
+            voided_yields = _fetch_dicts(cursor)
+            cursor.execute("SELECT * FROM qcc_cultivation_historical_yield_revisions ORDER BY changed_at DESC LIMIT 200")
+            yield_revisions = _fetch_dicts(cursor)
     for program in programs:
         rotation = program.get("room_rotation") or []
         if isinstance(rotation, str):
@@ -481,11 +516,11 @@ def load_registry() -> dict[str, list[dict[str, Any]]]:
     for bench in benches:
         bench.update(calculate_bench_metrics(bench.get("length_ft"), bench.get("width_ft"), bench.get("default_density")))
         bench["total_supplemental_watts"] = calculate_lighting_total(bench.get("supplemental_rows"), bench.get("watts_per_row"), bench.get("supplemental_watts_override"))
-    for row in schedule + yields:
+    for row in schedule + yields + voided_yields + yield_revisions:
         for key, value in list(row.items()):
             if isinstance(value, (date, datetime)):
                 row[key] = value.isoformat()
-    return {"programs": programs, "rooms": rooms, "benches": benches, "schedule": schedule, "historical_yields": yields}
+    return {"programs": programs, "rooms": rooms, "benches": benches, "schedule": schedule, "historical_yields": yields, "voided_historical_yields": voided_yields, "historical_yield_revisions": yield_revisions}
 
 
 def save_cycle_program(record: dict[str, Any], updated_by: str) -> str:
@@ -678,14 +713,95 @@ def save_historical_yield(record: dict[str, Any], updated_by: str) -> str:
     harvest_date = str(record.get("harvest_date", "")).strip()
     if not crop or not room or not harvest_date:
         raise ValueError("Crop, room, and harvest date are required.")
+    scope = str(record.get("record_scope", "") or "").strip()
     strain = " ".join(str(record.get("strain", "")).split())
-    harvest_id = str(record.get("harvest_id") or "QCC-HY-" + re.sub(r"[^A-Za-z0-9]+", "-", f"{crop}-{strain or 'ROOM'}").strip("-").upper())
+    if scope not in {"Room Total", "Strain Detail"}:
+        scope = "Strain Detail" if strain else "Room Total"
+    if scope == "Room Total":
+        strain = ""
+    elif not strain:
+        raise ValueError("Select a strain for a Strain Detail record.")
+    harvest_id = str(record.get("harvest_id") or f"QCC-HY-{uuid4().hex[:12].upper()}")
     if psycopg is None or not database_url():
         raise RuntimeError("A live Supabase connection is required to save historical yields.")
     now = datetime.now().astimezone().isoformat()
     with psycopg.connect(database_url(), connect_timeout=15) as connection:
         with connection.cursor() as cursor:
             _ensure_schema(cursor)
-            cursor.execute("INSERT INTO qcc_cultivation_historical_yields (harvest_id,crop,room,strain,harvest_date,physical_canopy_sqft,planted_canopy_sqft,planted_plants,planned_ff_plants,actual_ff_plants,actual_ff_canopy_sqft,wet_yield_lbs,dry_flower_lbs,ab_flower_lbs,c_flower_lbs,trim_lbs,quality_score,data_source,notes,updated_by,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (harvest_id) DO UPDATE SET crop=EXCLUDED.crop,room=EXCLUDED.room,strain=EXCLUDED.strain,harvest_date=EXCLUDED.harvest_date,physical_canopy_sqft=EXCLUDED.physical_canopy_sqft,planted_canopy_sqft=EXCLUDED.planted_canopy_sqft,planted_plants=EXCLUDED.planted_plants,planned_ff_plants=EXCLUDED.planned_ff_plants,actual_ff_plants=EXCLUDED.actual_ff_plants,actual_ff_canopy_sqft=EXCLUDED.actual_ff_canopy_sqft,wet_yield_lbs=EXCLUDED.wet_yield_lbs,dry_flower_lbs=EXCLUDED.dry_flower_lbs,ab_flower_lbs=EXCLUDED.ab_flower_lbs,c_flower_lbs=EXCLUDED.c_flower_lbs,trim_lbs=EXCLUDED.trim_lbs,quality_score=EXCLUDED.quality_score,data_source=EXCLUDED.data_source,notes=EXCLUDED.notes,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at", (harvest_id,crop,room,strain,harvest_date,max(0,_number(record.get("physical_canopy_sqft"))),max(0,_number(record.get("planted_canopy_sqft"))),max(0,_integer(record.get("planted_plants"))),max(0,_integer(record.get("planned_ff_plants"))),max(0,_integer(record.get("actual_ff_plants"))),max(0,_number(record.get("actual_ff_canopy_sqft"))),max(0,_number(record.get("wet_yield_lbs"))),max(0,_number(record.get("dry_flower_lbs"))),max(0,_number(record.get("ab_flower_lbs"))),max(0,_number(record.get("c_flower_lbs"))),max(0,_number(record.get("trim_lbs"))),max(0,_number(record.get("quality_score"))),record.get("data_source","Manual"),record.get("notes",""),updated_by,now))
+            cursor.execute(
+                "SELECT harvest_id FROM qcc_cultivation_historical_yields "
+                "WHERE is_void=FALSE AND lower(crop)=lower(%s) AND lower(room)=lower(%s) "
+                "AND lower(strain)=lower(%s) AND harvest_date=%s AND harvest_id<>%s",
+                (crop, room, strain, harvest_date, harvest_id),
+            )
+            if cursor.fetchone():
+                raise ValueError(
+                    "A matching crop, room, strain scope, and harvest-date record already exists. Edit that record instead."
+                )
+            cursor.execute(
+                "INSERT INTO qcc_cultivation_historical_yield_revisions (harvest_id,action,record_snapshot,changed_by,changed_at) "
+                "SELECT harvest_id,'UPDATE',to_jsonb(h),%s,%s FROM qcc_cultivation_historical_yields h WHERE harvest_id=%s",
+                (updated_by, now, harvest_id),
+            )
+            cursor.execute("INSERT INTO qcc_cultivation_historical_yields (harvest_id,crop,room,strain,record_scope,harvest_date,physical_canopy_sqft,planted_canopy_sqft,planted_plants,planned_ff_plants,actual_ff_plants,actual_ff_canopy_sqft,wet_yield_lbs,dry_flower_lbs,ab_flower_lbs,c_flower_lbs,trim_lbs,quality_score,data_source,notes,is_void,void_reason,created_by,created_at,updated_by,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,FALSE,'',%s,%s,%s,%s) ON CONFLICT (harvest_id) DO UPDATE SET crop=EXCLUDED.crop,room=EXCLUDED.room,strain=EXCLUDED.strain,record_scope=EXCLUDED.record_scope,harvest_date=EXCLUDED.harvest_date,physical_canopy_sqft=EXCLUDED.physical_canopy_sqft,planted_canopy_sqft=EXCLUDED.planted_canopy_sqft,planted_plants=EXCLUDED.planted_plants,planned_ff_plants=EXCLUDED.planned_ff_plants,actual_ff_plants=EXCLUDED.actual_ff_plants,actual_ff_canopy_sqft=EXCLUDED.actual_ff_canopy_sqft,wet_yield_lbs=EXCLUDED.wet_yield_lbs,dry_flower_lbs=EXCLUDED.dry_flower_lbs,ab_flower_lbs=EXCLUDED.ab_flower_lbs,c_flower_lbs=EXCLUDED.c_flower_lbs,trim_lbs=EXCLUDED.trim_lbs,quality_score=EXCLUDED.quality_score,data_source=EXCLUDED.data_source,notes=EXCLUDED.notes,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at", (harvest_id,crop,room,strain,scope,harvest_date,max(0,_number(record.get("physical_canopy_sqft"))),max(0,_number(record.get("planted_canopy_sqft"))),max(0,_integer(record.get("planted_plants"))),max(0,_integer(record.get("planned_ff_plants"))),max(0,_integer(record.get("actual_ff_plants"))),max(0,_number(record.get("actual_ff_canopy_sqft"))),max(0,_number(record.get("wet_yield_lbs"))),max(0,_number(record.get("dry_flower_lbs"))),max(0,_number(record.get("ab_flower_lbs"))),max(0,_number(record.get("c_flower_lbs"))),max(0,_number(record.get("trim_lbs"))),max(0,_number(record.get("quality_score"))),record.get("data_source","Manual"),record.get("notes",""),updated_by,now,updated_by,now))
         connection.commit()
     return harvest_id
+
+
+def void_historical_yield(harvest_id: str, reason: str, updated_by: str) -> None:
+    """Void a yield record while preserving an auditable prior snapshot."""
+    reason = " ".join(str(reason or "").split())
+    if not harvest_id or not reason:
+        raise ValueError("Select a record and enter a reason before voiding it.")
+    if psycopg is None or not database_url():
+        raise RuntimeError("A live Supabase connection is required to void historical yields.")
+    now = datetime.now().astimezone().isoformat()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_schema(cursor)
+            cursor.execute(
+                "INSERT INTO qcc_cultivation_historical_yield_revisions (harvest_id,action,record_snapshot,changed_by,changed_at) "
+                "SELECT harvest_id,'VOID',to_jsonb(h),%s,%s FROM qcc_cultivation_historical_yields h WHERE harvest_id=%s AND is_void=FALSE",
+                (updated_by, now, harvest_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("The selected historical yield record is not active.")
+            cursor.execute(
+                "UPDATE qcc_cultivation_historical_yields SET is_void=TRUE,void_reason=%s,updated_by=%s,updated_at=%s WHERE harvest_id=%s",
+                (reason, updated_by, now, harvest_id),
+            )
+        connection.commit()
+
+
+def restore_historical_yield(harvest_id: str, updated_by: str) -> None:
+    """Restore a voided yield record when it will not duplicate an active record."""
+    if not harvest_id:
+        raise ValueError("Select a voided historical yield record to restore.")
+    if psycopg is None or not database_url():
+        raise RuntimeError("A live Supabase connection is required to restore historical yields.")
+    now = datetime.now().astimezone().isoformat()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_schema(cursor)
+            cursor.execute(
+                "SELECT crop,room,strain,harvest_date FROM qcc_cultivation_historical_yields WHERE harvest_id=%s AND is_void=TRUE",
+                (harvest_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError("The selected historical yield record is not voided.")
+            cursor.execute(
+                "SELECT 1 FROM qcc_cultivation_historical_yields WHERE is_void=FALSE AND lower(crop)=lower(%s) AND lower(room)=lower(%s) AND lower(strain)=lower(%s) AND harvest_date=%s",
+                row,
+            )
+            if cursor.fetchone():
+                raise ValueError("An active matching record already exists. Keep this record voided or edit the active record.")
+            cursor.execute(
+                "INSERT INTO qcc_cultivation_historical_yield_revisions (harvest_id,action,record_snapshot,changed_by,changed_at) SELECT harvest_id,'RESTORE',to_jsonb(h),%s,%s FROM qcc_cultivation_historical_yields h WHERE harvest_id=%s",
+                (updated_by, now, harvest_id),
+            )
+            cursor.execute(
+                "UPDATE qcc_cultivation_historical_yields SET is_void=FALSE,void_reason='',updated_by=%s,updated_at=%s WHERE harvest_id=%s",
+                (updated_by, now, harvest_id),
+            )
+        connection.commit()

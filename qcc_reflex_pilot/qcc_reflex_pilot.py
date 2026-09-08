@@ -163,9 +163,11 @@ from .cultivation_registry import (
     save_bench,
     save_cycle_program,
     save_historical_yield,
+    restore_historical_yield,
     save_room,
     save_schedule_rows,
     set_current_schedule,
+    void_historical_yield,
 )
 from .plant_data import crop_code, parse_metrc_plant_exports, plant_crop_reconciliation
 from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
@@ -185,7 +187,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.57-staging"
+PILOT_VERSION = "0.9.6.58-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -950,6 +952,7 @@ class DashboardState(rx.State):
     cultivation_yield_edit_id: str = ""
     cultivation_yield_crop: str = ""
     cultivation_yield_room: str = "Flower Room 1"
+    cultivation_yield_scope: str = "Strain Detail"
     cultivation_yield_strain: str = ""
     cultivation_yield_harvest_date: str = ""
     cultivation_yield_physical_canopy: float = 0.0
@@ -965,6 +968,7 @@ class DashboardState(rx.State):
     cultivation_yield_trim_lbs: float = 0.0
     cultivation_yield_quality: float = 0.0
     cultivation_yield_notes: str = ""
+    cultivation_yield_void_reason: str = ""
 
     units_metric: str = "0"
     value_metric: str = "$0"
@@ -6400,6 +6404,10 @@ class DashboardState(rx.State):
             dry = float(record.get("dry_flower_lbs", 0) or 0)
             net_canopy = float(ff["net_dry_canopy_sqft"] or 0)
             output.append({
+                "Record ID": record.get("harvest_id", ""),
+                "Record Scope": record.get("record_scope", "") or (
+                    "Strain Detail" if record.get("strain") else "Room Total"
+                ),
                 "Crop": record.get("crop", ""), "Room": record.get("room", ""),
                 "Strain": record.get("strain", "") or "Room total",
                 "Harvest Date": record.get("harvest_date", ""),
@@ -6410,8 +6418,108 @@ class DashboardState(rx.State):
                 "Dry Flower (lb)": round(dry, 2),
                 "Yield (g/sqft)": round(dry * 453.59237 / net_canopy, 1) if net_canopy else 0,
                 "Source": record.get("data_source", "Manual"),
+                "Updated By": record.get("updated_by", ""),
+                "Updated At": record.get("updated_at", ""),
             })
         return output
+
+    @rx.var(cache=True)
+    def cultivation_historical_manage_rows(self) -> list[dict[str, Any]]:
+        _ = self.cultivation_registry_revision
+        return [
+            {
+                "record_id": str(row.get("harvest_id", "")),
+                "crop": str(row.get("crop", "")),
+                "room": str(row.get("room", "")),
+                "scope": str(row.get("record_scope", "") or (
+                    "Strain Detail" if row.get("strain") else "Room Total"
+                )),
+                "strain": str(row.get("strain", "") or "Room total"),
+                "harvest_date": str(row.get("harvest_date", "") or ""),
+                "dry_flower": f'{float(row.get("dry_flower_lbs", 0) or 0):,.2f} lb',
+                "updated_by": str(row.get("updated_by", "") or "Unknown"),
+            }
+            for row in self._registry_payload().get("historical_yields", [])
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_voided_historical_rows(self) -> list[dict[str, Any]]:
+        _ = self.cultivation_registry_revision
+        return [
+            {
+                "record_id": str(row.get("harvest_id", "")),
+                "label": self._historical_yield_label(row),
+                "reason": str(row.get("void_reason", "") or "No reason recorded"),
+                "updated_by": str(row.get("updated_by", "") or "Unknown"),
+            }
+            for row in self._registry_payload().get("voided_historical_yields", [])
+        ]
+
+    @rx.var(cache=True)
+    def cultivation_yield_revision_rows(self) -> list[dict[str, Any]]:
+        _ = self.cultivation_registry_revision
+        output: list[dict[str, Any]] = []
+        for revision in self._registry_payload().get(
+            "historical_yield_revisions", []
+        ):
+            snapshot = revision.get("record_snapshot") or {}
+            if not isinstance(snapshot, dict):
+                snapshot = {}
+            output.append({
+                "Action": str(revision.get("action", "")),
+                "Record": self._historical_yield_label(snapshot),
+                "Previous Dry Flower (lb)": round(
+                    float(snapshot.get("dry_flower_lbs", 0) or 0), 2
+                ),
+                "Changed By": str(revision.get("changed_by", "") or "Unknown"),
+                "Changed At": str(revision.get("changed_at", "") or ""),
+            })
+        return output
+
+    @rx.var(cache=True)
+    def cultivation_yield_entry_warning(self) -> str:
+        crop = self.cultivation_yield_crop.strip().casefold()
+        room = self.cultivation_yield_room.strip().casefold()
+        harvest_date = self.cultivation_yield_harvest_date.strip()
+        if not crop or not room or not harvest_date:
+            return ""
+        active = [
+            row for row in self._registry_payload().get("historical_yields", [])
+            if str(row.get("crop", "")).strip().casefold() == crop
+            and str(row.get("room", "")).strip().casefold() == room
+            and str(row.get("harvest_date", "")) == harvest_date
+            and str(row.get("harvest_id", "")) != self.cultivation_yield_edit_id
+        ]
+        strain = self.cultivation_yield_strain.strip().casefold()
+        duplicate = next(
+            (
+                row for row in active
+                if str(row.get("strain", "")).strip().casefold()
+                == (strain if self.cultivation_yield_scope == "Strain Detail" else "")
+            ),
+            None,
+        )
+        if duplicate:
+            return "A matching active record already exists. Load that record and edit it instead of creating a duplicate."
+        room_total = next(
+            (row for row in active if not str(row.get("strain", "")).strip()),
+            None,
+        )
+        strain_total = sum(
+            float(row.get("dry_flower_lbs", 0) or 0)
+            for row in active if str(row.get("strain", "")).strip()
+        )
+        if self.cultivation_yield_scope == "Strain Detail":
+            strain_total += max(0.0, float(self.cultivation_yield_dry_lbs or 0))
+        elif self.cultivation_yield_dry_lbs > 0:
+            room_total = {"dry_flower_lbs": self.cultivation_yield_dry_lbs}
+        room_lbs = float((room_total or {}).get("dry_flower_lbs", 0) or 0)
+        if room_lbs > 0 and strain_total > 0 and abs(room_lbs - strain_total) > 0.1:
+            return (
+                f"Reconciliation warning: room total is {room_lbs:,.1f} lb, while "
+                f"strain details total {strain_total:,.1f} lb. These records will not be added together."
+            )
+        return ""
 
     @staticmethod
     def _historical_yield_label(record: dict[str, Any]) -> str:
@@ -6959,6 +7067,9 @@ class DashboardState(rx.State):
         self.cultivation_yield_edit_id = str(row.get("harvest_id", ""))
         self.cultivation_yield_crop = str(row.get("crop", ""))
         self.cultivation_yield_room = str(row.get("room", ""))
+        self.cultivation_yield_scope = str(row.get("record_scope", "") or (
+            "Strain Detail" if row.get("strain") else "Room Total"
+        ))
         self.cultivation_yield_strain = str(row.get("strain", ""))
         self.cultivation_yield_harvest_date = str(row.get("harvest_date", "") or "")
         self.cultivation_yield_physical_canopy = float(row.get("physical_canopy_sqft", 0) or 0)
@@ -6974,6 +7085,7 @@ class DashboardState(rx.State):
         self.cultivation_yield_trim_lbs = float(row.get("trim_lbs", 0) or 0)
         self.cultivation_yield_quality = float(row.get("quality_score", 0) or 0)
         self.cultivation_yield_notes = str(row.get("notes", ""))
+        self.cultivation_yield_void_reason = ""
 
     @rx.event
     def clear_historical_yield_editor(self):
@@ -6981,6 +7093,7 @@ class DashboardState(rx.State):
         self.cultivation_yield_edit_id = ""
         self.cultivation_yield_crop = ""
         self.cultivation_yield_room = "Flower Room 1"
+        self.cultivation_yield_scope = "Strain Detail"
         self.cultivation_yield_strain = ""
         self.cultivation_yield_harvest_date = ""
         self.cultivation_yield_physical_canopy = 0.0
@@ -6996,15 +7109,28 @@ class DashboardState(rx.State):
         self.cultivation_yield_trim_lbs = 0.0
         self.cultivation_yield_quality = 0.0
         self.cultivation_yield_notes = ""
+        self.cultivation_yield_void_reason = ""
         self.cultivation_registry_message = "Ready for a new historical yield entry."
         self.cultivation_registry_error = ""
+
+    @rx.event
+    def change_cultivation_yield_scope(self, value: str):
+        self.cultivation_yield_scope = (
+            value if value in {"Room Total", "Strain Detail"} else "Strain Detail"
+        )
+        if self.cultivation_yield_scope == "Room Total":
+            self.cultivation_yield_strain = ""
+
+    def change_cultivation_yield_void_reason(self, value: str):
+        self.cultivation_yield_void_reason = value
 
     @rx.event
     def save_historical_yield_editor(self):
         try:
             harvest_id = save_historical_yield({
                 "harvest_id": self.cultivation_yield_edit_id, "crop": self.cultivation_yield_crop,
-                "room": self.cultivation_yield_room, "strain": self.cultivation_yield_strain,
+                "room": self.cultivation_yield_room, "record_scope": self.cultivation_yield_scope,
+                "strain": self.cultivation_yield_strain,
                 "harvest_date": self.cultivation_yield_harvest_date,
                 "physical_canopy_sqft": self.cultivation_yield_physical_canopy,
                 "planted_canopy_sqft": self.cultivation_yield_planted_canopy,
@@ -7025,6 +7151,35 @@ class DashboardState(rx.State):
             self.cultivation_registry_error = str(error)
 
     @rx.event
+    def void_selected_historical_yield(self):
+        try:
+            void_historical_yield(
+                self.cultivation_yield_edit_id,
+                self.cultivation_yield_void_reason,
+                self.auth_name or self.auth_email or "QCC Reflex User",
+            )
+            self._cultivation_registry = load_registry()
+            self.cultivation_registry_revision += 1
+            self.clear_historical_yield_editor()
+            self.cultivation_registry_message = "Historical yield record voided. It remains available for recovery below."
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
+    def restore_voided_historical_yield(self, harvest_id: str):
+        try:
+            restore_historical_yield(
+                harvest_id,
+                self.auth_name or self.auth_email or "QCC Reflex User",
+            )
+            self._cultivation_registry = load_registry()
+            self.cultivation_registry_revision += 1
+            self.cultivation_registry_message = "Historical yield record restored."
+            self.cultivation_registry_error = ""
+        except Exception as error:
+            self.cultivation_registry_error = str(error)
+
+    @rx.event
     def change_cultivation_view(self, value: str):
         self.cultivation_view = value
         if value in {"clone_planning", "clone_allocation", "schedule", "rooms_benches", "historical_yield"} and not self.cultivation_registry_loaded:
@@ -7035,6 +7190,8 @@ class DashboardState(rx.State):
                     "programs": [default_cycle_program()],
                     "rooms": default_room_rows(), "benches": default_bench_rows(),
                     "schedule": default_schedule(), "historical_yields": [],
+                    "voided_historical_yields": [],
+                    "historical_yield_revisions": [],
                 }
                 self.cultivation_registry_error = (
                     "Shared cultivation registry is unavailable; legacy schedule defaults remain active. "
@@ -21785,6 +21942,72 @@ def cultivation_rooms_benches_panel() -> rx.Component:
     )
 
 
+def cultivation_historical_manage_card(row: rx.Var) -> rx.Component:
+    return rx.card(
+        rx.flex(
+            rx.box(
+                rx.flex(
+                    rx.badge(row["scope"], color_scheme="teal", variant="soft"),
+                    rx.text(row["crop"], weight="bold", color=DARK),
+                    gap="2",
+                    align="center",
+                    wrap="wrap",
+                ),
+                rx.text(
+                    row["room"], " · ", row["strain"], " · ", row["harvest_date"],
+                    size="2",
+                    color=MUTED,
+                ),
+                rx.text(
+                    row["dry_flower"], " dry flower · Updated by ", row["updated_by"],
+                    size="1",
+                    color=MUTED,
+                ),
+                min_width="0",
+            ),
+            rx.button(
+                "Edit",
+                on_click=DashboardState.load_historical_yield_editor(row["record_id"]),
+                variant="outline",
+                color_scheme="teal",
+                flex_shrink="0",
+            ),
+            justify="between",
+            align="center",
+            gap="3",
+            width="100%",
+        ),
+        width="100%",
+        padding="0.8rem",
+    )
+
+
+def cultivation_voided_yield_card(row: rx.Var) -> rx.Component:
+    return rx.card(
+        rx.flex(
+            rx.box(
+                rx.text(row["label"], weight="bold", color=DARK, size="2"),
+                rx.text("Voided: ", row["reason"], size="1", color=MUTED),
+                min_width="0",
+            ),
+            rx.button(
+                "Restore",
+                on_click=DashboardState.restore_voided_historical_yield(row["record_id"]),
+                variant="outline",
+                color_scheme="teal",
+                flex_shrink="0",
+            ),
+            justify="between",
+            align="center",
+            gap="3",
+            width="100%",
+        ),
+        width="100%",
+        padding="0.75rem",
+        background="#f8fafc",
+    )
+
+
 def cultivation_historical_yield_entry_panel() -> rx.Component:
     return rx.card(
         rx.vstack(
@@ -21824,7 +22047,25 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
             rx.grid(
                 cultivation_registry_field("Crop", DashboardState.cultivation_yield_crop, DashboardState.set_cultivation_yield_crop, placeholder="F5.10"),
                 rx.box(rx.text("Room", size="1", weight="bold", color=MUTED), rx.select(DashboardState.cultivation_registry_room_options, value=DashboardState.cultivation_yield_room, on_change=DashboardState.set_cultivation_yield_room, width="100%"), width="100%"),
-                cultivation_registry_field("Strain (blank for room total)", DashboardState.cultivation_yield_strain, DashboardState.set_cultivation_yield_strain),
+                rx.box(
+                    rx.text("Record Scope", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        ["Strain Detail", "Room Total"],
+                        value=DashboardState.cultivation_yield_scope,
+                        on_change=DashboardState.change_cultivation_yield_scope,
+                        width="100%",
+                    ),
+                    width="100%",
+                ),
+                rx.cond(
+                    DashboardState.cultivation_yield_scope == "Strain Detail",
+                    cultivation_registry_field("Strain", DashboardState.cultivation_yield_strain, DashboardState.set_cultivation_yield_strain, placeholder="Diamond Bar"),
+                    rx.box(
+                        rx.text("Strain", size="1", weight="bold", color=MUTED),
+                        rx.input(value="Room total — no strain", disabled=True, width="100%"),
+                        width="100%",
+                    ),
+                ),
                 cultivation_registry_field("Harvest date", DashboardState.cultivation_yield_harvest_date, DashboardState.set_cultivation_yield_harvest_date, input_type="date"),
                 cultivation_registry_field("Physical canopy sqft", DashboardState.cultivation_yield_physical_canopy, DashboardState.set_cultivation_yield_physical_canopy, input_type="number"),
                 cultivation_registry_field("Planted canopy sqft", DashboardState.cultivation_yield_planted_canopy, DashboardState.set_cultivation_yield_planted_canopy, input_type="number"),
@@ -21841,10 +22082,137 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
                 columns=rx.breakpoints(initial="1", md="3", xl="5"), gap="3", width="100%",
             ),
             cultivation_registry_field("Notes", DashboardState.cultivation_yield_notes, DashboardState.set_cultivation_yield_notes),
-            rx.button("Save Historical Yield", on_click=DashboardState.save_historical_yield_editor, background=ACCENT, color="white"),
+            rx.cond(
+                DashboardState.cultivation_yield_entry_warning != "",
+                rx.callout(
+                    DashboardState.cultivation_yield_entry_warning,
+                    icon="triangle_alert",
+                    color_scheme="amber",
+                    width="100%",
+                ),
+            ),
+            rx.flex(
+                rx.button(
+                    rx.cond(
+                        DashboardState.cultivation_yield_edit_id != "",
+                        "Save Changes",
+                        "Save Historical Yield",
+                    ),
+                    on_click=DashboardState.save_historical_yield_editor,
+                    background=ACCENT,
+                    color="white",
+                ),
+                rx.cond(
+                    DashboardState.cultivation_yield_edit_id != "",
+                    rx.button(
+                        "Cancel Edit",
+                        on_click=DashboardState.clear_historical_yield_editor,
+                        variant="outline",
+                    ),
+                ),
+                gap="3",
+                wrap="wrap",
+                width="100%",
+            ),
+            rx.cond(
+                DashboardState.cultivation_yield_edit_id != "",
+                rx.card(
+                    rx.vstack(
+                        rx.text("Void this record", weight="bold", color="#991b1b"),
+                        rx.text(
+                            "Voiding removes the record from yield calculations but preserves it and its revision history.",
+                            size="1",
+                            color=MUTED,
+                        ),
+                        rx.flex(
+                            rx.input(
+                                placeholder="Required reason",
+                                value=DashboardState.cultivation_yield_void_reason,
+                                on_change=DashboardState.change_cultivation_yield_void_reason,
+                                flex="1",
+                            ),
+                            rx.button(
+                                "Void Record",
+                                on_click=DashboardState.void_selected_historical_yield,
+                                color_scheme="red",
+                                disabled=DashboardState.cultivation_yield_void_reason == "",
+                            ),
+                            gap="3",
+                            wrap="wrap",
+                            width="100%",
+                        ),
+                        width="100%",
+                        spacing="2",
+                    ),
+                    width="100%",
+                    background="#fff7f7",
+                ),
+            ),
+            rx.heading("Saved Yield Records", size="4", color=DARK),
+            rx.text(
+                "Use Edit beside any record to correct its values. Room totals reconcile the harvest; strain details drive strain performance.",
+                size="2",
+                color=MUTED,
+            ),
+            rx.vstack(
+                rx.foreach(
+                    DashboardState.cultivation_historical_manage_rows,
+                    cultivation_historical_manage_card,
+                ),
+                width="100%",
+                spacing="2",
+                max_height="32rem",
+                overflow_y="auto",
+            ),
             rx.cond(
                 DashboardState.cultivation_historical_entry_rows.length() > 0,
-                data_grid(DashboardState.cultivation_historical_entry_rows, ["Crop", "Room", "Strain", "Harvest Date", "Planted Canopy", "Fresh Frozen Plants", "Fresh Frozen Canopy", "Net Dry Canopy", "Dry Flower (lb)", "Yield (g/sqft)", "Source"], height="440px", minimum_width=1740, page_size=10),
+                data_grid(DashboardState.cultivation_historical_entry_rows, ["Record Scope", "Crop", "Room", "Strain", "Harvest Date", "Planted Canopy", "Fresh Frozen Plants", "Fresh Frozen Canopy", "Net Dry Canopy", "Dry Flower (lb)", "Yield (g/sqft)", "Source", "Updated By", "Updated At"], height="440px", minimum_width=2100, page_size=10),
+            ),
+            rx.cond(
+                DashboardState.cultivation_voided_historical_rows.length() > 0,
+                rx.accordion.root(
+                    rx.accordion.item(
+                        header="Voided Yield Records",
+                        content=rx.vstack(
+                            rx.foreach(
+                                DashboardState.cultivation_voided_historical_rows,
+                                cultivation_voided_yield_card,
+                            ),
+                            width="100%",
+                            spacing="2",
+                        ),
+                        value="voided-yields",
+                    ),
+                    collapsible=True,
+                    width="100%",
+                ),
+            ),
+            rx.cond(
+                DashboardState.cultivation_yield_revision_rows.length() > 0,
+                rx.accordion.root(
+                    rx.accordion.item(
+                        header="Historical Yield Revision History",
+                        content=rx.vstack(
+                            rx.text(
+                                "Every edit, void, and restoration preserves the prior record values for audit and recovery.",
+                                size="1",
+                                color=MUTED,
+                            ),
+                            data_grid(
+                                DashboardState.cultivation_yield_revision_rows,
+                                ["Action", "Record", "Previous Dry Flower (lb)", "Changed By", "Changed At"],
+                                height="360px",
+                                minimum_width=900,
+                                page_size=10,
+                            ),
+                            width="100%",
+                            spacing="2",
+                        ),
+                        value="yield-revisions",
+                    ),
+                    collapsible=True,
+                    width="100%",
+                ),
             ),
             width="100%", spacing="3",
         ),

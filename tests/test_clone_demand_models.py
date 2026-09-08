@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from datetime import date, timedelta
 
 from qcc_reflex_pilot.cultivation_registry import (
@@ -316,12 +317,19 @@ class CloneDemandModelTest(unittest.TestCase):
             expected_adjusted,
         )
 
-    def test_registered_schedule_uses_workbook_history_for_lookbacks(self):
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
+    def test_registered_schedule_uses_workbook_history_for_lookbacks(
+        self, current_schedule_mock
+    ):
+        schedule = default_schedule(26)
+        current_schedule_mock.return_value = next(
+            row for row in schedule if row["crop"] == "F5.10"
+        )
         self.state._cultivation_registry = {
             "programs": [default_cycle_program()],
             "rooms": default_room_rows(),
             "benches": default_bench_rows(),
-            "schedule": default_schedule(26),
+            "schedule": schedule,
             "historical_yields": [],
         }
         self.state.cultivation_registry_loaded = True
