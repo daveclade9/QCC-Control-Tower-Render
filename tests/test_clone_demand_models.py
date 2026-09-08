@@ -362,6 +362,36 @@ class CloneDemandModelTest(unittest.TestCase):
         )
         self.assertEqual(diamond_bar["values"][f2_index]["value"], 1.0)
 
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.load_clone_plans")
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.save_clone_plan")
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
+    def test_current_crop_approval_uses_resolved_period_in_confirmation(
+        self, current_schedule_mock, save_mock, load_mock
+    ):
+        schedule = default_schedule(26)
+        period = next(row for row in schedule if row["crop"] == "F1.11")
+        current_schedule_mock.return_value = period
+        save_mock.return_value = "QCC-CLONE-F1-11"
+        load_mock.return_value = []
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": schedule,
+            "historical_yields": [],
+        }
+        self.state.cultivation_registry_loaded = True
+        self.state.cultivation_clone_plan_allocations = {"Diamond Bar": 1.0}
+        self.state.cultivation_clone_plan_override = True
+        self.state.cultivation_clone_plan_override_reason = "Approval regression test"
+        self.state.auth_role = "Administrator"
+
+        list(self.state.approve_cultivation_clone_plan())
+
+        self.assertEqual(self.state.cultivation_clone_plan_error, "")
+        self.assertIn("F1.11 Clone Allocation Plan", self.state.cultivation_clone_plan_message)
+        self.assertEqual(save_mock.call_args.kwargs["crop"], "F1.11")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -187,7 +187,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.63-staging"
+PILOT_VERSION = "0.9.6.64-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -8205,8 +8205,10 @@ class DashboardState(rx.State):
         finally:
             self.cultivation_historical_plan_saving = False
 
-    def _clone_plan_save(self, status: str) -> str:
-        period = self._current_clone_period()
+    def _clone_plan_save(
+        self, status: str, period: dict[str, str] | None = None
+    ) -> str:
+        period = period or self._current_clone_period()
         return save_clone_plan(
             crop=period["crop"],
             flower_room=period["room"],
@@ -8289,10 +8291,11 @@ class DashboardState(rx.State):
                 "This clone-cut week is locked. An admin override and reason are required."
             )
             return
+        period = self._current_clone_period()
         self.cultivation_clone_plan_saving = True
         yield
         try:
-            plan_id = self._clone_plan_save("Approved")
+            plan_id = self._clone_plan_save("Approved", period)
             self.cultivation_clone_plan_status = "Approved"
             self.cultivation_clone_plan_dirty = False
             self.cultivation_clone_plan_message = (
