@@ -187,7 +187,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.59-staging"
+PILOT_VERSION = "0.9.6.60-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -6480,6 +6480,20 @@ class DashboardState(rx.State):
     def cultivation_yield_entry_warning(self) -> str:
         crop = self.cultivation_yield_crop.strip().casefold()
         room = self.cultivation_yield_room.strip().casefold()
+        inferred_room = self._historical_yield_room_from_crop(
+            self.cultivation_yield_crop
+        )
+        if (
+            inferred_room
+            and inferred_room in self.cultivation_registry_room_options
+            and room
+            and room != inferred_room.casefold()
+        ):
+            return (
+                f"Room mismatch: {self.cultivation_yield_crop.strip()} normally "
+                f"belongs to {inferred_room}, but {self.cultivation_yield_room} "
+                "is selected. Confirm the room before saving."
+            )
         harvest_date = self.cultivation_yield_harvest_date.strip()
         if not crop or not room or not harvest_date:
             return ""
@@ -7120,6 +7134,23 @@ class DashboardState(rx.State):
         )
         if self.cultivation_yield_scope == "Room Total":
             self.cultivation_yield_strain = ""
+
+    @staticmethod
+    def _historical_yield_room_from_crop(crop: str) -> str:
+        """Infer the flower room from a crop ID such as F4.8."""
+        match = re.match(r"^\s*F\s*(\d+)(?:\s*\.|\s*$)", str(crop), re.IGNORECASE)
+        return f"Flower Room {int(match.group(1))}" if match else ""
+
+    @rx.event
+    def change_cultivation_yield_crop(self, value: str):
+        self.cultivation_yield_crop = value
+        inferred_room = self._historical_yield_room_from_crop(value)
+        if inferred_room and inferred_room in self.cultivation_registry_room_options:
+            self.cultivation_yield_room = inferred_room
+
+    @rx.event
+    def change_cultivation_yield_room(self, value: str):
+        self.cultivation_yield_room = value
 
     def change_cultivation_yield_void_reason(self, value: str):
         self.cultivation_yield_void_reason = value
@@ -22039,8 +22070,8 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
                 width="100%",
             ),
             rx.grid(
-                cultivation_registry_field("Crop", DashboardState.cultivation_yield_crop, DashboardState.set_cultivation_yield_crop, placeholder="F5.10"),
-                rx.box(rx.text("Room", size="1", weight="bold", color=MUTED), rx.select(DashboardState.cultivation_registry_room_options, value=DashboardState.cultivation_yield_room, on_change=DashboardState.set_cultivation_yield_room, width="100%"), width="100%"),
+                cultivation_registry_field("Crop", DashboardState.cultivation_yield_crop, DashboardState.change_cultivation_yield_crop, placeholder="F5.10"),
+                rx.box(rx.text("Room", size="1", weight="bold", color=MUTED), rx.select(DashboardState.cultivation_registry_room_options, value=DashboardState.cultivation_yield_room, on_change=DashboardState.change_cultivation_yield_room, width="100%"), width="100%"),
                 rx.box(
                     rx.text("Record Scope", size="1", weight="bold", color=MUTED),
                     rx.select(

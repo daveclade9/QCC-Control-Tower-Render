@@ -3,6 +3,7 @@
 import unittest
 
 from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
+from qcc_reflex_pilot.cultivation_registry import default_room_rows
 
 from qcc_reflex_pilot.historical_yield import (
     HISTORICAL_CYCLE_COLUMNS,
@@ -145,6 +146,22 @@ def test_room_strain_performance_aggregates_only_matching_room_and_strain() -> N
     assert rows[0]["Latest Harvest"] == "2027-01-01"
 
 
+def test_crop_name_selects_its_flower_room_and_manual_room_selection_persists() -> None:
+    state = DashboardState(_reflex_internal_init=True)
+    state._cultivation_registry = {
+        "programs": [], "rooms": default_room_rows(), "benches": [],
+        "schedule": [], "historical_yields": [],
+    }
+    state.cultivation_registry_loaded = True
+
+    state.change_cultivation_yield_crop("F4.8")
+    assert state.cultivation_yield_room == "Flower Room 4"
+
+    state.change_cultivation_yield_room("Flower Room 3")
+    assert state.cultivation_yield_room == "Flower Room 3"
+    assert "Room mismatch" in state.cultivation_yield_entry_warning
+
+
 class HistoricalYieldRegistryTests(unittest.TestCase):
     def test_editor_label_hides_technical_record_id(self):
         test_historical_yield_editor_label_hides_technical_record_id()
@@ -154,6 +171,9 @@ class HistoricalYieldRegistryTests(unittest.TestCase):
 
     def test_room_strain_performance_aggregation(self):
         test_room_strain_performance_aggregates_only_matching_room_and_strain()
+
+    def test_crop_room_link_and_manual_selection(self):
+        test_crop_name_selects_its_flower_room_and_manual_room_selection_persists()
 
 
 def test_combined_cycle_table_uses_workbook_class_pounds() -> None:
