@@ -159,9 +159,12 @@ class SalesMenuTests(unittest.TestCase):
             )
         statement, parameters = cursor.execute.call_args.args
         self.assertIn("metrc_case_equivalent", statement)
+        self.assertIn("admin_reviewed_at = NOW()", statement)
+        self.assertIn("admin_reviewed_by", statement)
         self.assertIn("available_cases", statement)
         self.assertEqual(parameters[8], True)
-        self.assertEqual(parameters[9:11], (28, 28))
+        self.assertEqual(parameters[9:12], (28, "QCC Tester", 28))
+        self.assertEqual(parameters[12], "QCC Tester")
         connection.commit.assert_called_once_with()
 
     def test_product_review_requires_valid_case_configuration(self):

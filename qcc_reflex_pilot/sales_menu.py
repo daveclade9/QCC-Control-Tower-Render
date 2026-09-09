@@ -444,6 +444,8 @@ def _ensure_sales_menu_schema(cursor: Any) -> None:
             inventory_match_status TEXT NOT NULL DEFAULT 'Not synced',
             inventory_match_detail TEXT NOT NULL DEFAULT '',
             inventory_synced_at TIMESTAMPTZ,
+            admin_reviewed_at TIMESTAMPTZ,
+            admin_reviewed_by TEXT NOT NULL DEFAULT '',
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             notes TEXT NOT NULL DEFAULT '',
             sort_order INTEGER NOT NULL DEFAULT 0,
@@ -482,7 +484,9 @@ def _ensure_sales_menu_schema(cursor: Any) -> None:
         "ADD COLUMN IF NOT EXISTS manual_override_cases INTEGER, "
         "ADD COLUMN IF NOT EXISTS inventory_match_status TEXT NOT NULL DEFAULT 'Not synced', "
         "ADD COLUMN IF NOT EXISTS inventory_match_detail TEXT NOT NULL DEFAULT '', "
-        "ADD COLUMN IF NOT EXISTS inventory_synced_at TIMESTAMPTZ"
+        "ADD COLUMN IF NOT EXISTS inventory_synced_at TIMESTAMPTZ, "
+        "ADD COLUMN IF NOT EXISTS admin_reviewed_at TIMESTAMPTZ, "
+        "ADD COLUMN IF NOT EXISTS admin_reviewed_by TEXT NOT NULL DEFAULT ''"
     )
     cursor.execute(
         "ALTER TABLE qcc_sales_menu_customers "
@@ -988,6 +992,10 @@ def load_menu_admin_data() -> dict[str, Any]:
                 "inventory_match_status": "Preview mode",
                 "inventory_match_detail": "Connect Supabase to load Metrc inventory.",
                 "inventory_source": "Metrc snapshot",
+                "admin_reviewed": True,
+                "menu_status": "Published",
+                "menu_status_color": "green",
+                "review_button_label": "Edit",
                 "sku_filter_label": _menu_sku_filter_label(product),
             })
         return {
@@ -1005,6 +1013,7 @@ def load_menu_admin_data() -> dict[str, Any]:
                 "p.metrc_on_hand_units, p.metrc_case_equivalent, "
                 "p.manual_override_cases, p.inventory_match_status, "
                 "p.inventory_match_detail, p.inventory_synced_at, "
+                "p.admin_reviewed_at, p.admin_reviewed_by, "
                 "p.notes, p.sort_order, COALESCE((SELECT SUM(oi.case_count) "
                 "FROM qcc_sales_menu_order_items oi JOIN qcc_sales_menu_orders o "
                 "ON o.order_id = oi.order_id WHERE oi.product_id = p.product_id "
@@ -1051,6 +1060,19 @@ def load_menu_admin_data() -> dict[str, Any]:
         product["held_cases"] = int(product.get("held_cases", 0) or 0)
         product["available_to_order"] = max(
             product["available_cases"] - product["held_cases"], 0
+        )
+        product["admin_reviewed"] = bool(product.get("admin_reviewed_at"))
+        if product.get("is_active"):
+            product["menu_status"] = "Published"
+            product["menu_status_color"] = "green"
+        elif product["admin_reviewed"]:
+            product["menu_status"] = "Reviewed - Unpublished"
+            product["menu_status_color"] = "gray"
+        else:
+            product["menu_status"] = "Needs Review"
+            product["menu_status_color"] = "purple"
+        product["review_button_label"] = (
+            "Edit" if product.get("is_active") or product["admin_reviewed"] else "Review"
         )
     for customer in customers:
         customer["allowed_brands"] = list(customer.get("allowed_brands") or [])
@@ -1186,14 +1208,16 @@ def save_menu_product_review(
                 "package_size = %s, product_type = %s, strain = %s, unit_price = %s, "
                 "units_per_case = %s, notes = %s, is_active = %s, "
                 "metrc_case_equivalent = COALESCE(metrc_on_hand_units, 0) / %s, "
+                "admin_reviewed_at = NOW(), admin_reviewed_by = %s, "
                 "available_cases = CASE WHEN manual_override_cases IS NULL "
                 "THEN COALESCE(metrc_on_hand_units, 0) / %s ELSE manual_override_cases END, "
                 "updated_by = %s, updated_at = NOW() WHERE product_id = %s",
                 (
                     brand.strip(), category.strip(), package_size.strip(),
                     product_type.strip(), strain.strip(), float(unit_price),
-                    int(units_per_case), notes.strip(), bool(is_active),
-                    int(units_per_case), int(units_per_case), updated_by, product_id,
+                    int(units_per_case), notes.strip(), bool(is_active), int(units_per_case),
+                    updated_by, int(units_per_case), updated_by,
+                    product_id,
                 ),
             )
             if cursor.rowcount != 1:
@@ -2771,8 +2795,8 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
         ),
         rx.table.cell(
             rx.badge(
-                rx.cond(product["is_active"], "Published", "Admin review"),
-                color_scheme=rx.cond(product["is_active"], "green", "purple"),
+                product["menu_status"],
+                color_scheme=product["menu_status_color"],
                 variant="soft",
             )
         ),
@@ -2804,10 +2828,10 @@ def _admin_product_row(product: rx.Var) -> rx.Component:
         ),
         rx.table.cell(
             rx.button(
-                rx.cond(product["is_active"], "Edit", "Review"),
+                product["review_button_label"],
                 size="1",
-                variant=rx.cond(product["is_active"], "outline", "solid"),
-                color_scheme=rx.cond(product["is_active"], "gray", "purple"),
+                variant=rx.cond(product["review_button_label"] == "Review", "solid", "outline"),
+                color_scheme=rx.cond(product["review_button_label"] == "Review", "purple", "gray"),
                 on_click=MenuAdminState.start_product_review(product["product_id"]),
             )
         ),
