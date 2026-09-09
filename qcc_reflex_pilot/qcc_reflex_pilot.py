@@ -188,7 +188,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.66-staging"
+PILOT_VERSION = "0.9.6.67-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -20606,7 +20606,8 @@ def cultivation_clone_plan_value_cell(
         width="100%",
         size="1",
         text_align="center",
-        color_scheme="purple",
+        color_scheme="orange",
+        background="#fff7ed",
     )
     value_content = rx.cond(
         ~cell["available"],
@@ -20642,25 +20643,32 @@ def cultivation_clone_plan_value_cell(
             ),
         ),
         background_color=rx.cond(
-            cell["editable_allocation"],
-            "#f5f3ff",
+            cell["editable_demand_assumption"],
+            "#fff7ed",
             rx.cond(
-                cell["historical_allocation"],
-                "#faf5ff",
+                cell["editable_allocation"],
+                "#f5f3ff",
                 rx.cond(
-                    cell["highlight"],
-                    "#f5f3ff",
-                    rx.cond(is_current_pounds, current_background, "transparent"),
+                    cell["historical_allocation"],
+                    "#faf5ff",
+                    rx.cond(
+                        cell["highlight"],
+                        "#f5f3ff",
+                        rx.cond(is_current_pounds, current_background, "transparent"),
+                    ),
                 ),
             ),
         ),
         outline=rx.cond(
-            cell["editable_allocation"]
-            | cell["historical_editable"]
-            | cell["editable_demand_assumption"]
-            | cell["highlight"],
-            "3px solid #8b5cf6",
-            "none",
+            cell["editable_demand_assumption"],
+            "3px solid #f97316",
+            rx.cond(
+                cell["editable_allocation"]
+                | cell["historical_editable"]
+                | cell["highlight"],
+                "3px solid #8b5cf6",
+                "none",
+            ),
         ),
         outline_offset=rx.cond(
             cell["editable_allocation"]
@@ -20918,7 +20926,7 @@ def cultivation_new_strain_control() -> rx.Component:
                     align="center",
                 ),
                 rx.text(
-                    "Add a cultivar that has not harvested or shipped yet. It becomes available in planning and exact bench assignment; its purple Two-Week Demand cell remains editable until calculated velocity exists.",
+                    "Add a cultivar that has not harvested or shipped yet. It becomes available in planning and exact bench assignment; its orange Two-Week Demand cell remains editable until calculated velocity exists.",
                     size="1",
                     color=MUTED,
                 ),
