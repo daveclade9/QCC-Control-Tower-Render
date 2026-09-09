@@ -14,6 +14,7 @@ from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
 class CloneDemandModelTest(unittest.TestCase):
     def setUp(self):
         self.state = DashboardState(_reflex_internal_init=True)
+        self.state.cultivation_clone_plan_hide_inactive_strains = False
         self.state.velocity = [
             {
                 "Strain": "Diamond Bar",
@@ -191,6 +192,10 @@ class CloneDemandModelTest(unittest.TestCase):
         }
         self.assertNotIn("Dormant Test Strain", visible_after)
         self.assertIn("Diamond Bar", visible_after)
+
+    def test_clone_planner_hides_inactive_strains_by_default(self):
+        state = DashboardState(_reflex_internal_init=True)
+        self.assertTrue(state.cultivation_clone_plan_hide_inactive_strains)
 
     @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
     def test_manual_fresh_frozen_marks_affected_scheduled_cell(self, current_schedule_mock):

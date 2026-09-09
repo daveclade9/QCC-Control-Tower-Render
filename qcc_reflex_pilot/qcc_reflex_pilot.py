@@ -190,7 +190,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.69-staging"
+PILOT_VERSION = "0.9.6.70-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -849,7 +849,7 @@ class DashboardState(rx.State):
     cultivation_clone_plan_demand_model: str = "Availability-Adjusted"
     cultivation_clone_plan_product_scope: str = "Flower + Pre-Rolls"
     cultivation_clone_plan_include_pre_wip: bool = False
-    cultivation_clone_plan_hide_inactive_strains: bool = False
+    cultivation_clone_plan_hide_inactive_strains: bool = True
     cultivation_clone_plan_demand_revision: int = 0
     cultivation_clone_plan_demand_assumptions: dict[str, float] = {}
     cultivation_clone_plan_allocations: dict[str, float] = {}
@@ -21878,21 +21878,61 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     border_radius="10px",
                     class_name="qcc-clone-plan-viewport",
                 ),
-                rx.hstack(
-                    rx.box(
-                        width="13px",
-                        height="13px",
-                        background="#fef3c7",
-                        border="2px solid #f59e0b",
-                        border_radius="3px",
+                rx.flex(
+                    rx.hstack(
+                        rx.box(
+                            width="13px",
+                            height="13px",
+                            background="#f5f3ff",
+                            border="2px solid #8b5cf6",
+                            border_radius="3px",
+                            flex_shrink="0",
+                        ),
+                        rx.text(
+                            "Purple: the current crop's strain allocations and the Scheduled pounds created by unsaved allocation changes.",
+                            size="1",
+                            color=MUTED,
+                        ),
+                        gap="2",
+                        align="center",
                     ),
-                    rx.text(
-                        "Amber Scheduled cells include a saved Fresh Frozen or Creative Use reduction.",
-                        size="1",
-                        color=MUTED,
+                    rx.hstack(
+                        rx.box(
+                            width="13px",
+                            height="13px",
+                            background="#fff7ed",
+                            border="2px solid #f97316",
+                            border_radius="3px",
+                            flex_shrink="0",
+                        ),
+                        rx.text(
+                            "Orange: editable two-week demand for a new strain with no calculated demand history.",
+                            size="1",
+                            color=MUTED,
+                        ),
+                        gap="2",
+                        align="center",
                     ),
-                    gap="2",
+                    rx.hstack(
+                        rx.box(
+                            width="13px",
+                            height="13px",
+                            background="#fef3c7",
+                            border="2px solid #f59e0b",
+                            border_radius="3px",
+                            flex_shrink="0",
+                        ),
+                        rx.text(
+                            "Amber: Scheduled pounds include a saved Fresh Frozen or Creative Use reduction.",
+                            size="1",
+                            color=MUTED,
+                        ),
+                        gap="2",
+                        align="center",
+                    ),
+                    gap="4",
                     align="center",
+                    wrap="wrap",
                     width="100%",
                 ),
                 rx.cond(
