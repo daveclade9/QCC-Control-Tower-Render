@@ -190,7 +190,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.70-staging"
+PILOT_VERSION = "0.9.6.72-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -21405,11 +21405,12 @@ def cultivation_approved_plan_allocation_row(row: rx.Var) -> rx.Component:
         ),
         rx.table.cell(
             rx.button(
-                rx.icon("download", size=14),
-                "Load Plan",
+                rx.icon("upload", size=14),
+                "Load",
                 on_click=DashboardState.load_approved_clone_plan_to_allocation(
                     row["plan_id"]
                 ),
+                variant="outline",
                 color_scheme="purple",
                 size="1",
             )
