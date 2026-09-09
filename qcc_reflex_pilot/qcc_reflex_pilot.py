@@ -190,7 +190,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.72-staging"
+PILOT_VERSION = "0.9.6.73-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -15113,7 +15113,7 @@ def stockouts_panel() -> rx.Component:
 
 
 def sku_planning_cell(value: rx.Var, width: str = "145px") -> rx.Component:
-    return rx.table.cell(
+    return rx.el.td(
         value,
         min_width=width,
         max_width=width,
@@ -21175,8 +21175,8 @@ def cultivation_clone_plan_value_cell(
 
 
 def cultivation_clone_plan_matrix_row(row: rx.Var) -> rx.Component:
-    return rx.table.row(
-        rx.table.cell(
+    return rx.el.tr(
+        rx.el.td(
             row["strain"],
             font_weight="800",
             width="200px",
@@ -21187,7 +21187,7 @@ def cultivation_clone_plan_matrix_row(row: rx.Var) -> rx.Component:
             left="0",
             z_index="2",
         ),
-        rx.table.cell(
+        rx.el.td(
             row["metric"],
             font_weight="700",
             width="170px",
@@ -21231,7 +21231,7 @@ def cultivation_clone_plan_period_header(period: rx.Var) -> rx.Component:
 
 
 def cultivation_clone_plan_page_period_header(period: rx.Var) -> rx.Component:
-    return rx.table.column_header_cell(
+    return rx.el.th(
         rx.tooltip(
             rx.vstack(
                 rx.text(period["crop"], weight="bold", color="#ffffff"),
@@ -21838,17 +21838,19 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     width="100%",
                 ),
                 rx.box(
-                    rx.table.root(
-                        rx.table.header(
-                            rx.table.row(
-                                rx.table.column_header_cell(
+                    rx.el.table(
+                        rx.el.thead(
+                            rx.el.tr(
+                                rx.el.th(
                                     "Strain",
+                                    scope="col",
                                     width="200px",
                                     min_width="200px",
                                     max_width="200px",
                                 ),
-                                rx.table.column_header_cell(
+                                rx.el.th(
                                     "Planning Row",
+                                    scope="col",
                                     width="170px",
                                     min_width="170px",
                                     max_width="170px",
@@ -21860,14 +21862,12 @@ def cultivation_clone_planning_panel() -> rx.Component:
                             ),
                             class_name="qcc-clone-plan-page-header",
                         ),
-                        rx.table.body(
+                        rx.el.tbody(
                             rx.foreach(
                                 DashboardState.cultivation_clone_plan_matrix_rows,
                                 cultivation_clone_plan_matrix_row,
                             )
                         ),
-                        variant="surface",
-                        size="2",
                         width="max-content",
                         min_width="100%",
                         class_name="qcc-clone-plan-table",

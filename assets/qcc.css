@@ -1249,42 +1249,21 @@ body {
   background: transparent;
 }
 
-/* Clone Planning uses one scroll owner for both axes. Radix Table.Root adds
-   an internal ScrollArea; neutralizing that nested viewport is what makes the
-   top row and first two columns behave like spreadsheet freeze panes. */
+/* Clone Planning deliberately uses a native table inside one scroll owner.
+   Keeping Radix Table.Root out of this grid avoids its nested ScrollArea and
+   gives the header row and first two columns true spreadsheet freeze panes. */
 .qcc-clone-plan-table {
-  width: max-content !important;
-  min-width: 100%;
-  overflow: visible !important;
-}
-
-.qcc-clone-plan-table > .rt-ScrollAreaRoot,
-.qcc-clone-plan-table > .rt-ScrollAreaRoot > .rt-ScrollAreaViewport {
-  display: block !important;
-  width: max-content !important;
-  min-width: 100% !important;
-  height: auto !important;
-  overflow: visible !important;
-}
-
-.qcc-clone-plan-table > .rt-ScrollAreaRoot > .rt-ScrollAreaViewport > * {
-  display: block !important;
-  width: max-content !important;
-  min-width: 100% !important;
-}
-
-.qcc-clone-plan-table > .rt-ScrollAreaRoot > .rt-ScrollAreaScrollbar,
-.qcc-clone-plan-table > .rt-ScrollAreaRoot > .rt-ScrollAreaCorner,
-.qcc-clone-plan-table > .rt-ScrollAreaRoot > .rt-ScrollAreaViewportFocusRing {
-  display: none !important;
-}
-
-.qcc-clone-plan-table .rt-TableRootTable {
   border-collapse: separate !important;
   border-spacing: 0;
   width: max-content !important;
-  min-width: 100% !important;
+  min-width: 100%;
   table-layout: fixed;
+  color: var(--gray-12);
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-2);
+  text-align: left;
+  vertical-align: top;
+  box-sizing: border-box;
 }
 
 .qcc-clone-plan-scroll,
@@ -1356,6 +1335,8 @@ body {
 }
 
 .qcc-clone-plan-table tbody td {
+  box-sizing: border-box;
+  vertical-align: inherit;
   border-right: 1px solid #e2e8f0;
   border-bottom: 1px solid #e2e8f0;
   height: 43px;
