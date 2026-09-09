@@ -251,6 +251,161 @@ class CloneDemandModelTest(unittest.TestCase):
         self.assertNotEqual(demand["diamond bar"], [99.0, 99.0])
 
     @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
+    def test_strategy_horizon_includes_full_crop_outlook_runway(
+        self, current_schedule_mock
+    ):
+        schedule = default_schedule(26)
+        current_schedule_mock.return_value = next(
+            row for row in schedule if row["crop"] == "F1.11"
+        )
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": schedule,
+            "historical_yields": [],
+        }
+        self.state.cultivation_clone_plan_strategy_mode = True
+        self.state.cultivation_clone_plan_strategy_horizon = "5 Crops"
+
+        periods = self.state.cultivation_clone_plan_periods
+
+        self.assertEqual(len(periods), 15)
+        self.assertEqual(sum(bool(row["is_scenario"]) for row in periods), 4)
+        self.assertEqual(sum(bool(row["is_outlook"]) for row in periods), 10)
+
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
+    def test_strategy_extends_a_saved_schedule_for_26_crop_horizon(
+        self, current_schedule_mock
+    ):
+        schedule = default_schedule(26)
+        current_schedule_mock.return_value = schedule[0]
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": schedule,
+            "historical_yields": [],
+        }
+        self.state.cultivation_clone_plan_strategy_mode = True
+        self.state.cultivation_clone_plan_strategy_horizon = "26 Crops"
+
+        periods = self.state.cultivation_clone_plan_periods
+
+        self.assertEqual(len(periods), 36)
+        self.assertEqual(sum(bool(row["is_scenario"]) for row in periods), 25)
+        self.assertEqual(sum(bool(row["is_outlook"]) for row in periods), 10)
+        self.assertEqual(len({row["crop"] for row in periods}), 36)
+
+        last_scenario = next(row for row in reversed(periods) if row["is_scenario"])
+        self.state.change_cultivation_clone_plan_strategy_allocation(
+            last_scenario["crop"], "Runway Test Strain", "1.0"
+        )
+        scheduled = next(
+            row for row in self.state.cultivation_clone_plan_matrix_rows
+            if row["strain"] == "Runway Test Strain"
+            and row["metric"] == "Scheduled"
+        )
+        supply_indexes = [
+            index for index, cell in enumerate(scheduled["values"])
+            if cell["value"] > 0
+        ]
+        self.assertTrue(supply_indexes)
+        self.assertTrue(periods[supply_indexes[0]]["is_outlook"])
+        self.assertEqual(supply_indexes[0], len(periods) - 1)
+
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
+    def test_strategy_allocation_adds_future_scheduled_supply(
+        self, current_schedule_mock
+    ):
+        schedule = default_schedule(26)
+        current_schedule_mock.return_value = next(
+            row for row in schedule if row["crop"] == "F1.11"
+        )
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": schedule,
+            "historical_yields": [],
+        }
+        self.state.cultivation_clone_plan_strategy_mode = True
+        self.state.cultivation_clone_plan_strategy_horizon = "5 Crops"
+        baseline = next(
+            row for row in self.state.cultivation_clone_plan_matrix_rows
+            if row["strain"] == "Diamond Bar" and row["metric"] == "Scheduled"
+        )
+        baseline_total = sum(cell["value"] for cell in baseline["values"])
+
+        self.state.change_cultivation_clone_plan_strategy_allocation(
+            "F2.11", "Diamond Bar", "1.0"
+        )
+        scenario = next(
+            row for row in self.state.cultivation_clone_plan_matrix_rows
+            if row["strain"] == "Diamond Bar" and row["metric"] == "Scheduled"
+        )
+
+        self.assertGreater(
+            sum(cell["value"] for cell in scenario["values"]), baseline_total
+        )
+        allocation_row = next(
+            row for row in self.state.cultivation_clone_plan_matrix_rows
+            if row["strain"] == "Diamond Bar"
+            and row["metric"] == "Clone Allocation"
+        )
+        f2_index = next(
+            index for index, row in enumerate(self.state.cultivation_clone_plan_periods)
+            if row["crop"] == "F2.11"
+        )
+        self.assertEqual(allocation_row["values"][f2_index]["value"], 1.0)
+        self.assertTrue(
+            allocation_row["values"][f2_index]["editable_scenario_allocation"]
+        )
+        self.assertEqual(
+            self.state.cultivation_clone_plan_strategy_summary["crops"], "1"
+        )
+        self.assertEqual(
+            self.state.cultivation_clone_plan_strategy_summary["benches"], "1.0"
+        )
+
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
+    def test_future_approved_plan_is_locked_in_strategy_mode(
+        self, current_schedule_mock
+    ):
+        schedule = default_schedule(26)
+        current_schedule_mock.return_value = next(
+            row for row in schedule if row["crop"] == "F1.11"
+        )
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": schedule,
+            "historical_yields": [],
+        }
+        self.state.cultivation_clone_plan_history = [{
+            "crop": "F2.11",
+            "status": "Approved",
+            "allocations": {"Diamond Bar": 1.0},
+        }]
+        self.state.cultivation_clone_plan_strategy_mode = True
+        allocation_row = next(
+            row for row in self.state.cultivation_clone_plan_matrix_rows
+            if row["strain"] == "Diamond Bar"
+            and row["metric"] == "Clone Allocation"
+        )
+        f2_index = next(
+            index for index, row in enumerate(self.state.cultivation_clone_plan_periods)
+            if row["crop"] == "F2.11"
+        )
+
+        self.assertEqual(allocation_row["values"][f2_index]["value"], 1.0)
+        self.assertTrue(allocation_row["values"][f2_index]["approved_allocation"])
+        self.assertFalse(
+            allocation_row["values"][f2_index]["editable_scenario_allocation"]
+        )
+
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
     def test_preliminary_plan_capacity_rounds_measured_canopy_up(
         self, current_schedule_mock
     ):

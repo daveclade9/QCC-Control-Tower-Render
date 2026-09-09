@@ -188,7 +188,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.67-staging"
+PILOT_VERSION = "0.9.6.68-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -500,6 +500,8 @@ ClonePlanMatrixValue = TypedDict(
         "historical_allocation": bool,
         "historical_editable": bool,
         "editable_demand_assumption": bool,
+        "editable_scenario_allocation": bool,
+        "approved_allocation": bool,
         "crop": str,
         "scheduled_details": list[ScheduledSupplyDetail],
     },
@@ -858,6 +860,10 @@ class DashboardState(rx.State):
     cultivation_clone_plan_history: list[dict[str, Any]] = []
     cultivation_clone_plan_history_loaded: bool = False
     cultivation_clone_plan_lookback: str = "No Historical Crops"
+    cultivation_clone_plan_strategy_mode: bool = False
+    cultivation_clone_plan_strategy_horizon: str = "10 Crops"
+    cultivation_clone_plan_strategy_allocations: dict[str, dict[str, float]] = {}
+    cultivation_clone_plan_strategy_revision: int = 0
     cultivation_fresh_frozen_adjustments: dict[str, int] = {}
     cultivation_creative_use_adjustments: dict[str, float] = {}
     cultivation_fresh_frozen_saving: bool = False
@@ -7742,6 +7748,134 @@ class DashboardState(rx.State):
         )
 
     @rx.event
+    def toggle_cultivation_clone_plan_strategy_mode(self):
+        self.cultivation_clone_plan_strategy_mode = (
+            not self.cultivation_clone_plan_strategy_mode
+        )
+        self.cultivation_clone_plan_strategy_revision += 1
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = (
+            "Multi-Crop Strategy Mode is active. Teal cells are scenario-only and "
+            "do not change approved operational plans."
+            if self.cultivation_clone_plan_strategy_mode
+            else "Returned to current-crop planning. Scenario entries were retained."
+        )
+
+    @rx.event
+    def change_cultivation_clone_plan_strategy_horizon(self, value: str):
+        self.cultivation_clone_plan_strategy_horizon = (
+            value if value in {"5 Crops", "10 Crops", "15 Crops", "26 Crops"}
+            else "10 Crops"
+        )
+        self.cultivation_clone_plan_strategy_revision += 1
+
+    def _strategy_period(self, crop: str) -> dict[str, Any] | None:
+        return next(
+            (
+                dict(period)
+                for period in self.cultivation_clone_plan_periods
+                if str(period.get("crop", "")) == str(crop)
+            ),
+            None,
+        )
+
+    def _strategy_crop_capacity(self, period: dict[str, Any]) -> float:
+        measured = sum(
+            float(row.get("square_feet", 0) or 0)
+            for row in self._registered_room_bench_plans(str(period.get("room", "")))
+        ) / 185.0
+        return float(math.ceil(max(0.0, measured - 0.001)))
+
+    @rx.event
+    def change_cultivation_clone_plan_strategy_allocation(
+        self, crop: str, strain: str, value: str
+    ):
+        self.cultivation_clone_plan_error = ""
+        try:
+            parsed = valid_bench_equivalent(value)
+        except ValueError as error:
+            self.cultivation_clone_plan_error = str(error)
+            return
+        period = self._strategy_period(crop)
+        if (
+            not self.cultivation_clone_plan_strategy_mode
+            or period is None
+            or not bool(period.get("is_scenario"))
+        ):
+            self.cultivation_clone_plan_error = (
+                f"{crop} is not an editable scenario crop."
+            )
+            return
+        scenarios = {
+            crop_name: dict(values)
+            for crop_name, values in self.cultivation_clone_plan_strategy_allocations.items()
+        }
+        crop_values = dict(scenarios.get(crop, {}))
+        matching_label = next(
+            (
+                label for label in crop_values
+                if normalized_strain(label) == normalized_strain(strain)
+            ),
+            strain,
+        )
+        if parsed > 0:
+            crop_values[matching_label] = parsed
+        else:
+            crop_values.pop(matching_label, None)
+        planned = sum(float(amount or 0) for amount in crop_values.values())
+        capacity = self._strategy_crop_capacity(period)
+        if planned > capacity + 0.05:
+            self.cultivation_clone_plan_error = (
+                f"{crop} allows {capacity:.0f} planning benches; the scenario "
+                f"currently assigns {planned:.1f}."
+            )
+            return
+        if crop_values:
+            scenarios[crop] = crop_values
+        else:
+            scenarios.pop(crop, None)
+        self.cultivation_clone_plan_strategy_allocations = scenarios
+        self.cultivation_clone_plan_strategy_revision += 1
+
+    @rx.event
+    def copy_current_plan_across_strategy_horizon(self):
+        if not self.cultivation_clone_plan_strategy_mode:
+            return
+        scenarios = {
+            crop: dict(values)
+            for crop, values in self.cultivation_clone_plan_strategy_allocations.items()
+        }
+        copied = 0
+        for period in self.cultivation_clone_plan_periods:
+            if not bool(period.get("is_scenario")):
+                continue
+            capacity = self._strategy_crop_capacity(period)
+            remaining = capacity
+            proposal: dict[str, float] = {}
+            for strain, amount in self.cultivation_clone_plan_allocations.items():
+                allocated = min(max(0.0, float(amount or 0)), remaining)
+                if allocated > 0:
+                    proposal[strain] = round(allocated, 1)
+                    remaining -= allocated
+                if remaining <= 0:
+                    break
+            if proposal:
+                scenarios[str(period["crop"])] = proposal
+                copied += 1
+        self.cultivation_clone_plan_strategy_allocations = scenarios
+        self.cultivation_clone_plan_strategy_revision += 1
+        self.cultivation_clone_plan_message = (
+            f"Copied the current planting mix into {copied} editable scenario crops."
+        )
+
+    @rx.event
+    def clear_cultivation_clone_plan_strategy(self):
+        self.cultivation_clone_plan_strategy_allocations = {}
+        self.cultivation_clone_plan_strategy_revision += 1
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = "Multi-crop scenario entries were cleared."
+
+    @rx.event
     def change_cultivation_historical_plan_crop(self, value: str):
         valid = {period["crop"] for period in prior_clone_planning_periods(8)}
         if value in valid:
@@ -8872,6 +9006,9 @@ class DashboardState(rx.State):
             add(strain)
         for strain in self.cultivation_historical_plan_allocations:
             add(strain)
+        for allocations in self.cultivation_clone_plan_strategy_allocations.values():
+            for strain in allocations:
+                add(strain)
         for plan in self.cultivation_clone_plan_history:
             for strain in dict(plan.get("allocations") or {}):
                 add(strain)
@@ -8887,12 +9024,23 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def cultivation_clone_plan_periods(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
+        planning_count = (
+            int(self.cultivation_clone_plan_strategy_horizon.split()[0])
+            if self.cultivation_clone_plan_strategy_mode
+            else 13
+        )
+        registry = self._registry_payload()
+        approved_crops = {
+            str(plan.get("crop", ""))
+            for plan in self.cultivation_clone_plan_history
+            if str(plan.get("status", "")).casefold() == "approved"
+        }
         history_count = {
             "Last 4 Crops": 4,
             "Last 8 Crops": 8,
         }.get(self.cultivation_clone_plan_lookback, 0)
         registered = sorted(
-            [dict(row) for row in self._registry_payload().get("schedule", [])],
+            [dict(row) for row in registry.get("schedule", [])],
             key=lambda row: str(row.get("clone_cut_date", "")),
         )
         current_period = self._current_clone_period()
@@ -8901,8 +9049,47 @@ class DashboardState(rx.State):
              if str(row.get("crop")) == current_period["crop"]),
             0,
         )
+        current_registered = registered[current_index] if registered else current_period
+        current_program_id = str(current_registered.get("program_id", ""))
+        program = next(
+            (
+                row for row in registry.get("programs", [])
+                if str(row.get("program_id", "")) == current_program_id
+            ),
+            (registry.get("programs") or [default_cycle_program()])[0],
+        )
+        cadence_days = max(1, int(program.get("cadence_days", 14) or 14))
+        production_lead_days = sum(
+            max(0, int(program.get(field, default) or default))
+            for field, default in (
+                ("rooting_days", 21),
+                ("veg_days", 19),
+                ("flowering_days", 68),
+                ("processing_days", 30),
+            )
+        )
+        # Scenario crops need enough read-only runway for the last crop's
+        # projected harvest to finish, process, and enter inventory.
+        outlook_count = max(1, math.ceil(production_lead_days / cadence_days))
+        future_count = (
+            planning_count + outlook_count
+            if self.cultivation_clone_plan_strategy_mode
+            else planning_count
+        )
         if registered:
-            future_periods = registered[current_index:current_index + 13]
+            future_periods = registered[current_index:current_index + future_count]
+            if len(future_periods) < future_count:
+                generated_future = generate_schedule(
+                    program=program,
+                    rooms=registry.get("rooms", []),
+                    start_crop=str(current_period["crop"]),
+                    first_clone_cut=str(current_period["clone_cut_date"]),
+                    count=future_count,
+                )
+                future_periods = [
+                    *future_periods,
+                    *generated_future[len(future_periods):],
+                ]
             historical_periods = registered[
                 max(0, current_index - history_count):current_index
             ] if history_count else []
@@ -8938,7 +9125,7 @@ class DashboardState(rx.State):
             actual_history_count = len(historical_periods)
         else:
             historical_periods = list(reversed(prior_clone_planning_periods(history_count))) if history_count else []
-            periods = [*historical_periods, *clone_planning_periods(13)]
+            periods = [*historical_periods, *clone_planning_periods(future_count)]
             actual_history_count = history_count
         for index, period in enumerate(periods):
             cut = date.fromisoformat(period["clone_cut_date"])
@@ -8953,6 +9140,17 @@ class DashboardState(rx.State):
                 "header": f"{period['crop']} · {cut.strftime('%b')} {cut.day}",
                 "is_current": index == actual_history_count,
                 "is_historical": index < actual_history_count,
+                "is_approved": str(period.get("crop", "")) in approved_crops,
+                "is_scenario": (
+                    self.cultivation_clone_plan_strategy_mode
+                    and index > actual_history_count
+                    and index < actual_history_count + planning_count
+                    and str(period.get("crop", "")) not in approved_crops
+                ),
+                "is_outlook": (
+                    self.cultivation_clone_plan_strategy_mode
+                    and index >= actual_history_count + planning_count
+                ),
             })
         return rows
 
@@ -9452,6 +9650,8 @@ class DashboardState(rx.State):
             historical_allocation: bool = False,
             historical_editable: bool = False,
             editable_demand_assumption: bool = False,
+            editable_scenario_allocation: bool = False,
+            approved_allocation: bool = False,
             crop: str = "",
             details: list[ScheduledSupplyDetail] | None = None,
         ) -> dict[str, Any]:
@@ -9471,9 +9671,83 @@ class DashboardState(rx.State):
                 "historical_allocation": historical_allocation,
                 "historical_editable": historical_editable,
                 "editable_demand_assumption": editable_demand_assumption,
+                "editable_scenario_allocation": editable_scenario_allocation,
+                "approved_allocation": approved_allocation,
                 "crop": crop,
                 "scheduled_details": list(details or []),
             }
+
+        def add_proposed_supply(
+            strain: str,
+            strain_key: str,
+            crop_period: dict[str, Any],
+            allocation_value: float,
+            scheduled_values: list[float],
+            strain_details: list[list[ScheduledSupplyDetail]],
+        ) -> None:
+            if allocation_value <= 0:
+                return
+            available = date.fromisoformat(str(crop_period["available_date"]))
+            bucket = min(
+                range(len(periods)),
+                key=lambda index: abs(
+                    (date.fromisoformat(periods[index]["clone_cut_date"]) - available).days
+                ),
+            )
+            square_feet = allocation_value * 185.0
+            gross = estimated_yield_pounds(
+                square_feet, strain, str(crop_period["room"])
+            )
+            harvest = date.fromisoformat(str(crop_period["harvest_date"]))
+            planted_plants = bench_plant_capacity(square_feet)
+            crop_key = str(crop_period["crop"]).casefold()
+            adjustment_key = f"{crop_key}|{strain_key}"
+            actual_fresh_frozen_detail = actual_fresh_frozen.get(
+                (crop_key, strain_key)
+            )
+            reconciliation = scheduled_supply_reconciliation(
+                gross,
+                planted_plants,
+                int(self.cultivation_fresh_frozen_adjustments.get(adjustment_key, 0) or 0),
+                actual_crop_lbs.get((crop_key, strain_key), 0.0),
+                harvest,
+                date.today(),
+                SCHEDULED_SUPPLY_EXPIRY_DAYS,
+                creative_use_reduction_lbs=float(
+                    self.cultivation_creative_use_adjustments.get(adjustment_key, 0) or 0
+                ),
+                actual_fresh_frozen_plants=(
+                    int(actual_fresh_frozen_detail.get("plants", 0) or 0)
+                    if actual_fresh_frozen_detail is not None else None
+                ),
+            )
+            scheduled_values[bucket] += reconciliation["forecast_counted_lbs"]
+            strain_details[bucket] = [
+                *strain_details[bucket],
+                {
+                    "crop": str(crop_period["crop"]),
+                    "room": str(crop_period["room"]),
+                    "strain": strain,
+                    "harvest_date": str(crop_period["harvest_date"]),
+                    "available_date": str(crop_period["available_date"]),
+                    **reconciliation,
+                    "actual_fresh_frozen_wet_lbs": round(
+                        float((actual_fresh_frozen_detail or {}).get("wet_weight_lbs", 0) or 0),
+                        1,
+                    ),
+                    "actual_fresh_frozen_batches": ", ".join(
+                        (actual_fresh_frozen_detail or {}).get("batches", [])
+                    ),
+                    "can_edit_fresh_frozen": (
+                        date.today() <= harvest
+                        and not reconciliation["actual_fresh_frozen_detected"]
+                    ),
+                    "can_edit_creative_use": (
+                        not reconciliation["expired"]
+                        and not reconciliation["actual_detected"]
+                    ),
+                },
+            ]
 
         for strain in strains:
             key = normalized_strain(strain)
@@ -9559,6 +9833,28 @@ class DashboardState(rx.State):
                         ),
                     },
                 ]
+            if self.cultivation_clone_plan_strategy_mode:
+                for scenario_period in periods:
+                    if not bool(scenario_period.get("is_scenario")):
+                        continue
+                    scenario_allocation = next(
+                        (
+                            float(amount or 0)
+                            for label, amount in self.cultivation_clone_plan_strategy_allocations.get(
+                                str(scenario_period["crop"]), {}
+                            ).items()
+                            if normalized_strain(label) == key
+                        ),
+                        0.0,
+                    )
+                    add_proposed_supply(
+                        strain,
+                        key,
+                        scenario_period,
+                        scenario_allocation,
+                        scheduled_values,
+                        strain_details,
+                    )
             balance = max(0.0, current.get(key, 0.0))
             balance_values: list[float] = []
             for index, supply in enumerate(scheduled_values):
@@ -9588,14 +9884,38 @@ class DashboardState(rx.State):
                     ),
                     0.0,
                 )
+                scenario_value = next(
+                    (
+                        float(value or 0)
+                        for label, value in self.cultivation_clone_plan_strategy_allocations.get(
+                            str(period["crop"]), {}
+                        ).items()
+                        if normalized_strain(label) == key
+                    ),
+                    0.0,
+                )
+                is_approved_future = (
+                    not is_historical
+                    and not bool(period.get("is_current", False))
+                    and bool(period.get("is_approved", False))
+                )
+                is_editable_scenario = bool(period.get("is_scenario", False))
                 allocation_values.append(matrix_value(
                     historical_value if is_historical else (
-                        allocation if bool(period.get("is_current", False)) else 0.0
+                        allocation if bool(period.get("is_current", False)) else (
+                            historical_value if is_approved_future else scenario_value
+                        )
                     ),
-                    available=is_historical or bool(period.get("is_current", False)),
+                    available=(
+                        is_historical
+                        or bool(period.get("is_current", False))
+                        or self.cultivation_clone_plan_strategy_mode
+                    ),
                     editable_allocation=bool(period.get("is_current", False)),
                     historical_allocation=is_historical,
                     historical_editable=is_historical_editable,
+                    editable_scenario_allocation=is_editable_scenario,
+                    approved_allocation=is_approved_future,
                     crop=str(period["crop"]),
                 ))
             rows.extend([
@@ -9659,6 +9979,53 @@ class DashboardState(rx.State):
     def cultivation_clone_plan_total_benches(self) -> str:
         total = sum(float(value or 0) for value in self.cultivation_clone_plan_allocations.values())
         return f"{total:.1f} benches"
+
+    @rx.var(cache=True)
+    def cultivation_clone_plan_strategy_summary(self) -> dict[str, str]:
+        _ = self.cultivation_clone_plan_strategy_revision
+        periods = self.cultivation_clone_plan_periods
+        visible_scenario_crops = {
+            str(period["crop"])
+            for period in periods
+            if bool(period.get("is_scenario"))
+        }
+        scenario_crops = {
+            crop: values
+            for crop, values in self.cultivation_clone_plan_strategy_allocations.items()
+            if crop in visible_scenario_crops
+            and any(float(value or 0) > 0 for value in values.values())
+        }
+        planned = sum(
+            float(value or 0)
+            for values in scenario_crops.values()
+            for value in values.values()
+        )
+        capacity = sum(
+            self._strategy_crop_capacity(period)
+            for period in periods
+            if bool(period.get("is_scenario"))
+        )
+        shortages = 0
+        excess = 0
+        for row in self.cultivation_clone_plan_matrix_rows:
+            if row["metric"] != "Current Pounds" or row["weekly_demand"] <= 0:
+                continue
+            for index, cell in enumerate(row["values"]):
+                if bool(periods[index].get("is_historical")):
+                    continue
+                pounds = float(cell.get("value", 0) or 0)
+                if pounds <= 0:
+                    shortages += 1
+                elif pounds / float(row["weekly_demand"]) > 8:
+                    excess += 1
+        utilization = (planned / capacity * 100.0) if capacity > 0 else 0.0
+        return {
+            "crops": str(len(scenario_crops)),
+            "benches": f"{planned:.1f}",
+            "utilization": f"{utilization:.0f}%",
+            "shortages": f"{shortages:,}",
+            "excess": f"{excess:,}",
+        }
 
     @rx.var(cache=True)
     def cultivation_clone_plan_room_capacity(self) -> str:
@@ -20568,7 +20935,7 @@ def cultivation_clone_plan_value_cell(
             text_align="center",
         ),
         rx.cond(
-            cell["historical_editable"],
+            cell["editable_scenario_allocation"],
             rx.input(
                 type="number",
                 min="0",
@@ -20576,17 +20943,49 @@ def cultivation_clone_plan_value_cell(
                 step="0.1",
                 default_value=value.to_string(),
                 key=(
-                    DashboardState.cultivation_historical_plan_entry_version.to_string()
+                    "scenario-"
+                    + DashboardState.cultivation_clone_plan_strategy_revision.to_string()
                     + "-" + cell["crop"] + "-" + strain.to_string()
                 ),
-                on_blur=lambda input_value: DashboardState.change_cultivation_historical_plan_allocation(
-                    strain, input_value
+                on_blur=lambda input_value: DashboardState.change_cultivation_clone_plan_strategy_allocation(
+                    cell["crop"], strain, input_value
                 ),
                 width="100%",
                 size="1",
                 text_align="center",
+                color_scheme="teal",
+                background="#ecfeff",
             ),
-            rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
+            rx.cond(
+                cell["historical_editable"],
+                rx.input(
+                    type="number",
+                    min="0",
+                    max="7",
+                    step="0.1",
+                    default_value=value.to_string(),
+                    key=(
+                        DashboardState.cultivation_historical_plan_entry_version.to_string()
+                        + "-" + cell["crop"] + "-" + strain.to_string()
+                    ),
+                    on_blur=lambda input_value: DashboardState.change_cultivation_historical_plan_allocation(
+                        strain, input_value
+                    ),
+                    width="100%",
+                    size="1",
+                    text_align="center",
+                ),
+                rx.cond(
+                    cell["approved_allocation"],
+                    rx.hstack(
+                        rx.icon("lock", size=11, color="#166534"),
+                        rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
+                        gap="1",
+                        justify="center",
+                    ),
+                    rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
+                ),
+            ),
         ),
     )
     demand_assumption_content = rx.input(
@@ -20643,37 +21042,50 @@ def cultivation_clone_plan_value_cell(
             ),
         ),
         background_color=rx.cond(
-            cell["editable_demand_assumption"],
-            "#fff7ed",
+            cell["editable_scenario_allocation"],
+            "#ecfeff",
             rx.cond(
-                cell["editable_allocation"],
-                "#f5f3ff",
+                cell["approved_allocation"],
+                "#ecfdf5",
                 rx.cond(
-                    cell["historical_allocation"],
-                    "#faf5ff",
+                    cell["editable_demand_assumption"],
+                    "#fff7ed",
                     rx.cond(
-                        cell["highlight"],
+                        cell["editable_allocation"],
                         "#f5f3ff",
-                        rx.cond(is_current_pounds, current_background, "transparent"),
+                        rx.cond(
+                            cell["historical_allocation"],
+                            "#faf5ff",
+                            rx.cond(
+                                cell["highlight"],
+                                "#f5f3ff",
+                                rx.cond(is_current_pounds, current_background, "transparent"),
+                            ),
+                        ),
                     ),
                 ),
             ),
         ),
         outline=rx.cond(
-            cell["editable_demand_assumption"],
-            "3px solid #f97316",
+            cell["editable_scenario_allocation"],
+            "3px solid #0d9488",
             rx.cond(
-                cell["editable_allocation"]
-                | cell["historical_editable"]
-                | cell["highlight"],
-                "3px solid #8b5cf6",
-                "none",
+                cell["editable_demand_assumption"],
+                "3px solid #f97316",
+                rx.cond(
+                    cell["editable_allocation"]
+                    | cell["historical_editable"]
+                    | cell["highlight"],
+                    "3px solid #8b5cf6",
+                    "none",
+                ),
             ),
         ),
         outline_offset=rx.cond(
             cell["editable_allocation"]
             | cell["historical_editable"]
             | cell["editable_demand_assumption"]
+            | cell["editable_scenario_allocation"]
             | cell["highlight"],
             "-3px",
             "0",
@@ -20785,7 +21197,23 @@ def cultivation_clone_plan_page_period_header(period: rx.Var) -> rx.Component:
                             height="20px",
                         ),
                     ),
-                    rx.box(height="20px"),
+                    rx.cond(
+                        DashboardState.cultivation_clone_plan_strategy_mode,
+                        rx.cond(
+                            period["is_current"],
+                            rx.badge("CURRENT", color_scheme="purple", size="1"),
+                            rx.cond(
+                                period["is_approved"],
+                                rx.badge("APPROVED", color_scheme="green", size="1"),
+                                rx.cond(
+                                    period["is_scenario"],
+                                    rx.badge("SCENARIO", color_scheme="teal", size="1"),
+                                    rx.badge("OUTLOOK", color_scheme="gray", size="1"),
+                                ),
+                            ),
+                        ),
+                        rx.box(height="20px"),
+                    ),
                 ),
                 spacing="0",
                 align="center",
@@ -21204,6 +21632,107 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     align="center",
                     wrap="wrap",
                     gap="2",
+                ),
+                rx.box(
+                    rx.flex(
+                        rx.hstack(
+                            rx.switch(
+                                checked=DashboardState.cultivation_clone_plan_strategy_mode,
+                                on_change=DashboardState.toggle_cultivation_clone_plan_strategy_mode,
+                                color_scheme="teal",
+                            ),
+                            rx.box(
+                                rx.text("Multi-Crop Strategy Mode", weight="bold", color=DARK),
+                                rx.text(
+                                    "Model future planting regimens without changing approved plans.",
+                                    size="1",
+                                    color=MUTED,
+                                ),
+                            ),
+                            align="center",
+                            gap="2",
+                        ),
+                        rx.spacer(),
+                        rx.cond(
+                            DashboardState.cultivation_clone_plan_strategy_mode,
+                            rx.hstack(
+                                rx.select(
+                                    ["5 Crops", "10 Crops", "15 Crops", "26 Crops"],
+                                    value=DashboardState.cultivation_clone_plan_strategy_horizon,
+                                    on_change=DashboardState.change_cultivation_clone_plan_strategy_horizon,
+                                    width="130px",
+                                    size="2",
+                                ),
+                                rx.button(
+                                    "Copy Current Across Horizon",
+                                    on_click=DashboardState.copy_current_plan_across_strategy_horizon,
+                                    color_scheme="teal",
+                                    size="2",
+                                ),
+                                rx.button(
+                                    "Clear Scenario",
+                                    on_click=DashboardState.clear_cultivation_clone_plan_strategy,
+                                    variant="outline",
+                                    color_scheme="gray",
+                                    size="2",
+                                ),
+                                gap="2",
+                                wrap="wrap",
+                            ),
+                        ),
+                        width="100%",
+                        align="center",
+                        wrap="wrap",
+                        gap="3",
+                    ),
+                    rx.cond(
+                        DashboardState.cultivation_clone_plan_strategy_mode,
+                        rx.vstack(
+                            rx.grid(
+                                snapshot_stat_card(
+                                    "Scenario Crops",
+                                    DashboardState.cultivation_clone_plan_strategy_summary["crops"],
+                                    "#0d9488",
+                                ),
+                                snapshot_stat_card(
+                                    "Scenario Benches",
+                                    DashboardState.cultivation_clone_plan_strategy_summary["benches"],
+                                    "#0891b2",
+                                ),
+                                snapshot_stat_card(
+                                    "Scenario Utilization",
+                                    DashboardState.cultivation_clone_plan_strategy_summary["utilization"],
+                                    "#2563eb",
+                                ),
+                                snapshot_stat_card(
+                                    "Zero-Inventory Signals",
+                                    DashboardState.cultivation_clone_plan_strategy_summary["shortages"],
+                                    "#dc2626",
+                                ),
+                                snapshot_stat_card(
+                                    "Excess Signals",
+                                    DashboardState.cultivation_clone_plan_strategy_summary["excess"],
+                                    "#ea580c",
+                                ),
+                                columns=rx.breakpoints(initial="1", sm="2", lg="5"),
+                                gap="2",
+                                width="100%",
+                            ),
+                            rx.callout(
+                                "Teal allocation cells are scenario-only. Green locked values are approved plans; purple is the current operational crop. Gray Outlook columns provide enough read-only runway to show when the last scenario harvests become available.",
+                                icon="info",
+                                color_scheme="teal",
+                                width="100%",
+                            ),
+                            spacing="3",
+                            width="100%",
+                        ),
+                    ),
+                    padding="12px",
+                    border="1px solid #99f6e4",
+                    border_radius="10px",
+                    background="#f0fdfa",
+                    width="100%",
                 ),
                 rx.box(
                     rx.table.root(
