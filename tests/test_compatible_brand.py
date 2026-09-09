@@ -59,10 +59,11 @@ class CompatibleBrandRulesTest(unittest.TestCase):
             "J1", "Fig Bar", "Orange Push Pop", "Diamond Bar",
             "Diamond Dust", "Lemon Cherry Gelato", "G13",
             "Private Reserve", "Tahoe OG", "Blue Dream",
-            "Razberry Runtz", "Brooklyn Runtz", "South Central Purps",
+            "Razberry Runtz", "Brooklyn Runtz", "Hood Candy",
+            "Gelato Cherry Lemon", "Jelly Cake", "South Central Purps",
             "Lipsmackerz", "Pinetar", "LA Piff",
         ]
-        self.assertEqual(len(CLADE9_COMPATIBLE_BULK_STRAINS), 16)
+        self.assertEqual(len(CLADE9_COMPATIBLE_BULK_STRAINS), 18)
         for strain in strains:
             with self.subTest(strain=strain):
                 self.assertEqual(

@@ -61,6 +61,11 @@ CLADE9_STRAIN_PATTERNS = {
     "RPG #42": r"\brpg\s*#?\s*42\b",
     "Blue Dream": r"\bblue\s+dream\b",
     "Lemon Cherry Gelato": r"\blemon\s+cherry\s+gelato\b",
+    # QCC's commercial name is Hood Candy; Metrc retains the original
+    # cultivar name Gelato Cherry Lemon. Keep it distinct from Lemon Cherry
+    # Gelato throughout inventory, QA, demand, and label printing.
+    "Hood Candy": r"\bhood\s+candy\b|\bgelato\s+cherry\s+lemon\b|\bgcl\b",
+    "Jelly Cake": r"\bjelly\s+cake\b",
     "G13": r"\bg\s*13\b",
     "South Central Purps": r"\bsouth\s+central\s+purps\b",
     "Lip Smackerz": r"\blip\s*smackerz\b|\blipsmackerz\b",
@@ -131,6 +136,8 @@ def normalize_strain_name(value: Any) -> str:
         "rpg38": "Razberry Runtz",
         "rpg #38": "Razberry Runtz",
         "pinetar": "Pine Tar",
+        "gelato cherry lemon": "Hood Candy",
+        "gcl": "Hood Candy",
     }
     return aliases.get(text.lower(), text.title() if text else "Strain Needs Review")
 
@@ -150,7 +157,8 @@ CLADE9_COMPATIBLE_BULK_STRAINS = {
     "J1", "Fig Bar", "Orange Push Pop", "Diamond Bar", "Diamond Dust",
     "Lemon Cherry Gelato", "G13", "Private Reserve OG", "Tahoe OG",
     "Blue Dream", "Razberry Runtz", "Brooklyn Runtz",
-    "South Central Purps", "Lip Smackerz", "Pine Tar", "LA Piff",
+    "Hood Candy", "Jelly Cake", "South Central Purps", "Lip Smackerz",
+    "Pine Tar", "LA Piff",
 }
 
 

@@ -83,6 +83,48 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertEqual(context["net_weight"], "3.5g")
         self.assertEqual(context["suffix"], "A")
 
+    def test_metrc_gelato_cherry_lemon_prints_as_clade9_hood_candy(self):
+        lab_results = pd.DataFrame([{
+            "packaged_license": "C000313",
+            "packaged_facility": "QCC Cultivation",
+            "package_tag": "1A4110300002A31000039998",
+            "source_harvest_names": "Gelato Cherry Lemon-F1.9-08.10.2026",
+            "source_package_labels": "1A4110300002A31000039997",
+            "item": "Gelato Cherry Lemon Test Sample",
+            "category": "Raw Plant Material",
+            "lab_testing_status": "TestPassed",
+            "test_date": "2026-09-01",
+            "lab_facility": "Example Lab",
+            "test_name": "Total THC (%)",
+            "result": 30.0,
+        }])
+
+        prepared = _prepare_qa_packages(lab_results, pd.DataFrame())
+        package = prepared.iloc[0].to_dict()
+
+        self.assertEqual(package["strain"], "Hood Candy")
+        self.assertEqual(package["brand"], "Clade9")
+        context, errors = prepare_label_context(
+            package,
+            DIAMOND_ANALYTES,
+            "3.5g Flower",
+            bulk_uid="1A4110300002A31000039997",
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(context["strain"], "Hood Candy")
+        self.assertEqual(context["layout"], "Flower Vertical")
+
+    def test_new_clade9_cultivars_use_vertical_35g_layout(self):
+        for strain in ("Hood Candy", "Jelly Cake", "South Central Purps"):
+            with self.subTest(strain=strain):
+                context, errors = prepare_label_context(
+                    self.package(strain=strain),
+                    DIAMOND_ANALYTES,
+                    "3.5g Flower",
+                )
+                self.assertEqual(errors, [])
+                self.assertEqual(context["layout"], "Flower Vertical")
+
     def test_lab_sample_results_print_the_associated_bulk_uid(self):
         context, errors = prepare_label_context(
             self.package(), DIAMOND_ANALYTES, "3.5g Flower"
