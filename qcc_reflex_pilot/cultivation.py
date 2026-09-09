@@ -922,6 +922,39 @@ def scheduled_supply_reconciliation(
     }
 
 
+def scheduled_detail_has_manual_reduction(detail: dict[str, Any]) -> bool:
+    """Return whether a saved user reduction is actively changing Scheduled.
+
+    Actual Metrc Fresh Frozen is operational evidence rather than a manual
+    planning adjustment, so it does not receive the user-adjustment highlight.
+    """
+
+    planned_fresh_frozen = (
+        str(detail.get("fresh_frozen_source", "")).casefold()
+        == "planned fresh frozen"
+        and float(detail.get("fresh_frozen_reduction_lbs", 0) or 0) > 0
+    )
+    creative_use = float(detail.get("creative_use_reduction_lbs", 0) or 0) > 0
+    return planned_fresh_frozen or creative_use
+
+
+def clone_planner_strain_is_in_production(
+    scheduled_lbs: list[float],
+    current_allocation: float = 0.0,
+    approved_future_allocations: list[float] | None = None,
+    scenario_allocations: list[float] | None = None,
+) -> bool:
+    """Classify active production from auditable supply and allocation signals."""
+
+    signals = [
+        float(current_allocation or 0),
+        *(float(value or 0) for value in scheduled_lbs),
+        *(float(value or 0) for value in (approved_future_allocations or [])),
+        *(float(value or 0) for value in (scenario_allocations or [])),
+    ]
+    return any(value > 0 for value in signals)
+
+
 def projected_harvest_dates(
     flower_entry_date: str,
     post_harvest_days: int = DEFAULT_POST_HARVEST_DAYS,

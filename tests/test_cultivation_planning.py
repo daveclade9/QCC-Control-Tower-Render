@@ -6,6 +6,7 @@ from qcc_reflex_pilot.cultivation import (
     crop_is_scheduled_supply,
     clone_plan_edit_window,
     clone_plan_is_editable,
+    clone_planner_strain_is_in_production,
     clone_planning_periods,
     prior_clone_planning_periods,
     cultivation_timeline,
@@ -23,6 +24,7 @@ from qcc_reflex_pilot.cultivation import (
     recommend_clone_trays,
     room_bench_plans,
     scheduled_supply_reconciliation,
+    scheduled_detail_has_manual_reduction,
     sku_fill_grams,
 )
 
@@ -56,6 +58,34 @@ def test_clone_planner_normalizes_known_sales_strain_aliases():
     assert normalized_strain("Private Reserve OG") == "private reserve"
     assert normalized_strain("Lip Smackerz") == "lipsmackerz"
     assert normalized_strain("Lip Smackers") == "lipsmackerz"
+
+
+def test_scheduled_highlight_only_marks_active_manual_reductions():
+    assert scheduled_detail_has_manual_reduction({
+        "fresh_frozen_source": "Planned Fresh Frozen",
+        "fresh_frozen_reduction_lbs": 4.2,
+        "creative_use_reduction_lbs": 0,
+    })
+    assert scheduled_detail_has_manual_reduction({
+        "fresh_frozen_source": "No Fresh Frozen diversion",
+        "fresh_frozen_reduction_lbs": 0,
+        "creative_use_reduction_lbs": 3.0,
+    })
+    assert not scheduled_detail_has_manual_reduction({
+        "fresh_frozen_source": "Actual Metrc harvest",
+        "fresh_frozen_reduction_lbs": 4.2,
+        "creative_use_reduction_lbs": 0,
+    })
+
+
+def test_clone_planner_production_filter_uses_supply_and_plan_signals():
+    assert clone_planner_strain_is_in_production([12.0, 0.0])
+    assert clone_planner_strain_is_in_production([], current_allocation=0.5)
+    assert clone_planner_strain_is_in_production(
+        [], approved_future_allocations=[1.0]
+    )
+    assert clone_planner_strain_is_in_production([], scenario_allocations=[0.1])
+    assert not clone_planner_strain_is_in_production([0.0, 0.0])
 
 
 def test_south_central_purps_uses_temporary_conservative_yield_override():

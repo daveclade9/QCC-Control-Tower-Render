@@ -169,6 +169,55 @@ class CloneDemandModelTest(unittest.TestCase):
         ]
         self.assertAlmostEqual(included["total_lbs"], 6.0)
 
+    def test_hide_inactive_strains_preserves_active_production_rows(self):
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": default_schedule(13),
+            "historical_yields": [],
+        }
+        self.state.cultivation_provisional_strains = ["Dormant Test Strain"]
+        self.state.cultivation_clone_plan_allocations = {"Diamond Bar": 1.0}
+
+        visible_before = {
+            row["strain"] for row in self.state.cultivation_clone_plan_matrix_rows
+        }
+        self.assertIn("Dormant Test Strain", visible_before)
+
+        self.state.cultivation_clone_plan_hide_inactive_strains = True
+        visible_after = {
+            row["strain"] for row in self.state.cultivation_clone_plan_matrix_rows
+        }
+        self.assertNotIn("Dormant Test Strain", visible_after)
+        self.assertIn("Diamond Bar", visible_after)
+
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
+    def test_manual_fresh_frozen_marks_affected_scheduled_cell(self, current_schedule_mock):
+        schedule = default_schedule(13)
+        current_schedule_mock.return_value = schedule[0]
+        self.state._cultivation_registry = {
+            "programs": [default_cycle_program()],
+            "rooms": default_room_rows(),
+            "benches": default_bench_rows(),
+            "schedule": schedule,
+            "historical_yields": [],
+        }
+        self.state.cultivation_clone_plan_allocations = {"Diamond Bar": 1.0}
+        crop = schedule[0]["crop"]
+        self.state.cultivation_fresh_frozen_adjustments = {
+            f"{crop.casefold()}|diamond bar": 10
+        }
+
+        scheduled_row = next(
+            row for row in self.state.cultivation_clone_plan_matrix_rows
+            if row["strain"] == "Diamond Bar" and row["metric"] == "Scheduled"
+        )
+
+        self.assertTrue(
+            any(cell["manual_adjustment"] for cell in scheduled_row["values"])
+        )
+
     def test_smalls_are_grouped_with_the_base_strain_in_current_pounds(self):
         self.state.all_inventory = [
             {

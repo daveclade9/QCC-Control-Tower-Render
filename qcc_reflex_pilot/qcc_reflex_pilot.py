@@ -108,6 +108,7 @@ from .cultivation import (
     cultivation_timeline,
     clone_plan_edit_window,
     clone_plan_is_editable,
+    clone_planner_strain_is_in_production,
     clone_planning_periods,
     prior_clone_planning_periods,
     crop_is_scheduled_supply,
@@ -121,6 +122,7 @@ from .cultivation import (
     projected_harvest_dates,
     projected_risk,
     scheduled_supply_reconciliation,
+    scheduled_detail_has_manual_reduction,
     recommend_clone_trays,
     room_bench_plans,
     sku_fill_grams,
@@ -188,7 +190,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.68-staging"
+PILOT_VERSION = "0.9.6.69-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -490,6 +492,7 @@ ClonePlanMatrixValue = TypedDict(
     {
         "value": float,
         "highlight": bool,
+        "manual_adjustment": bool,
         "show_breakdown": bool,
         "cpg_lbs": float,
         "wip_lbs": float,
@@ -846,6 +849,7 @@ class DashboardState(rx.State):
     cultivation_clone_plan_demand_model: str = "Availability-Adjusted"
     cultivation_clone_plan_product_scope: str = "Flower + Pre-Rolls"
     cultivation_clone_plan_include_pre_wip: bool = False
+    cultivation_clone_plan_hide_inactive_strains: bool = False
     cultivation_clone_plan_demand_revision: int = 0
     cultivation_clone_plan_demand_assumptions: dict[str, float] = {}
     cultivation_clone_plan_allocations: dict[str, float] = {}
@@ -7962,6 +7966,11 @@ class DashboardState(rx.State):
     def change_cultivation_clone_plan_include_pre_wip(self, value: bool):
         self.cultivation_clone_plan_include_pre_wip = bool(value)
 
+    @rx.event
+    def change_cultivation_clone_plan_hide_inactive_strains(self, value: bool):
+        """Hide dormant rows without changing any strain or planning records."""
+        self.cultivation_clone_plan_hide_inactive_strains = bool(value)
+
     @staticmethod
     def _normalized_clone_demand_model(value: Any) -> str:
         """Normalize current choices and legacy saved-plan labels."""
@@ -9606,6 +9615,9 @@ class DashboardState(rx.State):
         _ = self.cultivation_clone_plan_demand_model
         _ = self.cultivation_clone_plan_product_scope
         _ = self.cultivation_clone_plan_include_pre_wip
+        _ = self.cultivation_clone_plan_hide_inactive_strains
+        _ = self.cultivation_fresh_frozen_adjustments
+        _ = self.cultivation_creative_use_adjustments
         _ = self.cultivation_clone_plan_demand_assumptions
         _ = self.velocity
         _ = self.velocity_windows
@@ -9643,6 +9655,7 @@ class DashboardState(rx.State):
             value: float,
             *,
             highlight: bool = False,
+            manual_adjustment: bool = False,
             show_breakdown: bool = False,
             breakdown: dict[str, float] | None = None,
             available: bool = True,
@@ -9659,6 +9672,7 @@ class DashboardState(rx.State):
             return {
                 "value": value,
                 "highlight": highlight,
+                "manual_adjustment": manual_adjustment,
                 "show_breakdown": show_breakdown,
                 "cpg_lbs": round(float(detail.get("cpg_lbs", 0) or 0), 1),
                 "wip_lbs": round(float(detail.get("wip_lbs", 0) or 0), 1),
@@ -9855,6 +9869,38 @@ class DashboardState(rx.State):
                         scheduled_values,
                         strain_details,
                     )
+            approved_future_allocations = [
+                float(amount or 0)
+                for period in periods
+                if not bool(period.get("is_historical", False))
+                for label, amount in historical_allocations.get(
+                    str(period["crop"]), {}
+                ).items()
+                if normalized_strain(label) == key
+            ]
+            scenario_allocations = [
+                float(amount or 0)
+                for period in periods
+                if bool(period.get("is_scenario", False))
+                for label, amount in self.cultivation_clone_plan_strategy_allocations.get(
+                    str(period["crop"]), {}
+                ).items()
+                if normalized_strain(label) == key
+            ]
+            if (
+                self.cultivation_clone_plan_hide_inactive_strains
+                and not clone_planner_strain_is_in_production(
+                    [
+                        value
+                        for index, value in enumerate(scheduled_values)
+                        if not bool(periods[index].get("is_historical", False))
+                    ],
+                    allocation,
+                    approved_future_allocations,
+                    scenario_allocations,
+                )
+            ):
+                continue
             balance = max(0.0, current.get(key, 0.0))
             balance_values: list[float] = []
             for index, supply in enumerate(scheduled_values):
@@ -9949,6 +9995,10 @@ class DashboardState(rx.State):
                                 self.cultivation_clone_plan_dirty
                                 and allocation > 0
                                 and index == plan_bucket
+                            ),
+                            manual_adjustment=any(
+                                scheduled_detail_has_manual_reduction(detail)
+                                for detail in strain_details[index]
                             ),
                             available=not bool(periods[index].get("is_historical", False)),
                             details=strain_details[index],
@@ -20758,6 +20808,9 @@ def cultivation_clone_plan_value_cell(
 ) -> rx.Component:
     value = cell["value"]
     is_current_pounds = metric == "Current Pounds"
+    is_manually_adjusted_scheduled = (
+        (metric == "Scheduled") & cell["manual_adjustment"]
+    )
     weeks_supply = value / rx.cond(weekly_demand > 0, weekly_demand, 1)
     current_background = rx.cond(
         value < 0,
@@ -20884,15 +20937,28 @@ def cultivation_clone_plan_value_cell(
     scheduled_content = rx.popover.root(
         rx.popover.trigger(
             rx.button(
-                rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
-                rx.icon("info", size=12),
+                rx.hstack(
+                    rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
+                    rx.cond(
+                        cell["manual_adjustment"],
+                        rx.icon("circle-alert", size=13, color="#b45309"),
+                        rx.icon("info", size=12),
+                    ),
+                    gap="1",
+                    align="center",
+                ),
                 variant="ghost",
                 size="1",
-                color="#1d4ed8",
-                font_weight="800",
+                color=rx.cond(cell["manual_adjustment"], "#92400e", "#1d4ed8"),
+                font_weight="900",
                 cursor="pointer",
                 text_decoration="underline dotted",
                 text_underline_offset="3px",
+                title=rx.cond(
+                    cell["manual_adjustment"],
+                    "Scheduled pounds include a saved Fresh Frozen or Creative Use reduction.",
+                    "View Scheduled supply detail.",
+                ),
             )
         ),
         rx.popover.content(
@@ -21033,7 +21099,7 @@ def cultivation_clone_plan_value_cell(
         color=rx.cond(is_current_pounds, current_color, DARK),
         font_weight=rx.cond(is_current_pounds, "800", "500"),
         box_shadow=rx.cond(
-            cell["highlight"],
+            is_manually_adjusted_scheduled | cell["highlight"],
             "none",
             rx.cond(
                 is_current_pounds & (value < 0),
@@ -21042,24 +21108,32 @@ def cultivation_clone_plan_value_cell(
             ),
         ),
         background_color=rx.cond(
-            cell["editable_scenario_allocation"],
-            "#ecfeff",
+            is_manually_adjusted_scheduled,
+            "#fef3c7",
             rx.cond(
-                cell["approved_allocation"],
-                "#ecfdf5",
+                cell["editable_scenario_allocation"],
+                "#ecfeff",
                 rx.cond(
-                    cell["editable_demand_assumption"],
-                    "#fff7ed",
+                    cell["approved_allocation"],
+                    "#ecfdf5",
                     rx.cond(
-                        cell["editable_allocation"],
-                        "#f5f3ff",
+                        cell["editable_demand_assumption"],
+                        "#fff7ed",
                         rx.cond(
-                            cell["historical_allocation"],
-                            "#faf5ff",
+                            cell["editable_allocation"],
+                            "#f5f3ff",
                             rx.cond(
-                                cell["highlight"],
-                                "#f5f3ff",
-                                rx.cond(is_current_pounds, current_background, "transparent"),
+                                cell["historical_allocation"],
+                                "#faf5ff",
+                                rx.cond(
+                                    cell["highlight"],
+                                    "#f5f3ff",
+                                    rx.cond(
+                                        is_current_pounds,
+                                        current_background,
+                                        "transparent",
+                                    ),
+                                ),
                             ),
                         ),
                     ),
@@ -21067,17 +21141,21 @@ def cultivation_clone_plan_value_cell(
             ),
         ),
         outline=rx.cond(
-            cell["editable_scenario_allocation"],
-            "3px solid #0d9488",
+            is_manually_adjusted_scheduled,
+            "3px solid #f59e0b",
             rx.cond(
-                cell["editable_demand_assumption"],
-                "3px solid #f97316",
+                cell["editable_scenario_allocation"],
+                "3px solid #0d9488",
                 rx.cond(
-                    cell["editable_allocation"]
-                    | cell["historical_editable"]
-                    | cell["highlight"],
-                    "3px solid #8b5cf6",
-                    "none",
+                    cell["editable_demand_assumption"],
+                    "3px solid #f97316",
+                    rx.cond(
+                        cell["editable_allocation"]
+                        | cell["historical_editable"]
+                        | cell["highlight"],
+                        "3px solid #8b5cf6",
+                        "none",
+                    ),
                 ),
             ),
         ),
@@ -21086,6 +21164,7 @@ def cultivation_clone_plan_value_cell(
             | cell["historical_editable"]
             | cell["editable_demand_assumption"]
             | cell["editable_scenario_allocation"]
+            | is_manually_adjusted_scheduled
             | cell["highlight"],
             "-3px",
             "0",
@@ -21625,8 +21704,31 @@ def cultivation_clone_planning_panel() -> rx.Component:
                             width="180px",
                             size="2",
                         ),
+                        rx.tooltip(
+                            rx.hstack(
+                                rx.switch(
+                                    checked=DashboardState.cultivation_clone_plan_hide_inactive_strains,
+                                    on_change=DashboardState.change_cultivation_clone_plan_hide_inactive_strains,
+                                    color_scheme="teal",
+                                    size="1",
+                                ),
+                                rx.text(
+                                    "Hide strains not in production",
+                                    size="1",
+                                    weight="bold",
+                                    color=DARK,
+                                ),
+                                gap="2",
+                                align="center",
+                            ),
+                            content=(
+                                "Production includes Scheduled pounds, the current plan, "
+                                "approved future plans, and multi-crop scenario allocations."
+                            ),
+                        ),
                         gap="2",
                         align="center",
+                        wrap="wrap",
                     ),
                     width="100%",
                     align="center",
@@ -21775,6 +21877,23 @@ def cultivation_clone_planning_panel() -> rx.Component:
                     border="1px solid #64748b",
                     border_radius="10px",
                     class_name="qcc-clone-plan-viewport",
+                ),
+                rx.hstack(
+                    rx.box(
+                        width="13px",
+                        height="13px",
+                        background="#fef3c7",
+                        border="2px solid #f59e0b",
+                        border_radius="3px",
+                    ),
+                    rx.text(
+                        "Amber Scheduled cells include a saved Fresh Frozen or Creative Use reduction.",
+                        size="1",
+                        color=MUTED,
+                    ),
+                    gap="2",
+                    align="center",
+                    width="100%",
                 ),
                 rx.cond(
                     DashboardState.cultivation_clone_plan_error != "",
