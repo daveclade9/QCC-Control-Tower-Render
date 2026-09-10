@@ -194,7 +194,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.78-staging"
+PILOT_VERSION = "0.9.6.79-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -13108,6 +13108,21 @@ class DashboardState(rx.State):
         )
         return f"{weight / 453.59237:,.1f} lb"
 
+    @staticmethod
+    def _mt_smalls_stage_summary(
+        rows: list[dict[str, Any]], stage: str
+    ) -> str:
+        stage_rows = [
+            row for row in rows
+            if DashboardState._is_mt_smalls(row)
+            and row.get("Production Stage") == stage
+        ]
+        weight = sum(
+            DashboardState._number(row, "Calculated Weight (g)")
+            for row in stage_rows
+        )
+        return f"{len(stage_rows):,} pkg / {weight / 453.59237:,.1f} lb"
+
     @rx.var(cache=True)
     def cultivation_wip_summary(self) -> str:
         _ = self.wip_summary_source_rows
@@ -13143,6 +13158,18 @@ class DashboardState(rx.State):
         return self._mt_smalls_weight_summary(self.wip_summary_source_rows)
 
     @rx.var(cache=True)
+    def cultivation_wip_mt_smalls_summary(self) -> str:
+        return self._mt_smalls_stage_summary(
+            self.wip_summary_source_rows, "WIP-Cultivation"
+        )
+
+    @rx.var(cache=True)
+    def cultivation_pre_wip_mt_smalls_summary(self) -> str:
+        return self._mt_smalls_stage_summary(
+            self.wip_summary_source_rows, "Pre-WIP-Cultivation"
+        )
+
+    @rx.var(cache=True)
     def all_inventory_cultivation_pre_wip_summary(self) -> str:
         return self._stage_package_weight_summary(
             self.filtered_all_inventory, "Pre-WIP-Cultivation"
@@ -13153,6 +13180,22 @@ class DashboardState(rx.State):
         return self._stage_package_weight_summary(
             self.filtered_all_inventory, "WIP-Cultivation"
         )
+
+    @rx.var(cache=True)
+    def all_inventory_cultivation_wip_mt_smalls_summary(self) -> str:
+        return self._mt_smalls_stage_summary(
+            self.filtered_all_inventory, "WIP-Cultivation"
+        )
+
+    @rx.var(cache=True)
+    def all_inventory_cultivation_pre_wip_mt_smalls_summary(self) -> str:
+        return self._mt_smalls_stage_summary(
+            self.filtered_all_inventory, "Pre-WIP-Cultivation"
+        )
+
+    @rx.var(cache=True)
+    def all_inventory_mt_smalls_weight_summary(self) -> str:
+        return self._mt_smalls_weight_summary(self.filtered_all_inventory)
 
     @rx.var(cache=True)
     def all_inventory_manufacturing_pre_wip_summary(self) -> str:
@@ -17824,9 +17867,19 @@ def wip_pre_wip_summary_cards() -> rx.Component:
                     "Purchased or partner-owned 1A bulk pending testing",
                 ),
                 metric_card(
-                    "MT Smalls Weight",
+                    "Cultivation WIP - MT Smalls",
+                    DashboardState.cultivation_wip_mt_smalls_summary,
+                    "Test-passed cultivation bulk smalls",
+                ),
+                metric_card(
+                    "Cultivation Pre-WIP - MT Smalls",
+                    DashboardState.cultivation_pre_wip_mt_smalls_summary,
+                    "Untested cultivation bulk smalls",
+                ),
+                metric_card(
+                    "Total MT Smalls Weight",
                     DashboardState.mt_smalls_weight_summary,
-                    "Cultivation WIP and Pre-WIP with Smalls in the Item name",
+                    "Combined tested and untested cultivation bulk smalls",
                 ),
                 class_name="qcc-inventory-metric-grid",
                 columns=rx.breakpoints(initial="1", sm="2", lg="4"),
@@ -17874,6 +17927,21 @@ def active_inventory_context() -> rx.Component:
                         "Cultivation WIP",
                         DashboardState.all_inventory_cultivation_wip_summary,
                         "Passed Building 33 flower",
+                    ),
+                    metric_card(
+                        "Cultivation WIP - MT Smalls",
+                        DashboardState.all_inventory_cultivation_wip_mt_smalls_summary,
+                        "Test-passed cultivation bulk smalls",
+                    ),
+                    metric_card(
+                        "Cultivation Pre-WIP - MT Smalls",
+                        DashboardState.all_inventory_cultivation_pre_wip_mt_smalls_summary,
+                        "Untested cultivation bulk smalls",
+                    ),
+                    metric_card(
+                        "Total MT Smalls Weight",
+                        DashboardState.all_inventory_mt_smalls_weight_summary,
+                        "Combined tested and untested cultivation bulk smalls",
                     ),
                     metric_card(
                         "Manufacturing Pre-WIP",

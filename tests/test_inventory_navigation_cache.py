@@ -63,6 +63,38 @@ class InventoryNavigationCacheTest(unittest.TestCase):
             "1.5 lb",
         )
 
+    def test_mt_smalls_stage_summaries_separate_tested_and_untested_bulk(self):
+        rows = [
+            {
+                "Production Stage": "WIP-Cultivation",
+                "Item": "Diamond Bar Smalls",
+                "Calculated Weight (g)": 453.59237,
+            },
+            {
+                "Production Stage": "Pre-WIP-Cultivation",
+                "Item": "Blue Dream Smalls Bulk",
+                "Calculated Weight (g)": 226.796185,
+            },
+            {
+                "Production Stage": "WIP-Cultivation",
+                "Item": "Diamond Bar Bulk Flower",
+                "Calculated Weight (g)": 4535.9237,
+            },
+        ]
+
+        self.assertEqual(
+            DashboardState._mt_smalls_stage_summary(
+                rows, "WIP-Cultivation"
+            ),
+            "1 pkg / 1.0 lb",
+        )
+        self.assertEqual(
+            DashboardState._mt_smalls_stage_summary(
+                rows, "Pre-WIP-Cultivation"
+            ),
+            "1 pkg / 0.5 lb",
+        )
+
     def test_all_inventory_stage_summary_uses_only_the_requested_stage(self):
         rows = [
             {
