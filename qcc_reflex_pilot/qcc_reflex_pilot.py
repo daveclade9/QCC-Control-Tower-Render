@@ -194,7 +194,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.77-staging"
+PILOT_VERSION = "0.9.6.78-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -1957,6 +1957,7 @@ class DashboardState(rx.State):
             {
                 "material_id": row.get("material_id", ""),
                 "item": row.get("item", ""),
+                "brand_scope": row.get("brand_scope", "SHARED USE"),
                 "category": row.get("category", ""),
                 "vendor": row.get("vendor", ""),
                 "secondary_vendor": row.get("secondary_vendor", ""),
@@ -19512,12 +19513,13 @@ def packaging_table_header(*labels: str) -> rx.Component:
 def packaging_inventory_row(row: rx.Var) -> rx.Component:
     return rx.table.row(
         rx.table.cell(row["material_id"], font_weight="700", white_space="nowrap"),
-        rx.table.cell(row["item"], min_width="300px", white_space="normal"),
-        rx.table.cell(row["category"], min_width="150px"),
-        rx.table.cell(row["vendor"], min_width="150px"),
-        rx.table.cell(row["secondary_vendor"], min_width="150px"),
-        rx.table.cell(row["lead_times"], min_width="135px", white_space="nowrap"),
-        rx.table.cell(row["ownership"], min_width="130px"),
+        rx.table.cell(row["item"], white_space="normal"),
+        rx.table.cell(row["brand_scope"], white_space="normal"),
+        rx.table.cell(row["category"], white_space="normal"),
+        rx.table.cell(row["vendor"], white_space="normal"),
+        rx.table.cell(row["secondary_vendor"], white_space="normal"),
+        rx.table.cell(row["lead_times"], white_space="normal"),
+        rx.table.cell(row["ownership"], white_space="normal"),
         rx.table.cell(row["uom"], white_space="nowrap"),
         rx.table.cell(row["on_hand"], text_align="right", white_space="nowrap"),
         rx.table.cell(row["location"], min_width="140px"),
@@ -19555,9 +19557,9 @@ def packaging_inventory_row(row: rx.Var) -> rx.Component:
                         size="1",
                     ),
                 ),
-                gap="2",
+                gap="1",
+                wrap="wrap",
             ),
-            min_width="245px",
         ),
     )
 
@@ -20049,7 +20051,20 @@ def packaging_count_row(row: rx.Var) -> rx.Component:
 
 def packaging_supplier_row(row: rx.Var) -> rx.Component:
     return rx.table.row(
-        rx.table.cell(row["supplier"], font_weight="700", min_width="190px"),
+        rx.table.cell(
+            rx.vstack(
+                rx.text(row["supplier"], font_weight="700"),
+                rx.button(
+                    "Edit Supplier",
+                    on_click=DashboardState.edit_packaging_supplier(row["supplier"]),
+                    variant="outline",
+                    size="1",
+                ),
+                align="start",
+                spacing="1",
+            ),
+            min_width="190px",
+        ),
         rx.table.cell(row["supplies"], min_width="180px", white_space="normal"),
         rx.table.cell(row["payment_terms"], min_width="210px", white_space="normal"),
         rx.table.cell(row["contact_name"], min_width="170px"),
@@ -20069,14 +20084,6 @@ def packaging_supplier_row(row: rx.Var) -> rx.Component:
             rx.badge(
                 row["status"],
                 color_scheme=rx.cond(row["status"] == "ACTIVE", "green", "gray"),
-            )
-        ),
-        rx.table.cell(
-            rx.button(
-                "Edit",
-                on_click=DashboardState.edit_packaging_supplier(row["supplier"]),
-                variant="outline",
-                size="1",
             )
         ),
     )
@@ -20167,15 +20174,16 @@ def packaging_inventory_workspace() -> rx.Component:
                     rx.box(
                         rx.table.root(
                             packaging_table_header(
-                                "Material ID", "Packaging Inventory Item", "Category",
+                                "Material ID", "Packaging Inventory Item", "Brand / Shared Use", "Category",
                                 "Primary Supplier", "Secondary Supplier",
                                 "Lead Time: Primary / Secondary", "Ownership", "UOM", "On Hand",
                                 "Default Location", "Last Movement", "Status", "Actions",
                             ),
                             rx.table.body(rx.foreach(DashboardState.packaging_item_rows, packaging_inventory_row)),
                             width="100%", variant="surface",
+                            class_name="qcc-packaging-registry-table",
                         ),
-                        width="100%", overflow_x="auto",
+                        width="100%", overflow_x="hidden",
                     ),
                     rx.hstack(
                         rx.text(DashboardState.packaging_page_label, color=MUTED, size="2"),
@@ -20259,7 +20267,7 @@ def packaging_inventory_workspace() -> rx.Component:
                         rx.table.root(
                             packaging_table_header(
                                 "Supplier", "Supplies", "Payment Terms", "Primary Contact",
-                                "Email", "Phone", "Address", "Website", "Status", "Actions",
+                                "Email", "Phone", "Address", "Website", "Status",
                             ),
                             rx.table.body(rx.foreach(DashboardState.packaging_supplier_rows, packaging_supplier_row)),
                             width="100%", variant="surface",

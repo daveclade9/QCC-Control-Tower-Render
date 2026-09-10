@@ -1855,3 +1855,51 @@ body {
   .qcc-menu-brand-nav-locals { height: 52px; }
   .qcc-menu-size-group { padding: 0.55rem; }
 }
+
+/* Keep the Packaging Inventory Registry inside one desktop viewport. Long
+   material and supplier names wrap within deliberately sized columns. */
+.qcc-packaging-registry-table {
+  width: 100% !important;
+  table-layout: fixed !important;
+}
+
+.qcc-packaging-registry-table th,
+.qcc-packaging-registry-table td {
+  min-width: 0 !important;
+  padding: 0.42rem 0.32rem !important;
+  font-size: 0.72rem !important;
+  line-height: 1.18;
+  vertical-align: middle;
+  white-space: normal !important;
+  word-break: normal !important;
+  overflow-wrap: anywhere !important;
+}
+
+.qcc-packaging-registry-table th {
+  font-size: 0.68rem !important;
+}
+
+.qcc-packaging-registry-table th:nth-child(1) { width: 5.5%; }
+.qcc-packaging-registry-table th:nth-child(2) { width: 13%; }
+.qcc-packaging-registry-table th:nth-child(3) { width: 7.5%; }
+.qcc-packaging-registry-table th:nth-child(4) { width: 7.5%; }
+.qcc-packaging-registry-table th:nth-child(5) { width: 8%; }
+.qcc-packaging-registry-table th:nth-child(6) { width: 8%; }
+.qcc-packaging-registry-table th:nth-child(7) { width: 7%; }
+.qcc-packaging-registry-table th:nth-child(8) { width: 6.5%; }
+.qcc-packaging-registry-table th:nth-child(9) { width: 4%; }
+.qcc-packaging-registry-table th:nth-child(10) { width: 5%; }
+.qcc-packaging-registry-table th:nth-child(11) { width: 7.5%; }
+.qcc-packaging-registry-table th:nth-child(12) { width: 7%; }
+.qcc-packaging-registry-table th:nth-child(13) { width: 5.5%; }
+.qcc-packaging-registry-table th:nth-child(14) { width: 8%; }
+
+.qcc-packaging-registry-table td:nth-child(2) {
+  font-weight: 600;
+}
+
+.qcc-packaging-registry-table td:last-child button {
+  min-width: 0 !important;
+  padding-inline: 0.42rem !important;
+  font-size: 0.66rem !important;
+}
