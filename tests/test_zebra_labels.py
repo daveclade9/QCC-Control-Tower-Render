@@ -155,7 +155,7 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertIn("^FO190,2^A0B,18,15^FB250,1,0,C,0", zpl)
         self.assertIn("^FO191,2^A0B,18,15^FB250,1,0,C,0", zpl)
         self.assertEqual(zpl.count("Total Terpenes:"), 2)
-        self.assertIn("^FT225,244^A0B,17,9^FDLimonene: 1.10%^FS", zpl)
+        self.assertIn("^FT225,244^A0B,17,9^FD(R)-(+)-Limonene: 1.10%^FS", zpl)
         self.assertIn("^FT225,126^A0B,17,9^FDLinalool: 0.49%^FS", zpl)
         self.assertIn("^FT246,244^A0B,17,9^FDAlpha-Pinene: 0.46%^FS", zpl)
         self.assertIn("^FT246,126^A0B,17,9^FDOther: 0.83%^FS", zpl)
@@ -236,7 +236,11 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertIn("^FT7,52^A0N,17,14^FDTotal Cannabinoids:", zpl)
         self.assertIn("^FT248,52^A0N,17,14^FDTotal Terpenes:", zpl)
         self.assertIn("^FT17,70^A0N,15,15^FDTotal THC:", zpl)
-        self.assertIn("^FT222,70^A0N,15,13^FD", zpl)
+        self.assertIn(
+            "^FT222,70^A0N,15,14^FD(R)-(+)-Limonene: 1.10%^FS",
+            zpl,
+        )
+        self.assertNotIn("^A0N,15,13^FD", zpl)
         self.assertIn("^FT6,158^A0N,13,9^FDHarvest Date:", zpl)
         self.assertIn("^FT128,158^A0N,13,9^FDExpiration Date:", zpl)
         self.assertIn("^FT6,176^A0N,13,8^FDPesticides:", zpl)
@@ -483,7 +487,7 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertEqual(context["analytes"]["total_terpenes"], 2.88)
         self.assertEqual(
             [name for name, _value in context["analytes"]["top_terpenes"]],
-            ["Limonene", "Linalool", "Alpha-Pinene"],
+            ["(R)-(+)-Limonene", "Linalool", "Alpha-Pinene"],
         )
         self.assertAlmostEqual(context["analytes"]["other_terpenes"], 0.83)
 
@@ -564,8 +568,27 @@ class ZebraLabelRulesTest(unittest.TestCase):
         self.assertEqual(context["analytes"]["total_cbg"], 2.02)
         self.assertEqual(
             context["analytes"]["top_terpenes"],
-            [("Limonene", 1.10), ("Linalool", 0.49), ("Alpha-Pinene", 0.46)],
+            [("(R)-(+)-Limonene", 1.10), ("Linalool", 0.49), ("Alpha-Pinene", 0.46)],
         )
+
+    def test_limonene_prefix_is_applied_to_adjusted_and_horizontal_labels(self):
+        adjusted_coa = {
+            "total_terpenes": 2.889,
+            "total_cbg": 2.02,
+            "terpene_names": ["Limonene", "Linalool", "Alpha-Pinene"],
+            "terpene_values": [1.107, 0.497, 0.463],
+        }
+        context, errors = prepare_label_context(
+            self.package(), DIAMOND_ANALYTES, "7g Flower",
+            adjusted_coa=adjusted_coa,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            context["analytes"]["top_terpenes"][0][0],
+            "(R)-(+)-Limonene",
+        )
+        self.assertIn("(R)-(+)-Limonene: 1.10%", build_zpl(context, errors))
         self.assertEqual(context["analytes"]["other_terpenes"], 0.83)
         zpl = build_zpl(context, errors)
         self.assertIn("Total Terpenes: 2.88%", zpl)

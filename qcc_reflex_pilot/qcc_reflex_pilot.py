@@ -177,6 +177,9 @@ from .sales_menu import BuyerMenuState, buyer_menu_page, sales_menu_admin_panel
 from .ai_demand import ai_two_week_demand_forecast
 from .wip_report import build_wip_rollforward_workbook
 from .packaging_inventory import (
+    PACKAGING_BRAND_SCOPES,
+    PACKAGING_CATEGORIES,
+    PACKAGING_SIZE_FORMATS,
     deactivate_packaging_item,
     next_packaging_material_id,
     packaging_bom_recipes,
@@ -187,10 +190,11 @@ from .packaging_inventory import (
     packaging_suppliers,
     receive_packaging_inventory,
     save_packaging_item,
+    save_packaging_supplier,
 )
 
 
-PILOT_VERSION = "0.9.6.75-staging"
+PILOT_VERSION = "0.9.6.77-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -757,24 +761,28 @@ class DashboardState(rx.State):
     packaging_item_editing: bool = False
     packaging_form_material_id: str = ""
     packaging_form_item: str = ""
-    packaging_form_category: str = "Other"
-    packaging_form_uom: str = "Each"
-    packaging_form_brand_scope: str = "Shared"
-    packaging_form_vendor: str = ""
-    packaging_form_ownership: str = "QCC Owned"
+    packaging_form_category: str = "OTHER"
+    packaging_form_size_format: str = "NOT APPLICABLE"
+    packaging_form_uom: str = "EACH"
+    packaging_form_brand_scope: str = "SHARED USE"
+    packaging_form_vendor: str = "NO SUPPLIER"
+    packaging_form_secondary_vendor: str = "NO SUPPLIER"
+    packaging_form_primary_lead_time_days: str = "0"
+    packaging_form_secondary_lead_time_days: str = "0"
+    packaging_form_ownership: str = "QCC OWNED"
     packaging_form_length: str = "0"
     packaging_form_width: str = "0"
     packaging_form_height: str = "0"
     packaging_form_dimensions_uom: str = "in"
     packaging_form_units_per_case: str = "1"
-    packaging_form_default_location: str = "Unassigned"
+    packaging_form_default_location: str = "UNASSIGNED"
     packaging_form_lot_tracking: bool = False
     packaging_form_expiration_tracking: bool = False
     packaging_form_reorder_point: str = "0"
     packaging_form_safety_stock: str = "0"
     packaging_form_unit_cost: str = "0"
     packaging_form_initial_quantity: str = "0"
-    packaging_form_status: str = "Active"
+    packaging_form_status: str = "ACTIVE"
     packaging_form_notes: str = ""
     packaging_receive_dialog_open: bool = False
     packaging_receive_material_id: str = ""
@@ -786,6 +794,24 @@ class DashboardState(rx.State):
     packaging_receive_unit_cost: str = ""
     packaging_receive_reference: str = ""
     packaging_receive_notes: str = ""
+    _packaging_supplier_registry: list[dict[str, Any]] = []
+    packaging_supplier_dialog_open: bool = False
+    packaging_supplier_editing: bool = False
+    packaging_supplier_form_id: str = ""
+    packaging_supplier_form_name: str = ""
+    packaging_supplier_form_supplies: str = ""
+    packaging_supplier_form_payment_terms: str = ""
+    packaging_supplier_form_contact_name: str = ""
+    packaging_supplier_form_email: str = ""
+    packaging_supplier_form_phone: str = ""
+    packaging_supplier_form_address_1: str = ""
+    packaging_supplier_form_address_2: str = ""
+    packaging_supplier_form_city: str = ""
+    packaging_supplier_form_state: str = ""
+    packaging_supplier_form_postal_code: str = ""
+    packaging_supplier_form_country: str = "US"
+    packaging_supplier_form_website: str = ""
+    packaging_supplier_form_status: str = "ACTIVE"
     executive_action_rows_per_page: str = "10"
     executive_detail_rows_per_page: str = "10"
     executive_detail_mobile_rows_per_page: str = "5"
@@ -1437,8 +1463,10 @@ class DashboardState(rx.State):
             self.packaging_action_error = ""
         try:
             rows = await rx.run_in_thread(packaging_items)
+            suppliers = await rx.run_in_thread(packaging_suppliers)
             async with self:
                 self._packaging_registry = rows
+                self._packaging_supplier_registry = suppliers
                 self.packaging_registry_loaded = True
                 self.packaging_page = min(self.packaging_page, self.packaging_total_pages)
         except Exception as error:
@@ -1451,24 +1479,28 @@ class DashboardState(rx.State):
     def _clear_packaging_item_form(self) -> None:
         self.packaging_form_material_id = next_packaging_material_id(self._packaging_records())
         self.packaging_form_item = ""
-        self.packaging_form_category = "Other"
-        self.packaging_form_uom = "Each"
-        self.packaging_form_brand_scope = "Shared"
-        self.packaging_form_vendor = ""
-        self.packaging_form_ownership = "QCC Owned"
+        self.packaging_form_category = "OTHER"
+        self.packaging_form_size_format = "NOT APPLICABLE"
+        self.packaging_form_uom = "EACH"
+        self.packaging_form_brand_scope = "SHARED USE"
+        self.packaging_form_vendor = "NO SUPPLIER"
+        self.packaging_form_secondary_vendor = "NO SUPPLIER"
+        self.packaging_form_primary_lead_time_days = "0"
+        self.packaging_form_secondary_lead_time_days = "0"
+        self.packaging_form_ownership = "QCC OWNED"
         self.packaging_form_length = "0"
         self.packaging_form_width = "0"
         self.packaging_form_height = "0"
         self.packaging_form_dimensions_uom = "in"
         self.packaging_form_units_per_case = "1"
-        self.packaging_form_default_location = "Unassigned"
+        self.packaging_form_default_location = "UNASSIGNED"
         self.packaging_form_lot_tracking = False
         self.packaging_form_expiration_tracking = False
         self.packaging_form_reorder_point = "0"
         self.packaging_form_safety_stock = "0"
         self.packaging_form_unit_cost = "0"
         self.packaging_form_initial_quantity = "0"
-        self.packaging_form_status = "Active"
+        self.packaging_form_status = "ACTIVE"
         self.packaging_form_notes = ""
 
     @rx.event
@@ -1492,9 +1524,13 @@ class DashboardState(rx.State):
             "material_id": "packaging_form_material_id",
             "item": "packaging_form_item",
             "category": "packaging_form_category",
+            "size_format": "packaging_form_size_format",
             "uom": "packaging_form_uom",
             "brand_scope": "packaging_form_brand_scope",
             "vendor": "packaging_form_vendor",
+            "secondary_vendor": "packaging_form_secondary_vendor",
+            "primary_lead_time_days": "packaging_form_primary_lead_time_days",
+            "secondary_lead_time_days": "packaging_form_secondary_lead_time_days",
             "ownership": "packaging_form_ownership",
             "length": "packaging_form_length",
             "width": "packaging_form_width",
@@ -1520,7 +1556,13 @@ class DashboardState(rx.State):
         }
         attribute = fields.get(field)
         if attribute:
-            setattr(self, attribute, value)
+            uppercase_fields = {
+                "material_id", "item", "category", "size_format", "uom",
+                "brand_scope", "vendor", "secondary_vendor", "ownership",
+                "default_location", "status", "notes", "receive_location",
+                "receive_lot", "receive_reference", "receive_notes",
+            }
+            setattr(self, attribute, str(value).upper() if field in uppercase_fields else value)
 
     @rx.event
     def edit_packaging_item(self, material_id: str):
@@ -1533,24 +1575,30 @@ class DashboardState(rx.State):
             return
         self.packaging_form_material_id = material_id
         self.packaging_form_item = str(row.get("item", ""))
-        self.packaging_form_category = str(row.get("category", "Other"))
-        self.packaging_form_uom = str(row.get("uom", "Each"))
-        self.packaging_form_brand_scope = str(row.get("brand_scope", "Shared"))
-        self.packaging_form_vendor = str(row.get("vendor", ""))
-        self.packaging_form_ownership = str(row.get("ownership", "QCC Owned"))
+        self.packaging_form_category = str(row.get("category", "OTHER"))
+        self.packaging_form_size_format = str(row.get("size_format", "NOT APPLICABLE"))
+        self.packaging_form_uom = str(row.get("uom", "EACH"))
+        self.packaging_form_brand_scope = str(row.get("brand_scope", "SHARED USE"))
+        self.packaging_form_vendor = str(row.get("vendor", "") or "NO SUPPLIER")
+        self.packaging_form_secondary_vendor = str(
+            row.get("secondary_vendor", "") or "NO SUPPLIER"
+        )
+        self.packaging_form_primary_lead_time_days = str(row.get("primary_lead_time_days", 0))
+        self.packaging_form_secondary_lead_time_days = str(row.get("secondary_lead_time_days", 0))
+        self.packaging_form_ownership = str(row.get("ownership", "QCC OWNED"))
         self.packaging_form_length = str(row.get("length", 0))
         self.packaging_form_width = str(row.get("width", 0))
         self.packaging_form_height = str(row.get("height", 0))
         self.packaging_form_dimensions_uom = str(row.get("dimensions_uom", "in"))
         self.packaging_form_units_per_case = str(row.get("units_per_case", 1))
-        self.packaging_form_default_location = str(row.get("default_location", "Unassigned"))
+        self.packaging_form_default_location = str(row.get("default_location", "UNASSIGNED"))
         self.packaging_form_lot_tracking = bool(row.get("lot_tracking", False))
         self.packaging_form_expiration_tracking = bool(row.get("expiration_tracking", False))
         self.packaging_form_reorder_point = str(row.get("reorder_point", 0))
         self.packaging_form_safety_stock = str(row.get("safety_stock", 0))
         self.packaging_form_unit_cost = str(row.get("unit_cost", 0))
         self.packaging_form_initial_quantity = "0"
-        self.packaging_form_status = str(row.get("status", "Active"))
+        self.packaging_form_status = str(row.get("status", "ACTIVE"))
         self.packaging_form_notes = str(row.get("notes", ""))
         self.packaging_item_editing = True
         self.packaging_item_dialog_open = True
@@ -1562,14 +1610,23 @@ class DashboardState(rx.State):
         self.packaging_action_error = ""
         yield
         try:
+            if (
+                self.packaging_form_vendor != "NO SUPPLIER"
+                and self.packaging_form_vendor == self.packaging_form_secondary_vendor
+            ):
+                raise ValueError("Primary and secondary suppliers must be different.")
             numeric = lambda value: float(str(value or "0").replace(",", ""))
             material_id = save_packaging_item({
                 "material_id": self.packaging_form_material_id,
                 "item": self.packaging_form_item,
                 "category": self.packaging_form_category,
+                "size_format": self.packaging_form_size_format,
                 "uom": self.packaging_form_uom,
                 "brand_scope": self.packaging_form_brand_scope,
-                "vendor": self.packaging_form_vendor,
+                "vendor": "" if self.packaging_form_vendor == "NO SUPPLIER" else self.packaging_form_vendor,
+                "secondary_vendor": "" if self.packaging_form_secondary_vendor == "NO SUPPLIER" else self.packaging_form_secondary_vendor,
+                "primary_lead_time_days": max(0, int(numeric(self.packaging_form_primary_lead_time_days))),
+                "secondary_lead_time_days": max(0, int(numeric(self.packaging_form_secondary_lead_time_days))),
                 "ownership": self.packaging_form_ownership,
                 "length": numeric(self.packaging_form_length),
                 "width": numeric(self.packaging_form_width),
@@ -1589,6 +1646,7 @@ class DashboardState(rx.State):
             ), updated_by=self.auth_name or self.auth_email or "QCC Reflex User",
                allow_update=self.packaging_item_editing)
             self._packaging_registry = packaging_items()
+            self._packaging_supplier_registry = packaging_suppliers()
             self.packaging_registry_loaded = True
             self.packaging_item_dialog_open = False
             self.packaging_action_message = f"{material_id} was saved successfully."
@@ -1659,6 +1717,156 @@ class DashboardState(rx.State):
         except Exception as error:
             self.packaging_action_error = f"Packaging item could not be deactivated: {error}"
 
+    def _supplier_records(self) -> list[dict[str, Any]]:
+        return self._packaging_supplier_registry or packaging_suppliers()
+
+    def _clear_packaging_supplier_form(self) -> None:
+        self.packaging_supplier_form_id = ""
+        self.packaging_supplier_form_name = ""
+        self.packaging_supplier_form_supplies = ""
+        self.packaging_supplier_form_payment_terms = ""
+        self.packaging_supplier_form_contact_name = ""
+        self.packaging_supplier_form_email = ""
+        self.packaging_supplier_form_phone = ""
+        self.packaging_supplier_form_address_1 = ""
+        self.packaging_supplier_form_address_2 = ""
+        self.packaging_supplier_form_city = ""
+        self.packaging_supplier_form_state = ""
+        self.packaging_supplier_form_postal_code = ""
+        self.packaging_supplier_form_country = "US"
+        self.packaging_supplier_form_website = ""
+        self.packaging_supplier_form_status = "ACTIVE"
+
+    @rx.event
+    def open_new_packaging_supplier(self):
+        self._clear_packaging_supplier_form()
+        self.packaging_supplier_editing = False
+        self.packaging_supplier_dialog_open = True
+        self.packaging_action_error = ""
+
+    @rx.event
+    def change_packaging_supplier_dialog_open(self, value: bool):
+        self.packaging_supplier_dialog_open = bool(value)
+
+    @rx.event
+    def change_packaging_supplier_field(self, field: str, value: Any):
+        fields = {
+            "name": "packaging_supplier_form_name",
+            "supplies": "packaging_supplier_form_supplies",
+            "payment_terms": "packaging_supplier_form_payment_terms",
+            "contact_name": "packaging_supplier_form_contact_name",
+            "email": "packaging_supplier_form_email",
+            "phone": "packaging_supplier_form_phone",
+            "address_1": "packaging_supplier_form_address_1",
+            "address_2": "packaging_supplier_form_address_2",
+            "city": "packaging_supplier_form_city",
+            "state": "packaging_supplier_form_state",
+            "postal_code": "packaging_supplier_form_postal_code",
+            "country": "packaging_supplier_form_country",
+            "website": "packaging_supplier_form_website",
+            "status": "packaging_supplier_form_status",
+        }
+        attribute = fields.get(field)
+        if not attribute:
+            return
+        if field not in {"email", "phone", "website"}:
+            value = str(value).upper()
+        elif field == "email":
+            value = str(value).lower()
+        setattr(self, attribute, value)
+
+    @rx.event
+    def edit_packaging_supplier(self, supplier_name: str):
+        row = next(
+            (item for item in self._supplier_records() if item.get("supplier") == supplier_name),
+            None,
+        )
+        if not row:
+            self.packaging_action_error = "Supplier was not found."
+            return
+        self.packaging_supplier_form_id = str(row.get("supplier_id", ""))
+        self.packaging_supplier_form_name = str(row.get("supplier", ""))
+        self.packaging_supplier_form_supplies = str(row.get("supplies", ""))
+        self.packaging_supplier_form_payment_terms = str(row.get("payment_terms", ""))
+        self.packaging_supplier_form_contact_name = str(row.get("contact_name", ""))
+        self.packaging_supplier_form_email = str(row.get("contact_email", ""))
+        self.packaging_supplier_form_phone = str(row.get("contact_phone", ""))
+        self.packaging_supplier_form_address_1 = str(row.get("address_line_1", ""))
+        self.packaging_supplier_form_address_2 = str(row.get("address_line_2", ""))
+        self.packaging_supplier_form_city = str(row.get("city", ""))
+        self.packaging_supplier_form_state = str(row.get("state", ""))
+        self.packaging_supplier_form_postal_code = str(row.get("postal_code", ""))
+        self.packaging_supplier_form_country = str(row.get("country", "US"))
+        self.packaging_supplier_form_website = str(row.get("website", ""))
+        self.packaging_supplier_form_status = str(row.get("status", "ACTIVE"))
+        self.packaging_supplier_editing = True
+        self.packaging_supplier_dialog_open = True
+        self.packaging_action_error = ""
+
+    @rx.event
+    def save_packaging_supplier_form(self):
+        self.packaging_action_loading = True
+        self.packaging_action_error = ""
+        yield
+        try:
+            save_packaging_supplier({
+                "supplier_id": self.packaging_supplier_form_id,
+                "supplier": self.packaging_supplier_form_name,
+                "supplies": self.packaging_supplier_form_supplies,
+                "payment_terms": self.packaging_supplier_form_payment_terms,
+                "contact_name": self.packaging_supplier_form_contact_name,
+                "contact_email": self.packaging_supplier_form_email,
+                "contact_phone": self.packaging_supplier_form_phone,
+                "address_line_1": self.packaging_supplier_form_address_1,
+                "address_line_2": self.packaging_supplier_form_address_2,
+                "city": self.packaging_supplier_form_city,
+                "state": self.packaging_supplier_form_state,
+                "postal_code": self.packaging_supplier_form_postal_code,
+                "country": self.packaging_supplier_form_country,
+                "website": self.packaging_supplier_form_website,
+                "status": self.packaging_supplier_form_status,
+            }, updated_by=self.auth_name or self.auth_email or "QCC Reflex User")
+            self._packaging_supplier_registry = packaging_suppliers()
+            self.packaging_supplier_dialog_open = False
+            self.packaging_action_message = (
+                f"{self.packaging_supplier_form_name} was saved successfully."
+            )
+        except Exception as error:
+            self.packaging_action_error = f"Supplier could not be saved: {error}"
+        finally:
+            self.packaging_action_loading = False
+
+    @rx.event
+    def download_packaging_materials(self):
+        rows = [
+            {
+                "Material ID": row.get("material_id", ""),
+                "Packaging Inventory Item": row.get("item", ""),
+                "Category": row.get("category", ""),
+                "Size / Format": row.get("size_format", ""),
+                "Brand / Shared Use": row.get("brand_scope", ""),
+                "Primary Supplier": row.get("vendor", ""),
+                "Primary Lead Time (Calendar Days)": row.get("primary_lead_time_days", 0),
+                "Secondary Supplier": row.get("secondary_vendor", ""),
+                "Secondary Lead Time (Calendar Days)": row.get("secondary_lead_time_days", 0),
+                "Ownership": row.get("ownership", ""),
+                "UOM": row.get("uom", ""),
+                "Units Per Case": row.get("units_per_case", 0),
+                "On Hand": row.get("on_hand", 0),
+                "Available": row.get("available", 0),
+                "Default Location": row.get("default_location", ""),
+                "Reorder Point": row.get("reorder_point", 0),
+                "Safety Stock": row.get("safety_stock", 0),
+                "Unit Cost": row.get("unit_cost", 0),
+                "Status": row.get("status", ""),
+            }
+            for row in self._filtered_packaging_items()
+        ]
+        return rx.download(
+            data=self._csv_bytes(rows),
+            filename=f"qcc_materials_list_{date.today().isoformat()}.csv",
+        )
+
     @rx.event
     def change_packaging_search(self, value: str):
         self.packaging_search = value
@@ -1702,11 +1910,25 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def packaging_category_options(self) -> list[str]:
-        return ["All Categories", *sorted({str(row.get("category", "")) for row in self._packaging_records() if row.get("category")})]
+        return ["All Categories", *PACKAGING_CATEGORIES]
 
     @rx.var(cache=True)
     def packaging_vendor_options(self) -> list[str]:
-        return ["All Vendors", *sorted({str(row.get("vendor", "")) for row in self._packaging_records() if row.get("vendor")})]
+        names = {str(row.get("supplier", "")) for row in self._supplier_records() if row.get("supplier")}
+        names.update(str(row.get("vendor", "")) for row in self._packaging_records() if row.get("vendor"))
+        names.update(str(row.get("secondary_vendor", "")) for row in self._packaging_records() if row.get("secondary_vendor"))
+        return ["All Vendors", *sorted(names)]
+
+    @rx.var(cache=True)
+    def packaging_supplier_options(self) -> list[str]:
+        return [
+            "NO SUPPLIER",
+            *sorted({
+                str(row.get("supplier", ""))
+                for row in self._supplier_records()
+                if row.get("supplier") and row.get("status", "ACTIVE") == "ACTIVE"
+            }),
+        ]
 
     def _filtered_packaging_items(self) -> list[dict[str, Any]]:
         search = self.packaging_search.strip().lower()
@@ -1716,7 +1938,12 @@ class DashboardState(rx.State):
         if self.packaging_category_filter != "All Categories":
             rows = [row for row in rows if row.get("category") == self.packaging_category_filter]
         if self.packaging_vendor_filter != "All Vendors":
-            rows = [row for row in rows if row.get("vendor") == self.packaging_vendor_filter]
+            rows = [
+                row for row in rows
+                if self.packaging_vendor_filter in {
+                    row.get("vendor"), row.get("secondary_vendor")
+                }
+            ]
         if self.packaging_ownership_filter != "All Ownership":
             rows = [row for row in rows if row.get("ownership") == self.packaging_ownership_filter]
         return rows
@@ -1732,12 +1959,17 @@ class DashboardState(rx.State):
                 "item": row.get("item", ""),
                 "category": row.get("category", ""),
                 "vendor": row.get("vendor", ""),
+                "secondary_vendor": row.get("secondary_vendor", ""),
+                "lead_times": (
+                    f"{int(row.get('primary_lead_time_days', 0) or 0)} / "
+                    f"{int(row.get('secondary_lead_time_days', 0) or 0)} DAYS"
+                ),
                 "ownership": row.get("ownership", ""),
                 "on_hand": f"{float(row.get('on_hand', 0) or 0):,.0f}",
                 "latest_count_date": row.get("latest_count_date", ""),
-                "uom": row.get("uom", "Each"),
-                "location": row.get("default_location", "Unassigned"),
-                "status": row.get("status", "Active"),
+                "uom": row.get("uom", "EACH"),
+                "location": row.get("default_location", "UNASSIGNED"),
+                "status": row.get("status", "ACTIVE"),
             }
             for row in rows[start:start + page_size]
         ]
@@ -1765,7 +1997,7 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def packaging_supplier_count(self) -> int:
-        return len({row.get("supplier") for row in packaging_suppliers()})
+        return len({row.get("supplier") for row in self._supplier_records()})
 
     @rx.var(cache=True)
     def packaging_bom_count(self) -> int:
@@ -1820,9 +2052,9 @@ class DashboardState(rx.State):
     def packaging_count_history_rows(self) -> list[dict[str, Any]]:
         return packaging_snapshot_rows()
 
-    @rx.var(cache=True)
+    @rx.var
     def packaging_supplier_rows(self) -> list[dict[str, Any]]:
-        return packaging_suppliers()
+        return self._supplier_records()
 
     @staticmethod
     def _validated_table_row_limit(value: str) -> str:
@@ -19283,6 +19515,8 @@ def packaging_inventory_row(row: rx.Var) -> rx.Component:
         rx.table.cell(row["item"], min_width="300px", white_space="normal"),
         rx.table.cell(row["category"], min_width="150px"),
         rx.table.cell(row["vendor"], min_width="150px"),
+        rx.table.cell(row["secondary_vendor"], min_width="150px"),
+        rx.table.cell(row["lead_times"], min_width="135px", white_space="nowrap"),
         rx.table.cell(row["ownership"], min_width="130px"),
         rx.table.cell(row["uom"], white_space="nowrap"),
         rx.table.cell(row["on_hand"], text_align="right", white_space="nowrap"),
@@ -19291,7 +19525,7 @@ def packaging_inventory_row(row: rx.Var) -> rx.Component:
         rx.table.cell(
             rx.badge(
                 row["status"],
-                color_scheme=rx.cond(row["status"] == "Active", "green", "gray"),
+                color_scheme=rx.cond(row["status"] == "ACTIVE", "green", "gray"),
             )
         ),
         rx.table.cell(
@@ -19310,7 +19544,7 @@ def packaging_inventory_row(row: rx.Var) -> rx.Component:
                     size="1",
                 ),
                 rx.cond(
-                    row["status"] == "Active",
+                    row["status"] == "ACTIVE",
                     rx.button(
                         "Deactivate",
                         on_click=DashboardState.deactivate_selected_packaging_item(
@@ -19373,35 +19607,74 @@ def packaging_item_dialog() -> rx.Component:
                 ),
                 rx.box(
                     rx.text("Category", size="1", weight="bold", color=MUTED),
-                    rx.input(
+                    rx.select(
+                        PACKAGING_CATEGORIES,
                         value=DashboardState.packaging_form_category,
                         on_change=lambda value: DashboardState.change_packaging_form_field("category", value),
                         width="100%",
                     ),
                 ),
                 rx.box(
+                    rx.text("Size / format", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        PACKAGING_SIZE_FORMATS,
+                        value=DashboardState.packaging_form_size_format,
+                        on_change=lambda value: DashboardState.change_packaging_form_field("size_format", value),
+                        width="100%",
+                    ),
+                ),
+                rx.box(
                     rx.text("Unit of measure", size="1", weight="bold", color=MUTED),
                     rx.select(
-                        ["Each", "Case", "Roll", "Sheet", "Pound", "Kilogram"],
+                        ["EACH", "CASE", "ROLL", "SHEET", "POUND", "KILOGRAM"],
                         value=DashboardState.packaging_form_uom,
                         on_change=lambda value: DashboardState.change_packaging_form_field("uom", value),
                         width="100%",
                     ),
                 ),
-                packaging_form_field(
-                    "Brand / shared-use",
-                    DashboardState.packaging_form_brand_scope,
-                    lambda value: DashboardState.change_packaging_form_field("brand_scope", value),
+                rx.box(
+                    rx.text("Brand / shared-use", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        PACKAGING_BRAND_SCOPES,
+                        value=DashboardState.packaging_form_brand_scope,
+                        on_change=lambda value: DashboardState.change_packaging_form_field("brand_scope", value),
+                        width="100%",
+                    ),
+                ),
+                rx.box(
+                    rx.text("Primary supplier", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        DashboardState.packaging_supplier_options,
+                        value=DashboardState.packaging_form_vendor,
+                        on_change=lambda value: DashboardState.change_packaging_form_field("vendor", value),
+                        width="100%",
+                    ),
                 ),
                 packaging_form_field(
-                    "Primary supplier",
-                    DashboardState.packaging_form_vendor,
-                    lambda value: DashboardState.change_packaging_form_field("vendor", value),
+                    "Primary lead time (calendar days)",
+                    DashboardState.packaging_form_primary_lead_time_days,
+                    lambda value: DashboardState.change_packaging_form_field("primary_lead_time_days", value),
+                    "number",
+                ),
+                rx.box(
+                    rx.text("Secondary supplier", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        DashboardState.packaging_supplier_options,
+                        value=DashboardState.packaging_form_secondary_vendor,
+                        on_change=lambda value: DashboardState.change_packaging_form_field("secondary_vendor", value),
+                        width="100%",
+                    ),
+                ),
+                packaging_form_field(
+                    "Secondary lead time (calendar days)",
+                    DashboardState.packaging_form_secondary_lead_time_days,
+                    lambda value: DashboardState.change_packaging_form_field("secondary_lead_time_days", value),
+                    "number",
                 ),
                 rx.box(
                     rx.text("Ownership", size="1", weight="bold", color=MUTED),
                     rx.select(
-                        ["QCC Owned", "Customer Supplied"],
+                        ["QCC OWNED", "CUSTOMER SUPPLIED"],
                         value=DashboardState.packaging_form_ownership,
                         on_change=lambda value: DashboardState.change_packaging_form_field("ownership", value),
                         width="100%",
@@ -19475,7 +19748,7 @@ def packaging_item_dialog() -> rx.Component:
                 rx.box(
                     rx.text("Status", size="1", weight="bold", color=MUTED),
                     rx.select(
-                        ["Active", "Inactive"],
+                        ["ACTIVE", "INACTIVE"],
                         value=DashboardState.packaging_form_status,
                         on_change=lambda value: DashboardState.change_packaging_form_field("status", value),
                         width="100%",
@@ -19614,6 +19887,123 @@ def packaging_receipt_dialog() -> rx.Component:
     )
 
 
+def packaging_supplier_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title(
+                rx.cond(
+                    DashboardState.packaging_supplier_editing,
+                    "Edit Supplier",
+                    "Add Supplier",
+                )
+            ),
+            rx.dialog.description(
+                "Maintain supplier contact and purchasing information. Operational "
+                "text is standardized in uppercase; email and website values retain their format."
+            ),
+            rx.grid(
+                packaging_form_field(
+                    "Supplier name",
+                    DashboardState.packaging_supplier_form_name,
+                    lambda value: DashboardState.change_packaging_supplier_field("name", value),
+                ),
+                packaging_form_field(
+                    "Supplies / capabilities",
+                    DashboardState.packaging_supplier_form_supplies,
+                    lambda value: DashboardState.change_packaging_supplier_field("supplies", value),
+                ),
+                packaging_form_field(
+                    "Payment terms",
+                    DashboardState.packaging_supplier_form_payment_terms,
+                    lambda value: DashboardState.change_packaging_supplier_field("payment_terms", value),
+                ),
+                packaging_form_field(
+                    "Primary contact name",
+                    DashboardState.packaging_supplier_form_contact_name,
+                    lambda value: DashboardState.change_packaging_supplier_field("contact_name", value),
+                ),
+                packaging_form_field(
+                    "Email",
+                    DashboardState.packaging_supplier_form_email,
+                    lambda value: DashboardState.change_packaging_supplier_field("email", value),
+                    "email",
+                ),
+                packaging_form_field(
+                    "Phone",
+                    DashboardState.packaging_supplier_form_phone,
+                    lambda value: DashboardState.change_packaging_supplier_field("phone", value),
+                    "tel",
+                ),
+                packaging_form_field(
+                    "Address line 1",
+                    DashboardState.packaging_supplier_form_address_1,
+                    lambda value: DashboardState.change_packaging_supplier_field("address_1", value),
+                ),
+                packaging_form_field(
+                    "Address line 2",
+                    DashboardState.packaging_supplier_form_address_2,
+                    lambda value: DashboardState.change_packaging_supplier_field("address_2", value),
+                ),
+                packaging_form_field(
+                    "City",
+                    DashboardState.packaging_supplier_form_city,
+                    lambda value: DashboardState.change_packaging_supplier_field("city", value),
+                ),
+                packaging_form_field(
+                    "State",
+                    DashboardState.packaging_supplier_form_state,
+                    lambda value: DashboardState.change_packaging_supplier_field("state", value),
+                ),
+                packaging_form_field(
+                    "Postal code",
+                    DashboardState.packaging_supplier_form_postal_code,
+                    lambda value: DashboardState.change_packaging_supplier_field("postal_code", value),
+                ),
+                packaging_form_field(
+                    "Country",
+                    DashboardState.packaging_supplier_form_country,
+                    lambda value: DashboardState.change_packaging_supplier_field("country", value),
+                ),
+                packaging_form_field(
+                    "Website",
+                    DashboardState.packaging_supplier_form_website,
+                    lambda value: DashboardState.change_packaging_supplier_field("website", value),
+                    "url",
+                ),
+                rx.box(
+                    rx.text("Status", size="1", weight="bold", color=MUTED),
+                    rx.select(
+                        ["ACTIVE", "INACTIVE"],
+                        value=DashboardState.packaging_supplier_form_status,
+                        on_change=lambda value: DashboardState.change_packaging_supplier_field("status", value),
+                        width="100%",
+                    ),
+                ),
+                columns=rx.breakpoints(initial="1", sm="2", lg="3"),
+                gap="3",
+                width="100%",
+                margin_top="1rem",
+            ),
+            rx.flex(
+                rx.dialog.close(rx.button("Cancel", variant="outline")),
+                rx.button(
+                    "Save Supplier",
+                    on_click=DashboardState.save_packaging_supplier_form,
+                    loading=DashboardState.packaging_action_loading,
+                    background=ACCENT,
+                    color="white",
+                ),
+                justify="end",
+                gap="2",
+                margin_top="1rem",
+            ),
+            max_width="960px",
+        ),
+        open=DashboardState.packaging_supplier_dialog_open,
+        on_open_change=DashboardState.change_packaging_supplier_dialog_open,
+    )
+
+
 def packaging_coverage_badge(status: rx.Var) -> rx.Component:
     return rx.match(
         status,
@@ -19662,8 +20052,33 @@ def packaging_supplier_row(row: rx.Var) -> rx.Component:
         rx.table.cell(row["supplier"], font_weight="700", min_width="190px"),
         rx.table.cell(row["supplies"], min_width="180px", white_space="normal"),
         rx.table.cell(row["payment_terms"], min_width="210px", white_space="normal"),
+        rx.table.cell(row["contact_name"], min_width="170px"),
+        rx.table.cell(row["contact_email"], min_width="220px"),
+        rx.table.cell(row["contact_phone"], min_width="150px"),
+        rx.table.cell(
+            row["address_line_1"].to_string() + " "
+            + row["address_line_2"].to_string() + " "
+            + row["city"].to_string() + " "
+            + row["state"].to_string() + " "
+            + row["postal_code"].to_string(),
+            min_width="300px",
+            white_space="normal",
+        ),
         rx.table.cell(row["website"], min_width="240px", white_space="normal"),
-        rx.table.cell(rx.badge(row["status"], color_scheme="green")),
+        rx.table.cell(
+            rx.badge(
+                row["status"],
+                color_scheme=rx.cond(row["status"] == "ACTIVE", "green", "gray"),
+            )
+        ),
+        rx.table.cell(
+            rx.button(
+                "Edit",
+                on_click=DashboardState.edit_packaging_supplier(row["supplier"]),
+                variant="outline",
+                size="1",
+            )
+        ),
     )
 
 
@@ -19708,6 +20123,11 @@ def packaging_inventory_workspace() -> rx.Component:
                             on_click=DashboardState.load_packaging_registry,
                             variant="outline",
                         ),
+                        rx.button(
+                            "Export Materials CSV",
+                            on_click=DashboardState.download_packaging_materials,
+                            variant="outline",
+                        ),
                         rx.spacer(),
                         rx.text(
                             "On-hand changes are posted through inventory transactions.",
@@ -19741,14 +20161,15 @@ def packaging_inventory_workspace() -> rx.Component:
                         rx.input(placeholder="Search material, ID, or vendor", value=DashboardState.packaging_search, on_change=DashboardState.change_packaging_search),
                         rx.select(DashboardState.packaging_category_options, value=DashboardState.packaging_category_filter, on_change=DashboardState.change_packaging_category_filter),
                         rx.select(DashboardState.packaging_vendor_options, value=DashboardState.packaging_vendor_filter, on_change=DashboardState.change_packaging_vendor_filter),
-                        rx.select(["All Ownership", "QCC Owned", "Customer Supplied"], value=DashboardState.packaging_ownership_filter, on_change=DashboardState.change_packaging_ownership_filter),
+                        rx.select(["All Ownership", "QCC OWNED", "CUSTOMER SUPPLIED"], value=DashboardState.packaging_ownership_filter, on_change=DashboardState.change_packaging_ownership_filter),
                         columns=rx.breakpoints(initial="1", md="2", xl="4"), gap="2", width="100%",
                     ),
                     rx.box(
                         rx.table.root(
                             packaging_table_header(
                                 "Material ID", "Packaging Inventory Item", "Category",
-                                "Primary Vendor", "Ownership", "UOM", "On Hand",
+                                "Primary Supplier", "Secondary Supplier",
+                                "Lead Time: Primary / Secondary", "Ownership", "UOM", "On Hand",
                                 "Default Location", "Last Movement", "Status", "Actions",
                             ),
                             rx.table.body(rx.foreach(DashboardState.packaging_item_rows, packaging_inventory_row)),
@@ -19811,10 +20232,35 @@ def packaging_inventory_workspace() -> rx.Component:
             ),
             rx.tabs.content(
                 rx.vstack(
-                    rx.callout("Personal contacts, email addresses, phone numbers, and street addresses were intentionally not embedded in the application seed. They can move into a secured supplier registry later.", icon="shield_check", color_scheme="green", width="100%"),
+                    rx.flex(
+                        rx.button(
+                            "+ Add Supplier",
+                            on_click=DashboardState.open_new_packaging_supplier,
+                            background=ACCENT,
+                            color="white",
+                        ),
+                        rx.button(
+                            "Refresh Suppliers",
+                            on_click=DashboardState.load_packaging_registry,
+                            variant="outline",
+                        ),
+                        rx.spacer(),
+                        rx.text(
+                            "Supplier contacts are secured in the Control Tower database.",
+                            size="1",
+                            color=MUTED,
+                        ),
+                        width="100%",
+                        align="center",
+                        wrap="wrap",
+                        gap="2",
+                    ),
                     rx.box(
                         rx.table.root(
-                            packaging_table_header("Supplier", "Supplies", "Payment Terms", "Website", "Status"),
+                            packaging_table_header(
+                                "Supplier", "Supplies", "Payment Terms", "Primary Contact",
+                                "Email", "Phone", "Address", "Website", "Status", "Actions",
+                            ),
                             rx.table.body(rx.foreach(DashboardState.packaging_supplier_rows, packaging_supplier_row)),
                             width="100%", variant="surface",
                         ), width="100%", overflow_x="auto",
@@ -19828,6 +20274,7 @@ def packaging_inventory_workspace() -> rx.Component:
         ),
         packaging_item_dialog(),
         packaging_receipt_dialog(),
+        packaging_supplier_dialog(),
         width="100%",
         spacing="4",
     )

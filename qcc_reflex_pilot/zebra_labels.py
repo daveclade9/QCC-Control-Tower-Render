@@ -247,6 +247,7 @@ _TERPENE_TERMS = (
 
 def _display_analyte_name(name: str) -> str:
     text = re.sub(r"\s*\(%\)\s*", " ", name, flags=re.I)
+    text = re.sub(r"\s+percent\s*$", " ", text, flags=re.I)
     text = re.sub(r"\braw\s+plant\s+material\b", " ", text, flags=re.I)
     text = re.sub(
         r"^\s*(?:terpenes?|cannabinoids?)\s*[-:]\s*",
@@ -254,7 +255,7 @@ def _display_analyte_name(name: str) -> str:
         text,
         flags=re.I,
     )
-    return _clean_text(text, 20).strip(" -:")
+    return _clean_text(text, 28).strip(" -:")
 
 
 def _terpene_identity(key: str, display_name: str) -> str:
@@ -268,29 +269,26 @@ def _terpene_identity(key: str, display_name: str) -> str:
     return _normalized_analyte_name(display_name)
 
 
-_TERPENE_DISPLAY_NAMES = {
-    "limonene": "Limonene",
-    "linalool": "Linalool",
-    "alpha pinene": "Alpha-Pinene",
-    "beta pinene": "Beta-Pinene",
-    "pinene": "Pinene",
-    "caryophyllene": "Caryophyllene",
-    "myrcene": "Myrcene",
-    "humulene": "Humulene",
-    "terpinolene": "Terpinolene",
-    "ocimene": "Ocimene",
-    "bisabolol": "Bisabolol",
-    "camphene": "Camphene",
-    "borneol": "Borneol",
-    "eucalyptol": "Eucalyptol",
-    "farnesene": "Farnesene",
-    "geraniol": "Geraniol",
-    "guaiol": "Guaiol",
-    "nerolidol": "Nerolidol",
-    "pulegone": "Pulegone",
-    "sabinene": "Sabinene",
-    "terpineol": "Terpineol",
-}
+def _clean_terpene_display_name(name: Any) -> str:
+    """Preserve the regulatory analyte name supplied by the active source."""
+    display_name = _display_analyte_name(str(name or ""))
+    return display_name
+
+
+def _source_terpene_display_name(analytes: dict[str, Any], name: Any) -> str:
+    """Recover the current source name when an older adjustment stored an alias."""
+    display_name = _clean_terpene_display_name(name)
+    identity = _terpene_identity(
+        _normalized_analyte_name(display_name), display_name
+    )
+    for source_name, _value in analytes.get("top_terpenes", []):
+        source_display = _clean_terpene_display_name(source_name)
+        source_identity = _terpene_identity(
+            _normalized_analyte_name(source_display), source_display
+        )
+        if source_identity == identity:
+            return source_display
+    return display_name
 
 
 def label_analytes(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -340,9 +338,8 @@ def label_analytes(rows: list[dict[str, Any]]) -> dict[str, Any]:
             or not any(term in key for term in _TERPENE_TERMS)
         ):
             continue
-        display_name = _display_analyte_name(name)
+        display_name = _clean_terpene_display_name(name)
         identity = _terpene_identity(key, display_name)
-        display_name = _TERPENE_DISPLAY_NAMES.get(identity, display_name)
         if display_name and identity and identity not in terpene_by_identity:
             terpene_by_identity[identity] = (display_name, value)
     terpene_rows = list(terpene_by_identity.values())
@@ -397,7 +394,7 @@ def apply_adjusted_coa(
     adjusted["total_terpenes"] = chop_percent(total)
     adjusted["total_cbg"] = total_cbg
     adjusted["top_terpenes"] = [
-        (str(name), chop_percent(value))
+        (_source_terpene_display_name(analytes, name), chop_percent(value))
         for name, value in zip(terpene_names, precise)
     ]
     adjusted["other_terpenes"] = adjusted_other_terpenes(total, precise)
@@ -550,14 +547,14 @@ def _horizontal_flower_zpl(context: dict[str, Any]) -> str:
 ^FT18,121^A0N,15,15^FDD9-THC: {_pct(a.get('d9_thc'))}^FS
 ^FT17,138^A0N,15,15^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
 ^FT18,138^A0N,15,15^FDTotal CBG: {_pct(a.get('total_cbg'))}^FS
-^FT222,70^A0N,15,13^FD{_clean_text(terpenes[0][0], 22)}: {_pct(terpenes[0][1])}^FS
-^FT223,70^A0N,15,13^FD{_clean_text(terpenes[0][0], 22)}: {_pct(terpenes[0][1])}^FS
-^FT222,87^A0N,15,13^FD{_clean_text(terpenes[1][0], 22)}: {_pct(terpenes[1][1])}^FS
-^FT223,87^A0N,15,13^FD{_clean_text(terpenes[1][0], 22)}: {_pct(terpenes[1][1])}^FS
-^FT222,104^A0N,15,13^FD{_clean_text(terpenes[2][0], 22)}: {_pct(terpenes[2][1])}^FS
-^FT223,104^A0N,15,13^FD{_clean_text(terpenes[2][0], 22)}: {_pct(terpenes[2][1])}^FS
-^FT222,121^A0N,15,13^FDOther: {_pct(a.get('other_terpenes'))}^FS
-^FT223,121^A0N,15,13^FDOther: {_pct(a.get('other_terpenes'))}^FS
+^FT222,70^A0N,15,14^FD{_clean_text(terpenes[0][0], 22)}: {_pct(terpenes[0][1])}^FS
+^FT223,70^A0N,15,14^FD{_clean_text(terpenes[0][0], 22)}: {_pct(terpenes[0][1])}^FS
+^FT222,87^A0N,15,14^FD{_clean_text(terpenes[1][0], 22)}: {_pct(terpenes[1][1])}^FS
+^FT223,87^A0N,15,14^FD{_clean_text(terpenes[1][0], 22)}: {_pct(terpenes[1][1])}^FS
+^FT222,104^A0N,15,14^FD{_clean_text(terpenes[2][0], 22)}: {_pct(terpenes[2][1])}^FS
+^FT223,104^A0N,15,14^FD{_clean_text(terpenes[2][0], 22)}: {_pct(terpenes[2][1])}^FS
+^FT222,121^A0N,15,14^FDOther: {_pct(a.get('other_terpenes'))}^FS
+^FT223,121^A0N,15,14^FDOther: {_pct(a.get('other_terpenes'))}^FS
 ^FT6,158^A0N,13,9^FDHarvest Date: {context['harvest_date_short']}^FS
 ^FT128,158^A0N,13,9^FDExpiration Date: {context['expiration_date_short']}^FS
 ^FT6,176^A0N,13,8^FDPesticides: {context['pesticides']}^FS

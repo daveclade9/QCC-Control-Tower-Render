@@ -17,4 +17,5 @@ config = rx.Config(
     deploy_url=PUBLIC_APP_URL,
     cors_allowed_origins=[PUBLIC_APP_URL],
     disable_plugins=[SitemapPlugin],
+    show_built_with_reflex=False,
 )

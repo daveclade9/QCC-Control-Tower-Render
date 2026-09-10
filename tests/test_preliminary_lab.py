@@ -11,7 +11,7 @@ from qcc_reflex_pilot.data import (
     normalize_lab_summary,
     read_lab_summary_bytes,
 )
-from qcc_reflex_pilot.zebra_labels import label_analytes, prepare_label_context
+from qcc_reflex_pilot.zebra_labels import build_zpl, label_analytes, prepare_label_context
 from qcc_reflex_pilot.qcc_reflex_pilot import DashboardState
 
 
@@ -74,7 +74,10 @@ class PreliminaryLabSummaryTest(unittest.TestCase):
         self.assertAlmostEqual(analytes["total_thc"], 28.5108728537)
         self.assertAlmostEqual(analytes["total_cbg"], 1.2103633993)
         self.assertAlmostEqual(analytes["total_terpenes"], 2.0693)
-        self.assertEqual(analytes["top_terpenes"][0][0], "Caryophyllene")
+        self.assertEqual(
+            [name for name, _value in analytes["top_terpenes"]],
+            ["trans-Caryophyllene", "(R)-(+)-Limonene", "beta-Myrcene"],
+        )
 
     def test_passed_summary_can_prepare_label_with_parent_uid(self):
         normalized = normalize_lab_summary(
@@ -88,6 +91,11 @@ class PreliminaryLabSummaryTest(unittest.TestCase):
             package, analyte_rows, "5pk Pre-Roll"
         )
         self.assertEqual(errors, [])
+        zpl = build_zpl(context, errors)
+        self.assertIn("trans-Caryophyllene", zpl)
+        self.assertIn("(R)-(+)-Limonene", zpl)
+        self.assertIn("beta-Myrcene", zpl)
+
         self.assertEqual(package["record_origin"], "Lab Direct — Passed / Awaiting Metrc")
         self.assertEqual(context["lab_tag"], SAMPLE_TAG)
         self.assertEqual(context["bulk_uid"], PARENT_TAG)
