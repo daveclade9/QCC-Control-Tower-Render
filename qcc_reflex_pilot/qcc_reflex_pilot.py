@@ -194,7 +194,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.79-staging"
+PILOT_VERSION = "0.9.6.80-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -13123,6 +13123,38 @@ class DashboardState(rx.State):
         )
         return f"{len(stage_rows):,} pkg / {weight / 453.59237:,.1f} lb"
 
+    @staticmethod
+    def _cultivation_bulk_composition_data(
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Split each cultivation stage into regular bulk and MT Smalls."""
+        result: list[dict[str, Any]] = []
+        for label, stage in (
+            ("Cultivation WIP", "WIP-Cultivation"),
+            ("Cultivation Pre-WIP", "Pre-WIP-Cultivation"),
+        ):
+            stage_rows = [
+                row for row in rows if row.get("Production Stage") == stage
+            ]
+            total_grams = sum(
+                DashboardState._number(row, "Calculated Weight (g)")
+                for row in stage_rows
+            )
+            smalls_grams = sum(
+                DashboardState._number(row, "Calculated Weight (g)")
+                for row in stage_rows
+                if DashboardState._is_mt_smalls(row)
+            )
+            result.append({
+                "Inventory Class": label,
+                "Regular Bulk": round(
+                    max(total_grams - smalls_grams, 0) / 453.59237, 1
+                ),
+                "MT Smalls": round(smalls_grams / 453.59237, 1),
+                "Total Pounds": round(total_grams / 453.59237, 1),
+            })
+        return result
+
     @rx.var(cache=True)
     def cultivation_wip_summary(self) -> str:
         _ = self.wip_summary_source_rows
@@ -13167,6 +13199,12 @@ class DashboardState(rx.State):
     def cultivation_pre_wip_mt_smalls_summary(self) -> str:
         return self._mt_smalls_stage_summary(
             self.wip_summary_source_rows, "Pre-WIP-Cultivation"
+        )
+
+    @rx.var(cache=True)
+    def cultivation_bulk_composition_rows(self) -> list[dict[str, Any]]:
+        return self._cultivation_bulk_composition_data(
+            self.filtered_wip_inventory
         )
 
     @rx.var(cache=True)
@@ -17887,6 +17925,103 @@ def wip_pre_wip_summary_cards() -> rx.Component:
             )
 
 
+def cultivation_bulk_composition_card() -> rx.Component:
+    """Show MT Smalls as a contained portion of each cultivation stage."""
+    return rx.card(
+        rx.vstack(
+            rx.box(
+                rx.heading("Cultivation Bulk Composition", size="4", color=DARK),
+                rx.text(
+                    "Each complete bar is the stage total. The purple segment is "
+                    "MT Smalls contained within that total—not additional inventory.",
+                    size="1",
+                    color=MUTED,
+                ),
+                width="100%",
+            ),
+            rx.recharts.bar_chart(
+                rx.recharts.cartesian_grid(stroke_dasharray="3 3"),
+                rx.recharts.x_axis(
+                    data_key="Inventory Class",
+                    interval=0,
+                    font_size=11,
+                ),
+                rx.recharts.y_axis(font_size=11, unit=" lb"),
+                rx.recharts.graphing_tooltip(),
+                rx.recharts.legend(),
+                rx.recharts.bar(
+                    data_key="Regular Bulk",
+                    stack_id="cultivation_bulk",
+                    fill="#0f766e",
+                    radius=[0, 0, 0, 0],
+                ),
+                rx.recharts.bar(
+                    data_key="MT Smalls",
+                    stack_id="cultivation_bulk",
+                    fill="#7c3aed",
+                    radius=[5, 5, 0, 0],
+                ),
+                data=DashboardState.cultivation_bulk_composition_rows,
+                width="100%",
+                height=285,
+                margin={"left": -10, "right": 8, "top": 12, "bottom": 2},
+            ),
+            width="100%",
+            spacing="3",
+        ),
+        width="100%",
+        border_top="4px solid #7c3aed",
+    )
+
+
+def wip_operational_summary() -> rx.Component:
+    """WIP view with cultivation hierarchy and supporting inventory classes."""
+    return rx.vstack(
+        rx.grid(
+            cultivation_bulk_composition_card(),
+            metric_card(
+                "Total MT Smalls Weight",
+                DashboardState.mt_smalls_weight_summary,
+                "Combined tested and untested cultivation bulk smalls",
+            ),
+            grid_template_columns=rx.breakpoints(
+                initial="minmax(0, 1fr)",
+                lg="minmax(0, 3fr) minmax(240px, 1fr)",
+            ),
+            gap="4",
+            width="100%",
+            align_items="stretch",
+        ),
+        rx.grid(
+            metric_card(
+                "Manufacturing WIP", DashboardState.manufacturing_wip_summary,
+                "Passed manufacturing input; excluded from Clone Allocation",
+            ),
+            metric_card(
+                "Manufacturing Pre-WIP",
+                DashboardState.manufacturing_pre_wip_summary,
+                "Pending manufacturing input; excluded from Clone Allocation",
+            ),
+            metric_card(
+                "Purchased 1A WIP",
+                DashboardState.purchased_1a_wip_summary,
+                "Test-passed purchased or partner-owned 1A bulk",
+            ),
+            metric_card(
+                "Purchased 1A Pre-WIP",
+                DashboardState.purchased_1a_pre_wip_summary,
+                "Purchased or partner-owned 1A bulk pending testing",
+            ),
+            class_name="qcc-inventory-metric-grid",
+            columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+            gap="4",
+            width="100%",
+        ),
+        width="100%",
+        spacing="4",
+    )
+
+
 def active_inventory_context() -> rx.Component:
     """Render only the active inventory tab's specialized summary."""
     return rx.cond(
@@ -17914,7 +18049,7 @@ def active_inventory_context() -> rx.Component:
         ),
         rx.cond(
             DashboardState.inventory_view_name == "wip",
-            wip_pre_wip_summary_cards(),
+            wip_operational_summary(),
             rx.cond(
                 DashboardState.inventory_view_name == "all",
                 rx.grid(

@@ -95,6 +95,42 @@ class InventoryNavigationCacheTest(unittest.TestCase):
             "1 pkg / 0.5 lb",
         )
 
+    def test_cultivation_bulk_composition_treats_mt_smalls_as_subset(self):
+        rows = [
+            {
+                "Production Stage": "WIP-Cultivation",
+                "Item": "Diamond Bar Smalls",
+                "Calculated Weight (g)": 453.59237,
+            },
+            {
+                "Production Stage": "WIP-Cultivation",
+                "Item": "Diamond Bar Bulk Flower",
+                "Calculated Weight (g)": 1814.36948,
+            },
+            {
+                "Production Stage": "Pre-WIP-Cultivation",
+                "Item": "Blue Dream Smalls Bulk",
+                "Calculated Weight (g)": 226.796185,
+            },
+        ]
+
+        result = DashboardState._cultivation_bulk_composition_data(rows)
+
+        self.assertEqual(result, [
+            {
+                "Inventory Class": "Cultivation WIP",
+                "Regular Bulk": 4.0,
+                "MT Smalls": 1.0,
+                "Total Pounds": 5.0,
+            },
+            {
+                "Inventory Class": "Cultivation Pre-WIP",
+                "Regular Bulk": 0.0,
+                "MT Smalls": 0.5,
+                "Total Pounds": 0.5,
+            },
+        ])
+
     def test_all_inventory_stage_summary_uses_only_the_requested_stage(self):
         rows = [
             {
