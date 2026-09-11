@@ -115,6 +115,42 @@ class CloneDemandModelTest(unittest.TestCase):
         self.assertAlmostEqual(demand["pine tar"], 45.0 / 453.59237)
         self.assertAlmostEqual(demand["private reserve"], 70.0 / 453.59237)
 
+    @patch("qcc_reflex_pilot.qcc_reflex_pilot.save_scheduled_mix_adjustment")
+    def test_scheduled_mix_reset_persists_default_and_refreshes_forecast(self, save):
+        self.state.cultivation_scheduled_mix_adjustments = {
+            "f1.11|diamond bar": {
+                "tops_percent": 60.0,
+                "mt_smalls_percent": 25.0,
+                "loss_percent": 15.0,
+            }
+        }
+        revision = self.state.cultivation_scheduled_mix_revision
+
+        self.state.reset_cultivation_scheduled_mix("F1.11", "Diamond Bar")
+
+        save.assert_called_once_with(
+            crop="F1.11",
+            strain="Diamond Bar",
+            tops_percent=75.0,
+            mt_smalls_percent=20.0,
+            loss_percent=5.0,
+            updated_by="QCC Reflex User",
+        )
+        self.assertEqual(
+            self.state.cultivation_scheduled_mix_adjustments[
+                "f1.11|diamond bar"
+            ],
+            {
+                "tops_percent": 75.0,
+                "mt_smalls_percent": 20.0,
+                "loss_percent": 5.0,
+            },
+        )
+        self.assertEqual(
+            self.state.cultivation_scheduled_mix_revision, revision + 1
+        )
+        self.assertIn("reset to the default", self.state.cultivation_clone_plan_message)
+
     def test_wip_report_default_scope_identifies_clade9_strains(self):
         self.state.cultivation_provisional_strains = ["New Clade9 Strain"]
         self.state.all_inventory = [

@@ -196,7 +196,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.88-staging"
+PILOT_VERSION = "0.9.6.89-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -8585,6 +8585,41 @@ class DashboardState(rx.State):
         except Exception as error:
             self.cultivation_clone_plan_error = (
                 "Scheduled Mix could not be saved: " + str(error)
+            )
+        finally:
+            self.cultivation_fresh_frozen_saving = False
+
+    @rx.event
+    def reset_cultivation_scheduled_mix(self, crop: str, strain: str):
+        """Persist the standard 75/20/5 mix without altering other reductions."""
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = ""
+        self.cultivation_fresh_frozen_saving = True
+        try:
+            save_scheduled_mix_adjustment(
+                crop=crop,
+                strain=strain,
+                tops_percent=75.0,
+                mt_smalls_percent=20.0,
+                loss_percent=5.0,
+                updated_by=self.auth_name or self.auth_email or "QCC Reflex User",
+            )
+            updated = dict(self.cultivation_scheduled_mix_adjustments)
+            updated[f"{crop.casefold()}|{normalized_strain(strain)}"] = {
+                "tops_percent": 75.0,
+                "mt_smalls_percent": 20.0,
+                "loss_percent": 5.0,
+            }
+            self.cultivation_scheduled_mix_adjustments = updated
+            self.cultivation_scheduled_mix_revision += 1
+            self.cultivation_clone_plan_message = (
+                f"{crop} {strain}: Scheduled Mix reset to the default "
+                "75.0% Tops / 20.0% MT Smalls / 5.0% Loss. "
+                "Forecast Counted has been recalculated."
+            )
+        except Exception as error:
+            self.cultivation_clone_plan_error = (
+                "Scheduled Mix could not be reset: " + str(error)
             )
         finally:
             self.cultivation_fresh_frozen_saving = False
@@ -21963,14 +21998,28 @@ def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
         ),
         rx.cond(
             detail["can_edit_creative_use"],
-            rx.button(
-                "Edit Scheduled Mix",
-                on_click=DashboardState.open_cultivation_scheduled_mix_editor(
-                    detail["crop"], detail["strain"]
+            rx.hstack(
+                rx.button(
+                    "Edit Scheduled Mix",
+                    on_click=DashboardState.open_cultivation_scheduled_mix_editor(
+                        detail["crop"], detail["strain"]
+                    ),
+                    size="1",
+                    variant="outline",
+                    color_scheme="purple",
                 ),
-                size="1",
-                variant="outline",
-                color_scheme="purple",
+                rx.button(
+                    "Reset to 75/20/5",
+                    on_click=DashboardState.reset_cultivation_scheduled_mix(
+                        detail["crop"], detail["strain"]
+                    ),
+                    size="1",
+                    variant="soft",
+                    color_scheme="gray",
+                    loading=DashboardState.cultivation_fresh_frozen_saving,
+                ),
+                gap="2",
+                wrap="wrap",
                 margin_top="10px",
             ),
         ),
