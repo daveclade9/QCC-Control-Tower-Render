@@ -195,7 +195,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.86-staging"
+PILOT_VERSION = "0.9.6.87-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -912,6 +912,12 @@ class DashboardState(rx.State):
     cultivation_creative_use_adjustments: dict[str, float] = {}
     cultivation_scheduled_mix_adjustments: dict[str, dict[str, float]] = {}
     cultivation_scheduled_mix_revision: int = 0
+    cultivation_scheduled_mix_dialog_open: bool = False
+    cultivation_scheduled_mix_crop: str = ""
+    cultivation_scheduled_mix_strain: str = ""
+    cultivation_scheduled_mix_tops_input: str = "75"
+    cultivation_scheduled_mix_smalls_input: str = "20"
+    cultivation_scheduled_mix_loss_input: str = "5"
     cultivation_fresh_frozen_saving: bool = False
     cultivation_historical_plan_crop: str = ""
     cultivation_historical_plan_allocations: dict[str, float] = {}
@@ -8487,16 +8493,53 @@ class DashboardState(rx.State):
             self.cultivation_fresh_frozen_saving = False
 
     @rx.event
-    def save_cultivation_scheduled_mix(
-        self, crop: str, strain: str, form_data: dict[str, Any]
-    ):
+    def change_cultivation_scheduled_mix_dialog_open(self, value: bool):
+        self.cultivation_scheduled_mix_dialog_open = bool(value)
+
+    @rx.event
+    def open_cultivation_scheduled_mix_editor(self, crop: str, strain: str):
+        """Load a crop/strain mix into controlled inputs before editing."""
+        saved = self.cultivation_scheduled_mix_adjustments.get(
+            f"{crop.casefold()}|{normalized_strain(strain)}", {}
+        )
+        self.cultivation_scheduled_mix_crop = str(crop)
+        self.cultivation_scheduled_mix_strain = str(strain)
+        self.cultivation_scheduled_mix_tops_input = str(
+            saved.get("tops_percent", 75.0)
+        )
+        self.cultivation_scheduled_mix_smalls_input = str(
+            saved.get("mt_smalls_percent", 20.0)
+        )
+        self.cultivation_scheduled_mix_loss_input = str(
+            saved.get("loss_percent", 5.0)
+        )
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = ""
+        self.cultivation_scheduled_mix_dialog_open = True
+
+    @rx.event
+    def change_cultivation_scheduled_mix_tops(self, value: str):
+        self.cultivation_scheduled_mix_tops_input = value
+
+    @rx.event
+    def change_cultivation_scheduled_mix_smalls(self, value: str):
+        self.cultivation_scheduled_mix_smalls_input = value
+
+    @rx.event
+    def change_cultivation_scheduled_mix_loss(self, value: str):
+        self.cultivation_scheduled_mix_loss_input = value
+
+    @rx.event
+    def save_cultivation_scheduled_mix(self):
         """Save one crop/strain split after Fresh Frozen and Creative Use."""
         self.cultivation_clone_plan_error = ""
         self.cultivation_clone_plan_message = ""
+        crop = self.cultivation_scheduled_mix_crop
+        strain = self.cultivation_scheduled_mix_strain
         try:
-            tops = round(float(form_data.get("tops_percent", 0) or 0), 1)
-            smalls = round(float(form_data.get("mt_smalls_percent", 0) or 0), 1)
-            loss = round(float(form_data.get("loss_percent", 0) or 0), 1)
+            tops = round(float(self.cultivation_scheduled_mix_tops_input or 0), 1)
+            smalls = round(float(self.cultivation_scheduled_mix_smalls_input or 0), 1)
+            loss = round(float(self.cultivation_scheduled_mix_loss_input or 0), 1)
         except (TypeError, ValueError):
             self.cultivation_clone_plan_error = (
                 "Scheduled Mix percentages must be numeric."
@@ -8531,9 +8574,12 @@ class DashboardState(rx.State):
             }
             self.cultivation_scheduled_mix_adjustments = updated
             self.cultivation_scheduled_mix_revision += 1
+            self.cultivation_scheduled_mix_dialog_open = False
             self.cultivation_clone_plan_message = (
                 f"{crop} {strain}: Scheduled Mix saved as "
-                f"{tops:.1f}% Tops / {smalls:.1f}% MT Smalls / {loss:.1f}% Loss."
+                f"{tops:.1f}% Tops / {smalls:.1f}% MT Smalls / {loss:.1f}% Loss. "
+                "Forecast Counted has been recalculated. In Flower + Pre-Rolls, "
+                "only a change to Loss changes the combined total."
             )
         except Exception as error:
             self.cultivation_clone_plan_error = (
@@ -21916,58 +21962,15 @@ def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
         ),
         rx.cond(
             detail["can_edit_creative_use"],
-            rx.form(
-                rx.box(
-                    rx.text(
-                        "Scheduled Mix",
-                        size="1", weight="bold", color=MUTED,
-                    ),
-                    rx.text(
-                        "Applied after Fresh Frozen and Creative Use. Loss is not usable Scheduled supply.",
-                        size="1", color=MUTED,
-                    ),
-                    rx.cond(
-                        detail["forecast_scope_label"] == "Flower + Pre-Rolls",
-                        rx.text(
-                            "In the combined view, moving pounds between Tops and MT Smalls changes the mix but not the combined total. Changing Loss changes Forecast Counted.",
-                            size="1",
-                            color="#92400e",
-                            weight="bold",
-                        ),
-                    ),
-                    rx.grid(
-                        clone_scheduled_mix_field(
-                            "% Tops", "tops_percent",
-                            detail["scheduled_tops_percent"],
-                        ),
-                        clone_scheduled_mix_field(
-                            "% MT Smalls", "mt_smalls_percent",
-                            detail["scheduled_mt_smalls_percent"],
-                        ),
-                        clone_scheduled_mix_field(
-                            "% Loss", "loss_percent",
-                            detail["scheduled_loss_percent"],
-                        ),
-                        columns="repeat(3, minmax(0, 1fr))",
-                        gap="2",
-                        width="100%",
-                        margin_top="6px",
-                    ),
-                    rx.button(
-                        "Save Scheduled Mix",
-                        type="submit",
-                        size="1",
-                        variant="outline",
-                        color_scheme="purple",
-                        margin_top="8px",
-                    ),
-                    margin_top="10px",
+            rx.button(
+                "Edit Scheduled Mix",
+                on_click=DashboardState.open_cultivation_scheduled_mix_editor(
+                    detail["crop"], detail["strain"]
                 ),
-                on_submit=lambda form_data: DashboardState.save_cultivation_scheduled_mix(
-                    detail["crop"], detail["strain"], form_data
-                ),
-                reset_on_submit=False,
-                width="100%",
+                size="1",
+                variant="outline",
+                color_scheme="purple",
+                margin_top="10px",
             ),
         ),
         padding_bottom="10px",
@@ -21976,23 +21979,93 @@ def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
     )
 
 
-def clone_scheduled_mix_field(
-    label: str, name: str, value: rx.Var
+def clone_scheduled_mix_dialog_field(
+    label: str, value: rx.Var, on_change: Any
 ) -> rx.Component:
     return rx.box(
         rx.text(label, size="1", weight="bold", color=MUTED),
         rx.input(
             type="number",
-            name=name,
             min="0",
             max="100",
             step="0.1",
-            default_value=value.to_string(),
-            key=name + "-" + value.to_string(),
+            value=value,
+            on_change=on_change,
             size="1",
             width="100%",
         ),
         width="100%",
+    )
+
+
+def cultivation_scheduled_mix_dialog() -> rx.Component:
+    """Controlled editor so a Scheduled Mix save is explicit and reliable."""
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Edit Scheduled Mix"),
+            rx.dialog.description(
+                DashboardState.cultivation_scheduled_mix_crop + " · "
+                + DashboardState.cultivation_scheduled_mix_strain
+            ),
+            rx.callout(
+                "The mix is applied after Fresh Frozen and Creative Use. Loss is excluded from Scheduled supply.",
+                icon="info",
+                color_scheme="purple",
+                width="100%",
+            ),
+            rx.grid(
+                clone_scheduled_mix_dialog_field(
+                    "% Tops",
+                    DashboardState.cultivation_scheduled_mix_tops_input,
+                    DashboardState.change_cultivation_scheduled_mix_tops,
+                ),
+                clone_scheduled_mix_dialog_field(
+                    "% MT Smalls",
+                    DashboardState.cultivation_scheduled_mix_smalls_input,
+                    DashboardState.change_cultivation_scheduled_mix_smalls,
+                ),
+                clone_scheduled_mix_dialog_field(
+                    "% Loss",
+                    DashboardState.cultivation_scheduled_mix_loss_input,
+                    DashboardState.change_cultivation_scheduled_mix_loss,
+                ),
+                columns="repeat(3, minmax(0, 1fr))",
+                gap="3",
+                width="100%",
+            ),
+            rx.text(
+                "In Flower + Pre-Rolls, reallocating between Tops and MT Smalls does not change the combined Forecast Counted; changing Loss does. Flower Only and Pre-Rolls Only reflect their respective mix percentages.",
+                size="1",
+                color="#92400e",
+                weight="bold",
+            ),
+            rx.cond(
+                DashboardState.cultivation_clone_plan_error != "",
+                rx.callout(
+                    DashboardState.cultivation_clone_plan_error,
+                    icon="triangle-alert",
+                    color_scheme="red",
+                    width="100%",
+                ),
+            ),
+            rx.flex(
+                rx.dialog.close(rx.button("Cancel", variant="outline")),
+                rx.button(
+                    "Save Scheduled Mix",
+                    on_click=DashboardState.save_cultivation_scheduled_mix,
+                    loading=DashboardState.cultivation_fresh_frozen_saving,
+                    background="#7c3aed",
+                    color="white",
+                ),
+                justify="end",
+                gap="3",
+                width="100%",
+            ),
+            max_width="620px",
+            width="calc(100vw - 32px)",
+        ),
+        open=DashboardState.cultivation_scheduled_mix_dialog_open,
+        on_open_change=DashboardState.change_cultivation_scheduled_mix_dialog_open,
     )
 
 
@@ -22151,11 +22224,17 @@ def cultivation_clone_plan_value_cell(
                     rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
                     rx.cond(
                         cell["manual_adjustment"],
-                        rx.badge(
-                            "ADJUSTED",
-                            color_scheme="amber",
-                            variant="solid",
-                            size="1",
+                        rx.text(
+                            "ADJ",
+                            font_size="8px",
+                            line_height="1",
+                            font_weight="900",
+                            color="white",
+                            background="#b45309",
+                            padding="2px 3px",
+                            border_radius="3px",
+                            white_space="nowrap",
+                            flex_shrink="0",
                         ),
                         rx.icon("info", size=12),
                     ),
@@ -22700,6 +22779,7 @@ def cultivation_new_strain_control() -> rx.Component:
 
 def cultivation_clone_planning_panel() -> rx.Component:
     return rx.vstack(
+        cultivation_scheduled_mix_dialog(),
         rx.card(
             rx.vstack(
                 rx.flex(
@@ -23139,7 +23219,7 @@ def cultivation_clone_planning_panel() -> rx.Component:
                             flex_shrink="0",
                         ),
                         rx.text(
-                            "Amber / ADJUSTED: Scheduled pounds include a saved Fresh Frozen, Creative Use, or custom Scheduled Mix change.",
+                            "Amber / ADJ: Scheduled pounds include a saved Fresh Frozen, Creative Use, or custom Scheduled Mix change.",
                             size="1",
                             color=MUTED,
                         ),
