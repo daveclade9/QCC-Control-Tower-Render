@@ -44,6 +44,7 @@ from .data import (
     save_clone_plan,
     save_creative_use_adjustment,
     save_fresh_frozen_adjustment,
+    save_scheduled_mix_adjustment,
     save_metrc_plant_snapshot,
     load_production_module_data,
     log_qa_label_download,
@@ -194,7 +195,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.84-staging"
+PILOT_VERSION = "0.9.6.85-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -480,6 +481,14 @@ ScheduledSupplyDetail = TypedDict(
         "fresh_frozen_percent": float,
         "fresh_frozen_reduction_lbs": float,
         "creative_use_reduction_lbs": float,
+        "scheduled_tops_percent": float,
+        "scheduled_mt_smalls_percent": float,
+        "scheduled_loss_percent": float,
+        "scheduled_tops_lbs": float,
+        "scheduled_mt_smalls_lbs": float,
+        "scheduled_loss_lbs": float,
+        "forecast_counted_total_lbs": float,
+        "scheduled_mix_is_custom": bool,
         "net_projected_lbs": float,
         "actual_processed_lbs": float,
         "unconfirmed_remainder_lbs": float,
@@ -498,9 +507,12 @@ ClonePlanMatrixValue = TypedDict(
         "highlight": bool,
         "manual_adjustment": bool,
         "show_breakdown": bool,
-        "cpg_lbs": float,
-        "wip_lbs": float,
-        "pre_wip_lbs": float,
+        "cpg_flower_lbs": float,
+        "cpg_preroll_lbs": float,
+        "wip_tops_lbs": float,
+        "pre_wip_tops_lbs": float,
+        "wip_mt_smalls_lbs": float,
+        "pre_wip_mt_smalls_lbs": float,
         "current_total_lbs": float,
         "available": bool,
         "editable_allocation": bool,
@@ -874,7 +886,7 @@ class DashboardState(rx.State):
     cultivation_new_strain_error: str = ""
     cultivation_clone_plan_demand_model: str = "Availability-Adjusted"
     cultivation_clone_plan_product_scope: str = "Flower + Pre-Rolls"
-    cultivation_clone_plan_include_pre_wip: bool = False
+    cultivation_clone_plan_include_pre_wip: bool = True
     cultivation_clone_plan_hide_inactive_strains: bool = True
     cultivation_clone_plan_demand_revision: int = 0
     cultivation_clone_plan_demand_assumptions: dict[str, float] = {}
@@ -896,6 +908,7 @@ class DashboardState(rx.State):
     cultivation_clone_plan_strategy_revision: int = 0
     cultivation_fresh_frozen_adjustments: dict[str, int] = {}
     cultivation_creative_use_adjustments: dict[str, float] = {}
+    cultivation_scheduled_mix_adjustments: dict[str, dict[str, float]] = {}
     cultivation_fresh_frozen_saving: bool = False
     cultivation_historical_plan_crop: str = ""
     cultivation_historical_plan_allocations: dict[str, float] = {}
@@ -8313,6 +8326,21 @@ class DashboardState(rx.State):
                 float(row.get("creative_use_lbs", 0) or 0)
                 for row in adjustment_rows
             }
+            self.cultivation_scheduled_mix_adjustments = {
+                f"{str(row.get('crop', '')).casefold()}|"
+                f"{normalized_strain(row.get('strain', ''))}": {
+                    "tops_percent": float(
+                        row.get("scheduled_tops_percent", 75) or 0
+                    ),
+                    "mt_smalls_percent": float(
+                        row.get("scheduled_mt_smalls_percent", 20) or 0
+                    ),
+                    "loss_percent": float(
+                        row.get("scheduled_loss_percent", 5) or 0
+                    ),
+                }
+                for row in adjustment_rows
+            }
             if not self.cultivation_clone_plan_dirty:
                 self._restore_approved_current_clone_plan()
             self.cultivation_clone_plan_history_loaded = True
@@ -8450,6 +8478,61 @@ class DashboardState(rx.State):
         except Exception as error:
             self.cultivation_clone_plan_error = (
                 "Creative Use reduction could not be saved: " + str(error)
+            )
+        finally:
+            self.cultivation_fresh_frozen_saving = False
+
+    @rx.event
+    def save_cultivation_scheduled_mix(
+        self, crop: str, strain: str, form_data: dict[str, Any]
+    ):
+        """Save one crop/strain split after Fresh Frozen and Creative Use."""
+        self.cultivation_clone_plan_error = ""
+        self.cultivation_clone_plan_message = ""
+        try:
+            tops = round(float(form_data.get("tops_percent", 0) or 0), 1)
+            smalls = round(float(form_data.get("mt_smalls_percent", 0) or 0), 1)
+            loss = round(float(form_data.get("loss_percent", 0) or 0), 1)
+        except (TypeError, ValueError):
+            self.cultivation_clone_plan_error = (
+                "Scheduled Mix percentages must be numeric."
+            )
+            return
+        if any(value < 0 or value > 100 for value in (tops, smalls, loss)):
+            self.cultivation_clone_plan_error = (
+                "Each Scheduled Mix percentage must be between 0 and 100."
+            )
+            return
+        if abs((tops + smalls + loss) - 100.0) > 0.05:
+            self.cultivation_clone_plan_error = (
+                f"Scheduled Mix must total 100%; the entered mix totals "
+                f"{tops + smalls + loss:.1f}%."
+            )
+            return
+        self.cultivation_fresh_frozen_saving = True
+        try:
+            save_scheduled_mix_adjustment(
+                crop=crop,
+                strain=strain,
+                tops_percent=tops,
+                mt_smalls_percent=smalls,
+                loss_percent=loss,
+                updated_by=self.auth_name or self.auth_email or "QCC Reflex User",
+            )
+            updated = dict(self.cultivation_scheduled_mix_adjustments)
+            updated[f"{crop.casefold()}|{normalized_strain(strain)}"] = {
+                "tops_percent": tops,
+                "mt_smalls_percent": smalls,
+                "loss_percent": loss,
+            }
+            self.cultivation_scheduled_mix_adjustments = updated
+            self.cultivation_clone_plan_message = (
+                f"{crop} {strain}: Scheduled Mix saved as "
+                f"{tops:.1f}% Tops / {smalls:.1f}% MT Smalls / {loss:.1f}% Loss."
+            )
+        except Exception as error:
+            self.cultivation_clone_plan_error = (
+                "Scheduled Mix could not be saved: " + str(error)
             )
         finally:
             self.cultivation_fresh_frozen_saving = False
@@ -9606,6 +9689,7 @@ class DashboardState(rx.State):
         *,
         exclude_current_plan: bool = True,
         post_harvest_days: int | None = None,
+        product_scope: str | None = None,
     ) -> tuple[dict[str, list[float]], dict[str, list[list[ScheduledSupplyDetail]]]]:
         result: dict[str, list[float]] = {}
         detail_result: dict[str, list[list[ScheduledSupplyDetail]]] = {}
@@ -9666,6 +9750,12 @@ class DashboardState(rx.State):
                     if actual_fresh_frozen_detail is not None
                     else None
                 ),
+            )
+            reconciliation = self._scheduled_reconciliation_for_scope(
+                reconciliation,
+                crop_name,
+                strain,
+                product_scope=product_scope,
             )
             result.setdefault(strain_key, [0.0] * len(periods))[position] += (
                 reconciliation["forecast_counted_lbs"]
@@ -9762,6 +9852,61 @@ class DashboardState(rx.State):
                 )
         return result, detail_result
 
+    def _scheduled_reconciliation_for_scope(
+        self,
+        reconciliation: dict[str, Any],
+        crop: str,
+        strain: str,
+        *,
+        product_scope: str | None = None,
+    ) -> dict[str, Any]:
+        """Split post-reduction yield and return the usable selected scope."""
+        key = f"{str(crop).casefold()}|{normalized_strain(strain)}"
+        default_mix = {
+            "tops_percent": 75.0,
+            "mt_smalls_percent": 20.0,
+            "loss_percent": 5.0,
+        }
+        saved_mix = dict(self.cultivation_scheduled_mix_adjustments.get(key) or {})
+        mix = {
+            field: max(0.0, float(saved_mix.get(field, default) or 0))
+            for field, default in default_mix.items()
+        }
+        if abs(sum(mix.values()) - 100.0) > 0.05:
+            mix = default_mix
+        full_forecast = max(
+            0.0, float(reconciliation.get("forecast_counted_lbs", 0) or 0)
+        )
+        tops_lbs = full_forecast * mix["tops_percent"] / 100.0
+        smalls_lbs = full_forecast * mix["mt_smalls_percent"] / 100.0
+        loss_lbs = full_forecast * mix["loss_percent"] / 100.0
+        scope = self._normalized_clone_demand_product_scope(
+            product_scope or self.cultivation_clone_plan_product_scope
+        )
+        if scope == "Flower Only":
+            selected = tops_lbs
+        elif scope == "Pre-Rolls Only":
+            selected = smalls_lbs
+        else:
+            selected = tops_lbs + smalls_lbs
+        return {
+            **reconciliation,
+            "scheduled_tops_percent": round(mix["tops_percent"], 1),
+            "scheduled_mt_smalls_percent": round(
+                mix["mt_smalls_percent"], 1
+            ),
+            "scheduled_loss_percent": round(mix["loss_percent"], 1),
+            "scheduled_tops_lbs": round(tops_lbs, 1),
+            "scheduled_mt_smalls_lbs": round(smalls_lbs, 1),
+            "scheduled_loss_lbs": round(loss_lbs, 1),
+            "forecast_counted_total_lbs": round(tops_lbs + smalls_lbs, 1),
+            "forecast_counted_lbs": round(selected, 1),
+            "scheduled_mix_is_custom": any(
+                abs(mix[field] - default_mix[field]) > 0.05
+                for field in default_mix
+            ),
+        }
+
     @rx.var(cache=True)
     def cultivation_clone_plan_lookback_rows(self) -> list[dict[str, Any]]:
         if self.cultivation_clone_plan_lookback == "No Historical Crops":
@@ -9851,6 +9996,7 @@ class DashboardState(rx.State):
         _ = self.cultivation_clone_plan_hide_inactive_strains
         _ = self.cultivation_fresh_frozen_adjustments
         _ = self.cultivation_creative_use_adjustments
+        _ = self.cultivation_scheduled_mix_adjustments
         _ = self.cultivation_clone_plan_demand_assumptions
         _ = self.velocity
         _ = self.velocity_windows
@@ -9907,10 +10053,23 @@ class DashboardState(rx.State):
                 "highlight": highlight,
                 "manual_adjustment": manual_adjustment,
                 "show_breakdown": show_breakdown,
-                "cpg_lbs": round(float(detail.get("cpg_lbs", 0) or 0), 1),
-                "wip_lbs": round(float(detail.get("wip_lbs", 0) or 0), 1),
-                "pre_wip_lbs": round(
-                    float(detail.get("pre_wip_lbs", 0) or 0), 1
+                "cpg_flower_lbs": round(
+                    float(detail.get("cpg_flower_lbs", 0) or 0), 1
+                ),
+                "cpg_preroll_lbs": round(
+                    float(detail.get("cpg_preroll_lbs", 0) or 0), 1
+                ),
+                "wip_tops_lbs": round(
+                    float(detail.get("wip_tops_lbs", 0) or 0), 1
+                ),
+                "pre_wip_tops_lbs": round(
+                    float(detail.get("pre_wip_tops_lbs", 0) or 0), 1
+                ),
+                "wip_mt_smalls_lbs": round(
+                    float(detail.get("wip_mt_smalls_lbs", 0) or 0), 1
+                ),
+                "pre_wip_mt_smalls_lbs": round(
+                    float(detail.get("pre_wip_mt_smalls_lbs", 0) or 0), 1
                 ),
                 "current_total_lbs": round(float(detail.get("total_lbs", 0) or 0), 1),
                 "available": available,
@@ -9967,6 +10126,9 @@ class DashboardState(rx.State):
                     int(actual_fresh_frozen_detail.get("plants", 0) or 0)
                     if actual_fresh_frozen_detail is not None else None
                 ),
+            )
+            reconciliation = self._scheduled_reconciliation_for_scope(
+                reconciliation, str(crop_period["crop"]), strain
             )
             scheduled_values[bucket] += reconciliation["forecast_counted_lbs"]
             strain_details[bucket] = [
@@ -10231,6 +10393,7 @@ class DashboardState(rx.State):
                             ),
                             manual_adjustment=any(
                                 scheduled_detail_has_manual_reduction(detail)
+                                or bool(detail.get("scheduled_mix_is_custom"))
                                 for detail in strain_details[index]
                             ),
                             available=not bool(periods[index].get("is_historical", False)),
@@ -10462,21 +10625,51 @@ class DashboardState(rx.State):
                 0.0, self._number(row, "Calculated Weight (g)")
             ) / 453.59237
             detail = totals.setdefault(key, {
-                "cpg_lbs": 0.0,
-                "wip_lbs": 0.0,
-                "pre_wip_lbs": 0.0,
+                "cpg_flower_lbs": 0.0,
+                "cpg_preroll_lbs": 0.0,
+                "wip_tops_lbs": 0.0,
+                "pre_wip_tops_lbs": 0.0,
+                "wip_mt_smalls_lbs": 0.0,
+                "pre_wip_mt_smalls_lbs": 0.0,
                 "total_lbs": 0.0,
             })
-            field = {
-                "CPG": "cpg_lbs",
-                "WIP-Cultivation": "wip_lbs",
-                "Pre-WIP-Cultivation": "pre_wip_lbs",
-            }[bucket]
+            if bucket == "CPG":
+                cpg_text = " ".join(
+                    str(row.get(column, "") or "")
+                    for column in ("SKU Type", "Item", "Category")
+                ).casefold()
+                field = (
+                    "cpg_preroll_lbs"
+                    if "pre-roll" in cpg_text or "preroll" in cpg_text
+                    else "cpg_flower_lbs"
+                )
+            else:
+                subcategory = self._cultivation_bulk_subcategory(row)
+                field = {
+                    ("WIP-Cultivation", "Tops"): "wip_tops_lbs",
+                    ("WIP-Cultivation", "MT Smalls"): "wip_mt_smalls_lbs",
+                    ("Pre-WIP-Cultivation", "Tops"): "pre_wip_tops_lbs",
+                    ("Pre-WIP-Cultivation", "MT Smalls"): "pre_wip_mt_smalls_lbs",
+                }[(bucket, subcategory)]
             detail[field] += pounds
-            if (
-                bucket != "Pre-WIP-Cultivation"
-                or self.cultivation_clone_plan_include_pre_wip
-            ):
+            scope = self._normalized_clone_demand_product_scope(
+                self.cultivation_clone_plan_product_scope
+            )
+            is_pre_wip = bucket == "Pre-WIP-Cultivation"
+            included_by_stage = (
+                not is_pre_wip or self.cultivation_clone_plan_include_pre_wip
+            )
+            included_by_scope = (
+                scope == "Flower + Pre-Rolls"
+                or (scope == "Flower Only" and field in {
+                    "cpg_flower_lbs", "wip_tops_lbs", "pre_wip_tops_lbs"
+                })
+                or (scope == "Pre-Rolls Only" and field in {
+                    "cpg_preroll_lbs", "wip_mt_smalls_lbs",
+                    "pre_wip_mt_smalls_lbs"
+                })
+            )
+            if included_by_stage and included_by_scope:
                 detail["total_lbs"] += pounds
         return totals
 
@@ -10546,14 +10739,20 @@ class DashboardState(rx.State):
 
         current = self._cultivation_current_inventory_breakdown_by_strain()
         opening = {
-            key: float(detail.get("wip_lbs", 0) or 0)
-            + float(detail.get("pre_wip_lbs", 0) or 0)
+            key: sum(
+                float(detail.get(field, 0) or 0)
+                for field in (
+                    "wip_tops_lbs", "pre_wip_tops_lbs",
+                    "wip_mt_smalls_lbs", "pre_wip_mt_smalls_lbs",
+                )
+            )
             for key, detail in current.items()
         }
         _, scheduled_detail = self._clone_plan_scheduled_by_period(
             periods,
             exclude_current_plan=False,
             post_harvest_days=30,
+            product_scope="Flower + Pre-Rolls",
         )
         scheduled: dict[str, dict[str, float]] = {}
         label_candidates: dict[str, str] = {}
@@ -18028,6 +18227,23 @@ def cultivation_bulk_composition_card() -> rx.Component:
                 ),
                 width="100%",
             ),
+            rx.hstack(
+                rx.hstack(
+                    rx.box(width="12px", height="12px", background="#0f766e"),
+                    rx.text("Tops", size="1", weight="bold"),
+                    gap="1",
+                    align="center",
+                ),
+                rx.hstack(
+                    rx.box(width="12px", height="12px", background="#7c3aed"),
+                    rx.text("MT Smalls", size="1", weight="bold"),
+                    gap="1",
+                    align="center",
+                ),
+                gap="4",
+                justify="center",
+                width="100%",
+            ),
             rx.recharts.bar_chart(
                 rx.recharts.cartesian_grid(stroke_dasharray="3 3"),
                 rx.recharts.x_axis(
@@ -18037,7 +18253,6 @@ def cultivation_bulk_composition_card() -> rx.Component:
                 ),
                 rx.recharts.y_axis(font_size=11, unit=" lb"),
                 rx.recharts.graphing_tooltip(),
-                rx.recharts.legend(),
                 rx.recharts.bar(
                     rx.recharts.label_list(
                         data_key="Tops Total Label",
@@ -21533,6 +21748,29 @@ def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
                 detail["net_projected_lbs"].to_string() + " lb",
                 size="2", weight="bold", text_align="right",
             ),
+            rx.text("Scheduled Mix", size="2"),
+            rx.text(
+                detail["scheduled_tops_percent"].to_string() + "% Tops · "
+                + detail["scheduled_mt_smalls_percent"].to_string()
+                + "% MT Smalls · "
+                + detail["scheduled_loss_percent"].to_string() + "% Loss",
+                size="2", weight="bold", text_align="right",
+            ),
+            rx.text("Tops output", size="2"),
+            rx.text(
+                detail["scheduled_tops_lbs"].to_string() + " lb",
+                size="2", weight="bold", text_align="right",
+            ),
+            rx.text("MT Smalls output", size="2"),
+            rx.text(
+                detail["scheduled_mt_smalls_lbs"].to_string() + " lb",
+                size="2", weight="bold", text_align="right",
+            ),
+            rx.text("Expected loss", size="2"),
+            rx.text(
+                detail["scheduled_loss_lbs"].to_string() + " lb",
+                size="2", weight="bold", text_align="right",
+            ),
             rx.text("Actual processed", size="2"),
             rx.text(
                 detail["actual_processed_lbs"].to_string() + " lb",
@@ -21649,8 +21887,89 @@ def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
                 size="1", color=MUTED, margin_top="8px",
             ),
         ),
+        rx.cond(
+            detail["can_edit_creative_use"],
+            rx.form(
+                rx.box(
+                    rx.text(
+                        "Scheduled Mix",
+                        size="1", weight="bold", color=MUTED,
+                    ),
+                    rx.text(
+                        "Applied after Fresh Frozen and Creative Use. Loss is not usable Scheduled supply.",
+                        size="1", color=MUTED,
+                    ),
+                    rx.grid(
+                        clone_scheduled_mix_field(
+                            "% Tops", "tops_percent",
+                            detail["scheduled_tops_percent"],
+                        ),
+                        clone_scheduled_mix_field(
+                            "% MT Smalls", "mt_smalls_percent",
+                            detail["scheduled_mt_smalls_percent"],
+                        ),
+                        clone_scheduled_mix_field(
+                            "% Loss", "loss_percent",
+                            detail["scheduled_loss_percent"],
+                        ),
+                        columns="repeat(3, minmax(0, 1fr))",
+                        gap="2",
+                        width="100%",
+                        margin_top="6px",
+                    ),
+                    rx.button(
+                        "Save Scheduled Mix",
+                        type="submit",
+                        size="1",
+                        variant="outline",
+                        color_scheme="purple",
+                        margin_top="8px",
+                    ),
+                    margin_top="10px",
+                ),
+                on_submit=lambda form_data: DashboardState.save_cultivation_scheduled_mix(
+                    detail["crop"], detail["strain"], form_data
+                ),
+                reset_on_submit=False,
+                width="100%",
+            ),
+        ),
         padding_bottom="10px",
         border_bottom="1px solid #e5e7eb",
+        width="100%",
+    )
+
+
+def clone_scheduled_mix_field(
+    label: str, name: str, value: rx.Var
+) -> rx.Component:
+    return rx.box(
+        rx.text(label, size="1", weight="bold", color=MUTED),
+        rx.input(
+            type="number",
+            name=name,
+            min="0",
+            max="100",
+            step="0.1",
+            default_value=value.to_string(),
+            size="1",
+            width="100%",
+        ),
+        width="100%",
+    )
+
+
+def clone_pounds_breakdown_row(label: str, pounds: rx.Var) -> rx.Component:
+    """Render one auditable component of Current Pounds."""
+    return rx.hstack(
+        rx.text(label, size="2"),
+        rx.spacer(),
+        rx.text(
+            pounds.to_string() + " lb",
+            weight="bold",
+            size="2",
+            font_variant_numeric="tabular-nums",
+        ),
         width="100%",
     )
 
@@ -21718,57 +22037,59 @@ def cultivation_clone_plan_value_cell(
                             color=MUTED,
                         ),
                     ),
-                    rx.hstack(
-                        rx.text("CPG · packaged flower/pre-rolls", size="2"),
-                        rx.spacer(),
-                        rx.text(
-                            cell["cpg_lbs"].to_string() + " lb",
-                            weight="bold",
-                            size="2",
-                        ),
-                        width="100%",
-                    ),
-                    rx.hstack(
-                        rx.text("WIP-Cultivation · tested flower bulk", size="2"),
-                        rx.spacer(),
-                        rx.text(
-                            cell["wip_lbs"].to_string() + " lb",
-                            weight="bold",
-                            size="2",
-                        ),
-                        width="100%",
-                    ),
-                    rx.hstack(
+                    rx.cond(
+                        DashboardState.cultivation_clone_plan_product_scope
+                        != "Pre-Rolls Only",
                         rx.vstack(
-                            rx.text("Pre-WIP-Cultivation · pending testing", size="2"),
-                            rx.text(
-                                rx.cond(
-                                    DashboardState.cultivation_clone_plan_include_pre_wip,
-                                    "Included in Current Pounds",
-                                    "Excluded from Current Pounds",
-                                ),
-                                size="1",
-                                color=rx.cond(
-                                    DashboardState.cultivation_clone_plan_include_pre_wip,
-                                    "#7c3aed",
-                                    MUTED,
-                                ),
+                            clone_pounds_breakdown_row(
+                                "CPG Flower", cell["cpg_flower_lbs"]
                             ),
-                            spacing="0",
-                            align="start",
+                            clone_pounds_breakdown_row(
+                                "Cultivation WIP Tops", cell["wip_tops_lbs"]
+                            ),
+                            clone_pounds_breakdown_row(
+                                "Cultivation Pre-WIP Tops",
+                                cell["pre_wip_tops_lbs"],
+                            ),
+                            spacing="2",
+                            width="100%",
                         ),
-                        rx.spacer(),
-                        rx.text(
-                            cell["pre_wip_lbs"].to_string() + " lb",
-                            weight="bold",
-                            size="2",
+                    ),
+                    rx.cond(
+                        DashboardState.cultivation_clone_plan_product_scope
+                        != "Flower Only",
+                        rx.vstack(
+                            clone_pounds_breakdown_row(
+                                "CPG Pre-Rolls", cell["cpg_preroll_lbs"]
+                            ),
+                            clone_pounds_breakdown_row(
+                                "Cultivation WIP MT Smalls",
+                                cell["wip_mt_smalls_lbs"],
+                            ),
+                            clone_pounds_breakdown_row(
+                                "Cultivation Pre-WIP MT Smalls",
+                                cell["pre_wip_mt_smalls_lbs"],
+                            ),
+                            spacing="2",
+                            width="100%",
                         ),
-                        width="100%",
-                        align="center",
+                    ),
+                    rx.text(
+                        rx.cond(
+                            DashboardState.cultivation_clone_plan_include_pre_wip,
+                            "Pre-WIP is included in the total.",
+                            "Pre-WIP is displayed but excluded from the total.",
+                        ),
+                        size="1",
+                        color=rx.cond(
+                            DashboardState.cultivation_clone_plan_include_pre_wip,
+                            "#7c3aed",
+                            MUTED,
+                        ),
                     ),
                     rx.separator(size="4"),
                     rx.hstack(
-                        rx.text("Current pounds", weight="bold"),
+                        rx.text("Total", weight="bold"),
                         rx.spacer(),
                         rx.text(
                             cell["current_total_lbs"].to_string() + " lb",
@@ -21778,7 +22099,7 @@ def cultivation_clone_plan_value_cell(
                         width="100%",
                     ),
                     spacing="2",
-                    width="330px",
+                    width="420px",
                 ),
                 side="top",
                 align="center",
@@ -22520,8 +22841,8 @@ def cultivation_clone_planning_panel() -> rx.Component:
                 rx.callout(
                     rx.cond(
                         DashboardState.cultivation_clone_plan_include_pre_wip,
-                        "Current Pounds combines CPG, WIP-Cultivation, and—because the toggle is on—Pre-WIP-Cultivation. Purchased or partner-owned 1A bulk, trim, shake, retention, samples, and manufacturing bulk remain excluded. Scheduled pounds arrive 30 days after harvest and expire 45 days after harvest.",
-                        "Current Pounds combines CPG and WIP-Cultivation. Pre-WIP-Cultivation is excluded unless the user turns on Include Pre-WIP. Purchased or partner-owned 1A bulk, trim, shake, retention, samples, and manufacturing bulk remain excluded. Scheduled pounds arrive 30 days after harvest and expire 45 days after harvest.",
+                        "Current Pounds uses the selected product scope and includes matching CPG, Cultivation WIP, and Cultivation Pre-WIP. Scheduled supply is calculated after Fresh Frozen and Creative Use, then split into Tops, MT Smalls, and excluded Loss. Purchased or partner-owned 1A bulk, trim, shake, retention, samples, and manufacturing bulk remain excluded.",
+                        "Current Pounds uses the selected product scope and includes matching CPG and Cultivation WIP. Pre-WIP is displayed in the breakdown but excluded from the total. Scheduled supply is calculated after Fresh Frozen and Creative Use, then split into Tops, MT Smalls, and excluded Loss.",
                     ),
                     icon="info",
                     color_scheme="blue",

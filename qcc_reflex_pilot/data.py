@@ -2974,6 +2974,18 @@ def _ensure_fresh_frozen_adjustments_table(cursor: Any) -> None:
         "ALTER TABLE qcc_crop_fresh_frozen_adjustments "
         "ADD COLUMN IF NOT EXISTS creative_use_lbs DOUBLE PRECISION NOT NULL DEFAULT 0"
     )
+    cursor.execute(
+        "ALTER TABLE qcc_crop_fresh_frozen_adjustments "
+        "ADD COLUMN IF NOT EXISTS scheduled_tops_percent DOUBLE PRECISION NOT NULL DEFAULT 75"
+    )
+    cursor.execute(
+        "ALTER TABLE qcc_crop_fresh_frozen_adjustments "
+        "ADD COLUMN IF NOT EXISTS scheduled_mt_smalls_percent DOUBLE PRECISION NOT NULL DEFAULT 20"
+    )
+    cursor.execute(
+        "ALTER TABLE qcc_crop_fresh_frozen_adjustments "
+        "ADD COLUMN IF NOT EXISTS scheduled_loss_percent DOUBLE PRECISION NOT NULL DEFAULT 5"
+    )
 
 
 def save_fresh_frozen_adjustment(
@@ -3025,6 +3037,8 @@ def load_fresh_frozen_adjustments() -> list[dict[str, Any]]:
             _ensure_fresh_frozen_adjustments_table(cursor)
             cursor.execute(
                 "SELECT adjustment_id, crop, strain, planned_plants, creative_use_lbs, "
+                "scheduled_tops_percent, scheduled_mt_smalls_percent, "
+                "scheduled_loss_percent, "
                 "updated_by, updated_at FROM qcc_crop_fresh_frozen_adjustments "
                 "ORDER BY crop, strain"
             )
@@ -3039,6 +3053,15 @@ def load_fresh_frozen_adjustments() -> list[dict[str, Any]]:
             "strain": str(row.get("strain", "")),
             "planned_plants": int(row.get("planned_plants", 0) or 0),
             "creative_use_lbs": float(row.get("creative_use_lbs", 0) or 0),
+            "scheduled_tops_percent": float(
+                row.get("scheduled_tops_percent", 75) or 0
+            ),
+            "scheduled_mt_smalls_percent": float(
+                row.get("scheduled_mt_smalls_percent", 20) or 0
+            ),
+            "scheduled_loss_percent": float(
+                row.get("scheduled_loss_percent", 5) or 0
+            ),
             "updated_by": str(row.get("updated_by", "")),
             "updated_at": str(row.get("updated_at", "")),
         }
@@ -3163,6 +3186,58 @@ def save_creative_use_adjustment(
                 "updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at",
                 (
                     adjustment_id, crop_text, strain_text, pounds,
+                    str(updated_by or "QCC Reflex User"), now_text,
+                ),
+            )
+        connection.commit()
+    return adjustment_id
+
+
+def save_scheduled_mix_adjustment(
+    *,
+    crop: str,
+    strain: str,
+    tops_percent: float,
+    mt_smalls_percent: float,
+    loss_percent: float,
+    updated_by: str = "QCC Reflex User",
+) -> str:
+    """Create or replace the post-reduction Scheduled product mix."""
+    if psycopg is None or not database_url():
+        raise RuntimeError(
+            "A live Supabase connection is required to save Scheduled Mix."
+        )
+    crop_text = str(crop or "").strip()
+    strain_text = " ".join(str(strain or "").strip().split())
+    if not crop_text or not strain_text:
+        raise ValueError("Crop and strain are required for Scheduled Mix.")
+    tops = max(0.0, float(tops_percent or 0))
+    smalls = max(0.0, float(mt_smalls_percent or 0))
+    loss = max(0.0, float(loss_percent or 0))
+    if any(value > 100 for value in (tops, smalls, loss)):
+        raise ValueError("Each Scheduled Mix percentage must be between 0 and 100.")
+    if abs((tops + smalls + loss) - 100.0) > 0.05:
+        raise ValueError("Scheduled Mix percentages must total 100%.")
+    adjustment_id = "QCC-FF-" + re.sub(
+        r"[^A-Za-z0-9]+", "-", f"{crop_text}-{strain_text}"
+    ).strip("-").upper()
+    now_text = datetime.now().astimezone().isoformat()
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_fresh_frozen_adjustments_table(cursor)
+            cursor.execute(
+                "INSERT INTO qcc_crop_fresh_frozen_adjustments "
+                "(adjustment_id, crop, strain, planned_plants, "
+                "scheduled_tops_percent, scheduled_mt_smalls_percent, "
+                "scheduled_loss_percent, updated_by, updated_at) "
+                "VALUES (%s, %s, %s, 0, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (adjustment_id) DO UPDATE SET "
+                "scheduled_tops_percent=EXCLUDED.scheduled_tops_percent, "
+                "scheduled_mt_smalls_percent=EXCLUDED.scheduled_mt_smalls_percent, "
+                "scheduled_loss_percent=EXCLUDED.scheduled_loss_percent, "
+                "updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at",
+                (
+                    adjustment_id, crop_text, strain_text, tops, smalls, loss,
                     str(updated_by or "QCC Reflex User"), now_text,
                 ),
             )

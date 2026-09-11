@@ -125,6 +125,7 @@ class CloneDemandModelTest(unittest.TestCase):
         self.assertNotIn("sour chem", keys)
 
     def test_current_pounds_breakdown_uses_formal_wip_and_optional_pre_wip(self):
+        self.state.cultivation_clone_plan_include_pre_wip = False
         self.state.all_inventory = [
             {
                 "Strain": "Diamond Bar",
@@ -159,9 +160,9 @@ class CloneDemandModelTest(unittest.TestCase):
             "diamond bar"
         ]
 
-        self.assertAlmostEqual(breakdown["cpg_lbs"], 1.0)
-        self.assertAlmostEqual(breakdown["wip_lbs"], 2.0)
-        self.assertAlmostEqual(breakdown["pre_wip_lbs"], 3.0)
+        self.assertAlmostEqual(breakdown["cpg_flower_lbs"], 1.0)
+        self.assertAlmostEqual(breakdown["wip_tops_lbs"], 2.0)
+        self.assertAlmostEqual(breakdown["pre_wip_tops_lbs"], 3.0)
         self.assertAlmostEqual(breakdown["total_lbs"], 3.0)
 
         self.state.cultivation_clone_plan_include_pre_wip = True
@@ -197,6 +198,30 @@ class CloneDemandModelTest(unittest.TestCase):
         state = DashboardState(_reflex_internal_init=True)
         self.assertTrue(state.cultivation_clone_plan_hide_inactive_strains)
 
+    def test_clone_planner_includes_pre_wip_by_default(self):
+        state = DashboardState(_reflex_internal_init=True)
+        self.assertTrue(state.cultivation_clone_plan_include_pre_wip)
+
+    def test_scheduled_mix_filters_usable_supply_by_product_scope(self):
+        reconciliation = {"forecast_counted_lbs": 100.0}
+        combined = self.state._scheduled_reconciliation_for_scope(
+            reconciliation, "F1.11", "Diamond Bar",
+            product_scope="Flower + Pre-Rolls",
+        )
+        flower = self.state._scheduled_reconciliation_for_scope(
+            reconciliation, "F1.11", "Diamond Bar",
+            product_scope="Flower Only",
+        )
+        preroll = self.state._scheduled_reconciliation_for_scope(
+            reconciliation, "F1.11", "Diamond Bar",
+            product_scope="Pre-Rolls Only",
+        )
+
+        self.assertEqual(combined["forecast_counted_lbs"], 95.0)
+        self.assertEqual(flower["forecast_counted_lbs"], 75.0)
+        self.assertEqual(preroll["forecast_counted_lbs"], 20.0)
+        self.assertEqual(combined["scheduled_loss_lbs"], 5.0)
+
     @patch("qcc_reflex_pilot.qcc_reflex_pilot.current_schedule_row")
     def test_manual_fresh_frozen_marks_affected_scheduled_cell(self, current_schedule_mock):
         schedule = default_schedule(13)
@@ -227,6 +252,7 @@ class CloneDemandModelTest(unittest.TestCase):
         self.state.all_inventory = [
             {
                 "Strain": "Diamond Bar Smalls",
+                "Item": "Diamond Bar MT Smalls Bulk",
                 "Production Stage": "Pre-WIP-Cultivation",
                 "Category": "Bud/Flower - Bulk",
                 "QA Status": "Not Submitted",
@@ -240,7 +266,9 @@ class CloneDemandModelTest(unittest.TestCase):
         breakdown = self.state._cultivation_current_inventory_breakdown_by_strain()
 
         self.assertEqual(list(breakdown), ["diamond bar"])
-        self.assertAlmostEqual(breakdown["diamond bar"]["pre_wip_lbs"], 1.0)
+        self.assertAlmostEqual(
+            breakdown["diamond bar"]["pre_wip_mt_smalls_lbs"], 1.0
+        )
         self.assertAlmostEqual(breakdown["diamond bar"]["total_lbs"], 1.0)
 
     def test_actual_fresh_frozen_harvests_are_grouped_by_crop_and_strain(self):
