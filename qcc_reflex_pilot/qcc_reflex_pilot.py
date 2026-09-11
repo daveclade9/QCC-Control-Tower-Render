@@ -194,7 +194,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.82-staging"
+PILOT_VERSION = "0.9.6.84-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -13118,6 +13118,15 @@ class DashboardState(rx.State):
         return f"{weight / 453.59237:,.1f} lb"
 
     @staticmethod
+    def _tops_weight_summary(rows: list[dict[str, Any]]) -> str:
+        weight = sum(
+            DashboardState._number(row, "Calculated Weight (g)")
+            for row in rows
+            if DashboardState._cultivation_bulk_subcategory(row) == "Tops"
+        )
+        return f"{weight / 453.59237:,.1f} lb"
+
+    @staticmethod
     def _mt_smalls_stage_summary(
         rows: list[dict[str, Any]], stage: str
     ) -> str:
@@ -13228,6 +13237,10 @@ class DashboardState(rx.State):
     @rx.var(cache=True)
     def mt_smalls_weight_summary(self) -> str:
         return self._mt_smalls_weight_summary(self.wip_summary_source_rows)
+
+    @rx.var(cache=True)
+    def tops_weight_summary(self) -> str:
+        return self._tops_weight_summary(self.filtered_wip_inventory)
 
     @rx.var(cache=True)
     def cultivation_wip_mt_smalls_summary(self) -> str:
@@ -18054,6 +18067,16 @@ def cultivation_bulk_composition_card() -> rx.Component:
                 height=300,
                 margin={"left": -10, "right": 8, "top": 30, "bottom": 2},
             ),
+            rx.cond(
+                DashboardState.strain_filter != "All Strains",
+                rx.badge(
+                    "Selected Strain: " + DashboardState.strain_filter,
+                    color_scheme="purple",
+                    variant="soft",
+                    size="2",
+                ),
+                rx.fragment(),
+            ),
             width="100%",
             spacing="3",
         ),
@@ -18117,9 +18140,27 @@ def cultivation_subcategory_summary_card() -> rx.Component:
                 "#7c3aed",
             ),
             rx.separator(width="100%"),
-            rx.box(
-                rx.text("Total MT Smalls Weight", size="1", color=MUTED, weight="bold"),
-                rx.heading(DashboardState.mt_smalls_weight_summary, size="5", color="#6d28d9"),
+            rx.grid(
+                rx.box(
+                    rx.text("Total Tops Weight", size="1", color=MUTED, weight="bold"),
+                    rx.heading(
+                        DashboardState.tops_weight_summary,
+                        size="5",
+                        color="#0f766e",
+                    ),
+                    width="100%",
+                ),
+                rx.box(
+                    rx.text("Total MT Smalls Weight", size="1", color=MUTED, weight="bold"),
+                    rx.heading(
+                        DashboardState.mt_smalls_weight_summary,
+                        size="5",
+                        color="#6d28d9",
+                    ),
+                    width="100%",
+                ),
+                columns=rx.breakpoints(initial="1", sm="2"),
+                gap="3",
                 width="100%",
             ),
             width="100%",

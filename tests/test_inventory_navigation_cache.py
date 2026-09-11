@@ -62,6 +62,10 @@ class InventoryNavigationCacheTest(unittest.TestCase):
             DashboardState._mt_smalls_weight_summary(rows),
             "1.5 lb",
         )
+        self.assertEqual(
+            DashboardState._tops_weight_summary(rows),
+            "10.0 lb",
+        )
 
     def test_mt_smalls_stage_summaries_separate_tested_and_untested_bulk(self):
         rows = [
