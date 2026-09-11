@@ -194,7 +194,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.80-staging"
+PILOT_VERSION = "0.9.6.81-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -11680,6 +11680,15 @@ class DashboardState(rx.State):
             and "smalls" in str(row.get("Item", "") or "").casefold()
         )
 
+    @staticmethod
+    def _cultivation_bulk_subcategory(row: dict[str, Any]) -> str:
+        """Return the current exclusive subcategory for cultivation bulk."""
+        if str(row.get("Production Stage", "") or "") not in {
+            "WIP-Cultivation", "Pre-WIP-Cultivation",
+        }:
+            return ""
+        return "MT Smalls" if DashboardState._is_mt_smalls(row) else "Tops"
+
     def _filtered_inventory(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         filtered = []
         for row in rows:
@@ -13112,10 +13121,18 @@ class DashboardState(rx.State):
     def _mt_smalls_stage_summary(
         rows: list[dict[str, Any]], stage: str
     ) -> str:
+        return DashboardState._cultivation_bulk_subcategory_summary(
+            rows, stage, "MT Smalls"
+        )
+
+    @staticmethod
+    def _cultivation_bulk_subcategory_summary(
+        rows: list[dict[str, Any]], stage: str, subcategory: str
+    ) -> str:
         stage_rows = [
             row for row in rows
-            if DashboardState._is_mt_smalls(row)
-            and row.get("Production Stage") == stage
+            if row.get("Production Stage") == stage
+            and DashboardState._cultivation_bulk_subcategory(row) == subcategory
         ]
         weight = sum(
             DashboardState._number(row, "Calculated Weight (g)")
@@ -13140,16 +13157,19 @@ class DashboardState(rx.State):
                 DashboardState._number(row, "Calculated Weight (g)")
                 for row in stage_rows
             )
+            tops_grams = sum(
+                DashboardState._number(row, "Calculated Weight (g)")
+                for row in stage_rows
+                if DashboardState._cultivation_bulk_subcategory(row) == "Tops"
+            )
             smalls_grams = sum(
                 DashboardState._number(row, "Calculated Weight (g)")
                 for row in stage_rows
-                if DashboardState._is_mt_smalls(row)
+                if DashboardState._cultivation_bulk_subcategory(row) == "MT Smalls"
             )
             result.append({
                 "Inventory Class": label,
-                "Regular Bulk": round(
-                    max(total_grams - smalls_grams, 0) / 453.59237, 1
-                ),
+                "Tops": round(tops_grams / 453.59237, 1),
                 "MT Smalls": round(smalls_grams / 453.59237, 1),
                 "Total Pounds": round(total_grams / 453.59237, 1),
             })
@@ -13199,6 +13219,18 @@ class DashboardState(rx.State):
     def cultivation_pre_wip_mt_smalls_summary(self) -> str:
         return self._mt_smalls_stage_summary(
             self.wip_summary_source_rows, "Pre-WIP-Cultivation"
+        )
+
+    @rx.var(cache=True)
+    def cultivation_wip_tops_summary(self) -> str:
+        return self._cultivation_bulk_subcategory_summary(
+            self.filtered_wip_inventory, "WIP-Cultivation", "Tops"
+        )
+
+    @rx.var(cache=True)
+    def cultivation_pre_wip_tops_summary(self) -> str:
+        return self._cultivation_bulk_subcategory_summary(
+            self.filtered_wip_inventory, "Pre-WIP-Cultivation", "Tops"
         )
 
     @rx.var(cache=True)
@@ -17932,8 +17964,8 @@ def cultivation_bulk_composition_card() -> rx.Component:
             rx.box(
                 rx.heading("Cultivation Bulk Composition", size="4", color=DARK),
                 rx.text(
-                    "Each complete bar is the stage total. The purple segment is "
-                    "MT Smalls contained within that total—not additional inventory.",
+                    "Each complete bar is the stage total, divided into Tops and "
+                    "MT Smalls. The total pounds are printed above each bar.",
                     size="1",
                     color=MUTED,
                 ),
@@ -17950,12 +17982,18 @@ def cultivation_bulk_composition_card() -> rx.Component:
                 rx.recharts.graphing_tooltip(),
                 rx.recharts.legend(),
                 rx.recharts.bar(
-                    data_key="Regular Bulk",
+                    data_key="Tops",
                     stack_id="cultivation_bulk",
                     fill="#0f766e",
                     radius=[0, 0, 0, 0],
                 ),
                 rx.recharts.bar(
+                    rx.recharts.label_list(
+                        data_key="Total Pounds",
+                        position="top",
+                        offset=8,
+                        fill=DARK,
+                    ),
                     data_key="MT Smalls",
                     stack_id="cultivation_bulk",
                     fill="#7c3aed",
@@ -17963,11 +18001,71 @@ def cultivation_bulk_composition_card() -> rx.Component:
                 ),
                 data=DashboardState.cultivation_bulk_composition_rows,
                 width="100%",
-                height=285,
-                margin={"left": -10, "right": 8, "top": 12, "bottom": 2},
+                height=300,
+                margin={"left": -10, "right": 8, "top": 30, "bottom": 2},
             ),
             width="100%",
             spacing="3",
+        ),
+        width="100%",
+        border_top="4px solid #7c3aed",
+    )
+
+
+def cultivation_subcategory_summary_row(
+    label: str,
+    value: rx.Var,
+    accent: str,
+) -> rx.Component:
+    return rx.box(
+        rx.text(label, size="1", color=MUTED, weight="bold"),
+        rx.heading(value, size="4", color=DARK),
+        width="100%",
+        padding="0.55rem 0.7rem",
+        border_left=f"4px solid {accent}",
+        background="#f8fafc",
+        border_radius="6px",
+    )
+
+
+def cultivation_subcategory_summary_card() -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.heading("Cultivation Subcategories", size="4", color=DARK),
+            rx.text(
+                "Package count and pounds within each parent inventory class.",
+                size="1",
+                color=MUTED,
+            ),
+            rx.text("Cultivation WIP", size="2", weight="bold", color=DARK),
+            cultivation_subcategory_summary_row(
+                "Tops", DashboardState.cultivation_wip_tops_summary, "#0f766e"
+            ),
+            cultivation_subcategory_summary_row(
+                "MT Smalls",
+                DashboardState.cultivation_wip_mt_smalls_summary,
+                "#7c3aed",
+            ),
+            rx.text("Cultivation Pre-WIP", size="2", weight="bold", color=DARK),
+            cultivation_subcategory_summary_row(
+                "Tops",
+                DashboardState.cultivation_pre_wip_tops_summary,
+                "#0f766e",
+            ),
+            cultivation_subcategory_summary_row(
+                "MT Smalls",
+                DashboardState.cultivation_pre_wip_mt_smalls_summary,
+                "#7c3aed",
+            ),
+            rx.separator(width="100%"),
+            rx.box(
+                rx.text("Total MT Smalls Weight", size="1", color=MUTED, weight="bold"),
+                rx.heading(DashboardState.mt_smalls_weight_summary, size="5", color="#6d28d9"),
+                width="100%",
+            ),
+            width="100%",
+            spacing="2",
+            align="start",
         ),
         width="100%",
         border_top="4px solid #7c3aed",
@@ -17979,11 +18077,7 @@ def wip_operational_summary() -> rx.Component:
     return rx.vstack(
         rx.grid(
             cultivation_bulk_composition_card(),
-            metric_card(
-                "Total MT Smalls Weight",
-                DashboardState.mt_smalls_weight_summary,
-                "Combined tested and untested cultivation bulk smalls",
-            ),
+            cultivation_subcategory_summary_card(),
             grid_template_columns=rx.breakpoints(
                 initial="minmax(0, 1fr)",
                 lg="minmax(0, 3fr) minmax(240px, 1fr)",
