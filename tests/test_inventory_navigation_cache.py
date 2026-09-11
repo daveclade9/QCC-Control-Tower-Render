@@ -122,12 +122,16 @@ class InventoryNavigationCacheTest(unittest.TestCase):
                 "Tops": 4.0,
                 "MT Smalls": 1.0,
                 "Total Pounds": 5.0,
+                "Tops Total Label": "",
+                "Smalls Total Label": "5.0 lb",
             },
             {
                 "Inventory Class": "Cultivation Pre-WIP",
                 "Tops": 0.0,
                 "MT Smalls": 0.5,
                 "Total Pounds": 0.5,
+                "Tops Total Label": "",
+                "Smalls Total Label": "0.5 lb",
             },
         ])
 
@@ -143,6 +147,24 @@ class InventoryNavigationCacheTest(unittest.TestCase):
             ),
             "1 pkg / 0.5 lb",
         )
+        self.assertEqual(
+            DashboardState._cultivation_bulk_subcategory_metrics(
+                rows, "WIP-Cultivation", "Tops"
+            ),
+            {"packages": 1, "weight_lbs": 4.0},
+        )
+
+    def test_cultivation_bulk_total_label_uses_visible_top_segment(self):
+        rows = [{
+            "Production Stage": "WIP-Cultivation",
+            "Item": "Diamond Bar Bulk Flower",
+            "Calculated Weight (g)": 453.59237,
+        }]
+
+        result = DashboardState._cultivation_bulk_composition_data(rows)
+
+        self.assertEqual(result[0]["Tops Total Label"], "1.0 lb")
+        self.assertEqual(result[0]["Smalls Total Label"], "")
 
     def test_all_inventory_stage_summary_uses_only_the_requested_stage(self):
         rows = [

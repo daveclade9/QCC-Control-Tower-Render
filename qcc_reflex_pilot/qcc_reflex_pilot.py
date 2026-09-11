@@ -194,7 +194,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.81-staging"
+PILOT_VERSION = "0.9.6.82-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -13129,6 +13129,15 @@ class DashboardState(rx.State):
     def _cultivation_bulk_subcategory_summary(
         rows: list[dict[str, Any]], stage: str, subcategory: str
     ) -> str:
+        metrics = DashboardState._cultivation_bulk_subcategory_metrics(
+            rows, stage, subcategory
+        )
+        return f"{metrics['packages']:,} pkg / {metrics['weight_lbs']:,.1f} lb"
+
+    @staticmethod
+    def _cultivation_bulk_subcategory_metrics(
+        rows: list[dict[str, Any]], stage: str, subcategory: str
+    ) -> dict[str, Any]:
         stage_rows = [
             row for row in rows
             if row.get("Production Stage") == stage
@@ -13138,7 +13147,10 @@ class DashboardState(rx.State):
             DashboardState._number(row, "Calculated Weight (g)")
             for row in stage_rows
         )
-        return f"{len(stage_rows):,} pkg / {weight / 453.59237:,.1f} lb"
+        return {
+            "packages": len(stage_rows),
+            "weight_lbs": round(weight / 453.59237, 1),
+        }
 
     @staticmethod
     def _cultivation_bulk_composition_data(
@@ -13172,6 +13184,14 @@ class DashboardState(rx.State):
                 "Tops": round(tops_grams / 453.59237, 1),
                 "MT Smalls": round(smalls_grams / 453.59237, 1),
                 "Total Pounds": round(total_grams / 453.59237, 1),
+                "Tops Total Label": (
+                    f"{total_grams / 453.59237:,.1f} lb"
+                    if smalls_grams <= 0 else ""
+                ),
+                "Smalls Total Label": (
+                    f"{total_grams / 453.59237:,.1f} lb"
+                    if smalls_grams > 0 else ""
+                ),
             })
         return result
 
@@ -13231,6 +13251,30 @@ class DashboardState(rx.State):
     def cultivation_pre_wip_tops_summary(self) -> str:
         return self._cultivation_bulk_subcategory_summary(
             self.filtered_wip_inventory, "Pre-WIP-Cultivation", "Tops"
+        )
+
+    @rx.var(cache=True)
+    def cultivation_wip_tops_metrics(self) -> dict[str, Any]:
+        return self._cultivation_bulk_subcategory_metrics(
+            self.filtered_wip_inventory, "WIP-Cultivation", "Tops"
+        )
+
+    @rx.var(cache=True)
+    def cultivation_wip_mt_smalls_metrics(self) -> dict[str, Any]:
+        return self._cultivation_bulk_subcategory_metrics(
+            self.filtered_wip_inventory, "WIP-Cultivation", "MT Smalls"
+        )
+
+    @rx.var(cache=True)
+    def cultivation_pre_wip_tops_metrics(self) -> dict[str, Any]:
+        return self._cultivation_bulk_subcategory_metrics(
+            self.filtered_wip_inventory, "Pre-WIP-Cultivation", "Tops"
+        )
+
+    @rx.var(cache=True)
+    def cultivation_pre_wip_mt_smalls_metrics(self) -> dict[str, Any]:
+        return self._cultivation_bulk_subcategory_metrics(
+            self.filtered_wip_inventory, "Pre-WIP-Cultivation", "MT Smalls"
         )
 
     @rx.var(cache=True)
@@ -17982,6 +18026,12 @@ def cultivation_bulk_composition_card() -> rx.Component:
                 rx.recharts.graphing_tooltip(),
                 rx.recharts.legend(),
                 rx.recharts.bar(
+                    rx.recharts.label_list(
+                        data_key="Tops Total Label",
+                        position="top",
+                        offset=8,
+                        fill=DARK,
+                    ),
                     data_key="Tops",
                     stack_id="cultivation_bulk",
                     fill="#0f766e",
@@ -17989,7 +18039,7 @@ def cultivation_bulk_composition_card() -> rx.Component:
                 ),
                 rx.recharts.bar(
                     rx.recharts.label_list(
-                        data_key="Total Pounds",
+                        data_key="Smalls Total Label",
                         position="top",
                         offset=8,
                         fill=DARK,
@@ -18014,12 +18064,21 @@ def cultivation_bulk_composition_card() -> rx.Component:
 
 def cultivation_subcategory_summary_row(
     label: str,
-    value: rx.Var,
+    metrics: rx.Var,
     accent: str,
 ) -> rx.Component:
     return rx.box(
         rx.text(label, size="1", color=MUTED, weight="bold"),
-        rx.heading(value, size="4", color=DARK),
+        rx.heading(
+            metrics["weight_lbs"].to_string() + " lb",
+            size="5",
+            color=DARK,
+        ),
+        rx.text(
+            metrics["packages"].to_string() + " packages",
+            size="1",
+            color=MUTED,
+        ),
         width="100%",
         padding="0.55rem 0.7rem",
         border_left=f"4px solid {accent}",
@@ -18039,22 +18098,22 @@ def cultivation_subcategory_summary_card() -> rx.Component:
             ),
             rx.text("Cultivation WIP", size="2", weight="bold", color=DARK),
             cultivation_subcategory_summary_row(
-                "Tops", DashboardState.cultivation_wip_tops_summary, "#0f766e"
+                "Tops", DashboardState.cultivation_wip_tops_metrics, "#0f766e"
             ),
             cultivation_subcategory_summary_row(
                 "MT Smalls",
-                DashboardState.cultivation_wip_mt_smalls_summary,
+                DashboardState.cultivation_wip_mt_smalls_metrics,
                 "#7c3aed",
             ),
             rx.text("Cultivation Pre-WIP", size="2", weight="bold", color=DARK),
             cultivation_subcategory_summary_row(
                 "Tops",
-                DashboardState.cultivation_pre_wip_tops_summary,
+                DashboardState.cultivation_pre_wip_tops_metrics,
                 "#0f766e",
             ),
             cultivation_subcategory_summary_row(
                 "MT Smalls",
-                DashboardState.cultivation_pre_wip_mt_smalls_summary,
+                DashboardState.cultivation_pre_wip_mt_smalls_metrics,
                 "#7c3aed",
             ),
             rx.separator(width="100%"),
