@@ -195,7 +195,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.85-staging"
+PILOT_VERSION = "0.9.6.86-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -489,6 +489,8 @@ ScheduledSupplyDetail = TypedDict(
         "scheduled_loss_lbs": float,
         "forecast_counted_total_lbs": float,
         "scheduled_mix_is_custom": bool,
+        "is_adjusted": bool,
+        "forecast_scope_label": str,
         "net_projected_lbs": float,
         "actual_processed_lbs": float,
         "unconfirmed_remainder_lbs": float,
@@ -909,6 +911,7 @@ class DashboardState(rx.State):
     cultivation_fresh_frozen_adjustments: dict[str, int] = {}
     cultivation_creative_use_adjustments: dict[str, float] = {}
     cultivation_scheduled_mix_adjustments: dict[str, dict[str, float]] = {}
+    cultivation_scheduled_mix_revision: int = 0
     cultivation_fresh_frozen_saving: bool = False
     cultivation_historical_plan_crop: str = ""
     cultivation_historical_plan_allocations: dict[str, float] = {}
@@ -8341,6 +8344,7 @@ class DashboardState(rx.State):
                 }
                 for row in adjustment_rows
             }
+            self.cultivation_scheduled_mix_revision += 1
             if not self.cultivation_clone_plan_dirty:
                 self._restore_approved_current_clone_plan()
             self.cultivation_clone_plan_history_loaded = True
@@ -8526,6 +8530,7 @@ class DashboardState(rx.State):
                 "loss_percent": loss,
             }
             self.cultivation_scheduled_mix_adjustments = updated
+            self.cultivation_scheduled_mix_revision += 1
             self.cultivation_clone_plan_message = (
                 f"{crop} {strain}: Scheduled Mix saved as "
                 f"{tops:.1f}% Tops / {smalls:.1f}% MT Smalls / {loss:.1f}% Loss."
@@ -9885,10 +9890,17 @@ class DashboardState(rx.State):
         )
         if scope == "Flower Only":
             selected = tops_lbs
+            scope_label = "Flower Only"
         elif scope == "Pre-Rolls Only":
             selected = smalls_lbs
+            scope_label = "Pre-Rolls Only"
         else:
             selected = tops_lbs + smalls_lbs
+            scope_label = "Flower + Pre-Rolls"
+        mix_is_custom = any(
+            abs(mix[field] - default_mix[field]) > 0.05
+            for field in default_mix
+        )
         return {
             **reconciliation,
             "scheduled_tops_percent": round(mix["tops_percent"], 1),
@@ -9901,10 +9913,12 @@ class DashboardState(rx.State):
             "scheduled_loss_lbs": round(loss_lbs, 1),
             "forecast_counted_total_lbs": round(tops_lbs + smalls_lbs, 1),
             "forecast_counted_lbs": round(selected, 1),
-            "scheduled_mix_is_custom": any(
-                abs(mix[field] - default_mix[field]) > 0.05
-                for field in default_mix
+            "scheduled_mix_is_custom": mix_is_custom,
+            "is_adjusted": (
+                scheduled_detail_has_manual_reduction(reconciliation)
+                or mix_is_custom
             ),
+            "forecast_scope_label": scope_label,
         }
 
     @rx.var(cache=True)
@@ -9997,6 +10011,7 @@ class DashboardState(rx.State):
         _ = self.cultivation_fresh_frozen_adjustments
         _ = self.cultivation_creative_use_adjustments
         _ = self.cultivation_scheduled_mix_adjustments
+        _ = self.cultivation_scheduled_mix_revision
         _ = self.cultivation_clone_plan_demand_assumptions
         _ = self.velocity
         _ = self.velocity_windows
@@ -21701,6 +21716,15 @@ def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
     return rx.box(
         rx.hstack(
             rx.text(detail["crop"], weight="bold", color=DARK),
+            rx.cond(
+                detail["is_adjusted"],
+                rx.badge(
+                    "ADJUSTED",
+                    color_scheme="amber",
+                    variant="solid",
+                    size="1",
+                ),
+            ),
             rx.badge(
                 detail["status"],
                 color_scheme=rx.cond(
@@ -21781,7 +21805,10 @@ def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
                 detail["unconfirmed_remainder_lbs"].to_string() + " lb",
                 size="2", weight="bold", text_align="right",
             ),
-            rx.text("Forecast counted", size="2", weight="bold"),
+            rx.text(
+                "Forecast counted · " + detail["forecast_scope_label"],
+                size="2", weight="bold",
+            ),
             rx.text(
                 detail["forecast_counted_lbs"].to_string() + " lb",
                 size="2", weight="bold", color="#0f766e", text_align="right",
@@ -21899,6 +21926,15 @@ def cultivation_scheduled_supply_detail(detail: rx.Var) -> rx.Component:
                         "Applied after Fresh Frozen and Creative Use. Loss is not usable Scheduled supply.",
                         size="1", color=MUTED,
                     ),
+                    rx.cond(
+                        detail["forecast_scope_label"] == "Flower + Pre-Rolls",
+                        rx.text(
+                            "In the combined view, moving pounds between Tops and MT Smalls changes the mix but not the combined total. Changing Loss changes Forecast Counted.",
+                            size="1",
+                            color="#92400e",
+                            weight="bold",
+                        ),
+                    ),
                     rx.grid(
                         clone_scheduled_mix_field(
                             "% Tops", "tops_percent",
@@ -21952,6 +21988,7 @@ def clone_scheduled_mix_field(
             max="100",
             step="0.1",
             default_value=value.to_string(),
+            key=name + "-" + value.to_string(),
             size="1",
             width="100%",
         ),
@@ -22114,7 +22151,12 @@ def cultivation_clone_plan_value_cell(
                     rx.text(value.to_string(), font_variant_numeric="tabular-nums"),
                     rx.cond(
                         cell["manual_adjustment"],
-                        rx.icon("circle-alert", size=13, color="#b45309"),
+                        rx.badge(
+                            "ADJUSTED",
+                            color_scheme="amber",
+                            variant="solid",
+                            size="1",
+                        ),
                         rx.icon("info", size=12),
                     ),
                     gap="1",
@@ -22129,7 +22171,7 @@ def cultivation_clone_plan_value_cell(
                 text_underline_offset="3px",
                 title=rx.cond(
                     cell["manual_adjustment"],
-                    "Scheduled pounds include a saved Fresh Frozen or Creative Use reduction.",
+                    "Scheduled pounds include a saved Fresh Frozen, Creative Use, or custom Scheduled Mix adjustment.",
                     "View Scheduled supply detail.",
                 ),
             )
@@ -23097,7 +23139,7 @@ def cultivation_clone_planning_panel() -> rx.Component:
                             flex_shrink="0",
                         ),
                         rx.text(
-                            "Amber: Scheduled pounds include a saved Fresh Frozen or Creative Use reduction.",
+                            "Amber / ADJUSTED: Scheduled pounds include a saved Fresh Frozen, Creative Use, or custom Scheduled Mix change.",
                             size="1",
                             color=MUTED,
                         ),
