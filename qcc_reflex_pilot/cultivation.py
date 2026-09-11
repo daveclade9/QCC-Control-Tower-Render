@@ -178,6 +178,7 @@ STRAIN_ALIASES: dict[str, str] = {
     "lip smackerz": "lipsmackerz",
     "lipsmackers": "lipsmackerz",
     "private reserve og": "private reserve",
+    "pinetar": "pine tar",
     "razruntz": "razberry runtz",
     "razberry runtz (rpg 103)": "razberry runtz",
     "gelato cherry lemon": "hood candy",
@@ -985,6 +986,16 @@ def sku_fill_grams(sku_type: Any) -> float:
             pack = re.search(r"(\d+)\s*(?:pk|pack)", text)
             return grams * int(pack.group(1)) if pack else grams
     return 0.0
+
+
+def demand_sku_family(sku_type: Any) -> str:
+    """Return the cultivation-demand family across historical SKU spellings."""
+    text = re.sub(r"\s+", " ", str(sku_type or "").strip().casefold())
+    if re.search(r"\bpre[\s-]?rolls?\b", text):
+        return "Pre-Roll"
+    if "flower" in text and sku_fill_grams(text) in {1.0, 3.5, 7.0}:
+        return "Flower"
+    return ""
 
 
 def projected_risk(weeks_of_supply: float | None) -> str:

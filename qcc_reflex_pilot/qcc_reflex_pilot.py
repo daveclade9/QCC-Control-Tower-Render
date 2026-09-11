@@ -129,6 +129,7 @@ from .cultivation import (
     sku_fill_grams,
     valid_bench_equivalent,
 )
+from .cultivation import demand_sku_family
 from .historical_yield import (
     HISTORICAL_CYCLE_COLUMNS,
     HISTORICAL_HARVEST_COLUMNS,
@@ -195,7 +196,7 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.87-staging"
+PILOT_VERSION = "0.9.6.88-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -9588,9 +9589,9 @@ class DashboardState(rx.State):
             demand_rows = self.velocity_windows.get("All Time", self.velocity)
         for row in demand_rows:
             sku = str(row.get("SKU Type", "") or "")
-            sku_lower = sku.casefold()
-            is_flower = any(size in sku_lower for size in ("1g flower", "3.5g flower", "7g flower"))
-            is_preroll = "pre-roll" in sku_lower or "preroll" in sku_lower
+            family = demand_sku_family(sku)
+            is_flower = family == "Flower"
+            is_preroll = family == "Pre-Roll"
             if selected_scope == "Pre-Rolls Only":
                 included = is_preroll
             elif selected_scope == "Flower Only":
@@ -24617,7 +24618,7 @@ def cultivation_demand_availability_panel() -> rx.Component:
             border_left="5px solid #7c3aed",
         ),
         rx.grid(
-            snapshot_stat_card("Flower Strains", DashboardState.cultivation_demand_strain_count, "#0f766e"),
+            snapshot_stat_card("Flower + Pre-Roll Strains", DashboardState.cultivation_demand_strain_count, "#0f766e"),
             snapshot_stat_card("Strain / Size Series", DashboardState.cultivation_demand_sku_count, "#2563eb"),
             snapshot_stat_card("Likely Constrained Weeks", DashboardState.cultivation_demand_constraint_count, "#7c3aed"),
             columns=rx.breakpoints(initial="1", sm="3"),
@@ -24655,6 +24656,10 @@ def cultivation_demand_availability_panel() -> rx.Component:
                                 "7g Flower",
                                 "1g Pre-Roll",
                                 "3.5g Pre-Rolls",
+                                "1g Infused Pre-Roll",
+                                "1g IWH Infused Pre-Roll",
+                                "3.5g Infused Pre-Rolls 5-Pack",
+                                "3.5g IWH Infused Pre-Rolls 5-Pack",
                             ],
                             value=DashboardState.cultivation_demand_sku_filter,
                             on_change=DashboardState.change_cultivation_demand_sku_filter,

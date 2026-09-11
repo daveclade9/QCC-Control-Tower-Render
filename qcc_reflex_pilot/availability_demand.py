@@ -11,6 +11,8 @@ from typing import Any
 
 import pandas as pd
 
+from .cultivation import demand_sku_family
+
 
 DEMAND_SKU_TYPES = (
     "1g Flower",
@@ -18,6 +20,10 @@ DEMAND_SKU_TYPES = (
     "7g Flower",
     "1g Pre-Roll",
     "3.5g Pre-Rolls",
+    "1g Infused Pre-Roll",
+    "1g IWH Infused Pre-Roll",
+    "3.5g Infused Pre-Rolls 5-Pack",
+    "3.5g IWH Infused Pre-Rolls 5-Pack",
 )
 
 
@@ -51,7 +57,7 @@ def build_availability_demand_analysis(
         return {"summary": [], "weekly": []}
 
     data = demand.loc[
-        demand["sku_type"].isin(DEMAND_SKU_TYPES),
+        demand["sku_type"].apply(demand_sku_family).ne(""),
         list(required),
     ].copy()
     data["created_at"] = pd.to_datetime(data["created_at"], errors="coerce")
@@ -93,7 +99,7 @@ def build_availability_demand_analysis(
                 str(row.get("Strain", "") or "").strip(),
                 str(row.get("SKU Type", "") or "").strip(),
             )
-            if key[2] not in DEMAND_SKU_TYPES:
+            if not demand_sku_family(key[2]):
                 continue
             velocity_value = pd.to_numeric(
                 row.get("Avg Weekly Units", 0), errors="coerce"

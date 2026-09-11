@@ -14,7 +14,7 @@ from math import exp, sqrt
 from statistics import mean
 from typing import Any
 
-from .cultivation import normalized_strain, sku_fill_grams
+from .cultivation import demand_sku_family, normalized_strain, sku_fill_grams
 
 
 FLOWER_SKU_MARKERS = ("1g flower", "3.5g flower", "7g flower")
@@ -22,9 +22,9 @@ WINDOW_WEIGHTS = {"30 Days": 0.45, "60 Days": 0.35, "All Time": 0.20}
 
 
 def _is_demand_sku(value: Any, product_scope: str) -> bool:
-    label = str(value or "").casefold()
-    is_flower = any(marker in label for marker in FLOWER_SKU_MARKERS)
-    is_preroll = "pre-roll" in label or "preroll" in label
+    family = demand_sku_family(value)
+    is_flower = family == "Flower"
+    is_preroll = family == "Pre-Roll"
     if product_scope == "Pre-Rolls Only":
         return is_preroll
     if product_scope == "Flower Only":

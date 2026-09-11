@@ -11,6 +11,7 @@ from qcc_reflex_pilot.cultivation import (
     prior_clone_planning_periods,
     cultivation_timeline,
     cultivation_flower_supply_bucket,
+    demand_sku_family,
     default_split_percentages,
     exact_bench_allocations,
     estimated_yield_g_per_sqft,
@@ -56,8 +57,17 @@ def test_clone_recommendation_clamps_safety_range():
 
 def test_clone_planner_normalizes_known_sales_strain_aliases():
     assert normalized_strain("Private Reserve OG") == "private reserve"
+    assert normalized_strain("Pinetar") == "pine tar"
     assert normalized_strain("Lip Smackerz") == "lipsmackerz"
     assert normalized_strain("Lip Smackers") == "lipsmackerz"
+
+
+def test_cultivation_demand_recognizes_historical_preroll_spellings():
+    assert demand_sku_family("1g Pre-Roll") == "Pre-Roll"
+    assert demand_sku_family("1g Pre Roll") == "Pre-Roll"
+    assert demand_sku_family("3.5g Prerolls 5-Pack") == "Pre-Roll"
+    assert demand_sku_family("1g IWH Infused Pre-Roll") == "Pre-Roll"
+    assert demand_sku_family("3.5g Flower") == "Flower"
 
 
 def test_scheduled_highlight_only_marks_active_manual_reductions():

@@ -103,6 +103,18 @@ class CloneDemandModelTest(unittest.TestCase):
         self.assertAlmostEqual(flower, 20 * 3.5 / 453.59237)
         self.assertAlmostEqual(preroll, 100 / 453.59237)
 
+    def test_preroll_demand_combines_known_strain_aliases(self):
+        rows = [
+            {"Strain": "Pinetar", "SKU Type": "1g Pre Roll", "Avg Weekly Units": 45.0},
+            {"Strain": "Private Reserve OG", "SKU Type": "3.5g Pre-Rolls", "Avg Weekly Units": 20.0},
+        ]
+        self.state.availability_adjusted_velocity_windows = {"All Time": rows}
+        demand = self.state._clone_plan_weekly_demand_by_strain(
+            demand_model="Availability-Adjusted", product_scope="Pre-Rolls Only"
+        )
+        self.assertAlmostEqual(demand["pine tar"], 45.0 / 453.59237)
+        self.assertAlmostEqual(demand["private reserve"], 70.0 / 453.59237)
+
     def test_wip_report_default_scope_identifies_clade9_strains(self):
         self.state.cultivation_provisional_strains = ["New Clade9 Strain"]
         self.state.all_inventory = [
