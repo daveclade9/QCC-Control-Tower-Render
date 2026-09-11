@@ -6,6 +6,7 @@ import json
 import re
 import threading
 import uuid
+from contextlib import nullcontext
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,9 @@ PACKAGING_SIZE_FORMATS = [
 ]
 
 _LEGACY_CATEGORY_MAP = {
+    "GLASS JAR": "GLASS JARS",
+    "GLASS TUBE": "GLASS TUBES",
+    "PLASTIC JAR": "PLASTIC JARS",
     "BAGS & POUCHES": "MYLAR BAG",
     "CARTONS & CASES": "CARTONS",
     "PRE-ROLL COMPONENTS": "PRE-ROLL CONES",
@@ -237,14 +241,15 @@ def packaging_seed_items() -> list[dict[str, Any]]:
     return [_seed_item_defaults(row) for row in packaging_seed().get("items", [])]
 
 
-def packaging_items() -> list[dict[str, Any]]:
+def packaging_items(_connection: Any = None) -> list[dict[str, Any]]:
     """Return workbook items merged with editable Supabase item overrides."""
     seed_rows = packaging_seed_items()
     by_id = {str(row["material_id"]): row for row in seed_rows}
     if not database_url():
         return list(by_id.values())
-    _initialize_packaging_database()
-    rows = safe_query_frame("""
+    if _connection is None:
+        _initialize_packaging_database()
+    query = """
         SELECT item.*,
                COALESCE(primary_supplier.supplier_name, item.primary_vendor, '') AS resolved_primary_vendor,
                COALESCE(primary_link.lead_time_days, 0) AS primary_lead_time_days,
@@ -270,8 +275,14 @@ def packaging_items() -> list[dict[str, Any]]:
         LEFT JOIN qcc_packaging_suppliers secondary_supplier
           ON secondary_supplier.supplier_id = secondary_link.supplier_id
         ORDER BY item.material_id
-    """)
-    for db_row in rows.to_dict("records"):
+    """
+    if _connection is None:
+        records = safe_query_frame(query).to_dict("records")
+    else:
+        from psycopg.rows import dict_row
+        with _connection.cursor(row_factory=dict_row) as cursor:
+            records = cursor.execute(query).fetchall()
+    for db_row in records:
         material_id = str(db_row.get("material_id", "") or "")
         base = dict(by_id.get(material_id, {"material_id": material_id, "on_hand": 0}))
         seed_balance = float(base.get("on_hand", 0) or 0)
@@ -345,9 +356,11 @@ def save_packaging_item(
     initial_quantity: float = 0,
     updated_by: str = "QCC Control Tower",
     allow_update: bool = False,
+    _connection: Any = None,
 ) -> str:
     """Create or edit an item; opening stock is always written to the ledger."""
-    _initialize_packaging_database()
+    if _connection is None:
+        _initialize_packaging_database()
     material_id = str(record.get("material_id", "") or "").strip().upper()
     if not material_id:
         material_id = next_packaging_material_id()
@@ -362,18 +375,25 @@ def save_packaging_item(
             "Create tracked items with zero opening quantity, then use Receive "
             "Inventory to capture the required lot and expiration details."
         )
-    existing = safe_query_frame(
-        "SELECT material_id FROM qcc_packaging_items WHERE material_id = %s",
-        (material_id,),
-    )
+    if _connection is None:
+        exists = not safe_query_frame(
+            "SELECT material_id FROM qcc_packaging_items WHERE material_id = %s",
+            (material_id,),
+        ).empty
+    else:
+        exists = bool(_connection.execute(
+            "SELECT material_id FROM qcc_packaging_items WHERE material_id = %s",
+            (material_id,),
+        ).fetchone())
     seed_exists = any(
         str(row.get("material_id", "")) == material_id
         for row in packaging_seed().get("items", [])
     )
-    if (not existing.empty or seed_exists) and not allow_update:
+    if (exists or seed_exists) and not allow_update:
         raise ValueError(f"Material ID {material_id} already exists.")
     numeric = lambda key, default=0: float(record.get(key, default) or default)
-    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+    with (nullcontext(_connection) if _connection is not None else
+          psycopg.connect(database_url(), connect_timeout=15)) as connection:
         connection.execute("""
             INSERT INTO qcc_packaging_items (
                 material_id, item_name, category, uom, brand_scope,
@@ -442,7 +462,7 @@ def save_packaging_item(
                 material_id, supplier_id, priority,
                 max(0, int(record.get(lead_key, 0) or 0)), updated_by,
             ))
-        if initial_quantity > 0 and existing.empty and not seed_exists:
+        if initial_quantity > 0 and not exists and not seed_exists:
             connection.execute("""
                 INSERT INTO qcc_packaging_inventory_transactions (
                     transaction_id, material_id, transaction_type, quantity_delta,
@@ -469,36 +489,16 @@ def receive_packaging_inventory(
     notes: str = "",
     created_by: str = "QCC Control Tower",
 ) -> str:
-    """Record a positive receipt against an existing packaging item."""
-    _initialize_packaging_database()
-    quantity = float(quantity or 0)
-    if quantity <= 0:
-        raise ValueError("Received quantity must be greater than zero.")
-    material_id = str(material_id or "").strip().upper()
-    # A workbook item receives a lightweight master override before its first transaction.
-    item = next((row for row in packaging_items() if row.get("material_id") == material_id), None)
-    if not item:
-        raise ValueError("Select a valid packaging item.")
-    if bool(item.get("lot_tracking", False)) and not str(lot_number or "").strip():
-        raise ValueError("A supplier lot is required for this item.")
-    if bool(item.get("expiration_tracking", False)) and not str(expiration_date or "").strip():
-        raise ValueError("An expiration date is required for this item.")
-    save_packaging_item(item, updated_by=created_by, allow_update=True)
-    transaction_id = str(uuid.uuid4())
-    with psycopg.connect(database_url(), connect_timeout=15) as connection:
-        connection.execute("""
-            INSERT INTO qcc_packaging_inventory_transactions (
-                transaction_id, material_id, transaction_type, quantity_delta,
-                uom, location, lot_number, expiration_date, unit_cost,
-                reference, notes, created_by
-            ) VALUES (%s, %s, 'Receipt', %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (
-            transaction_id, material_id, quantity, str(item.get("uom", "Each")),
-            str(location or item.get("default_location", "Unassigned")),
-            str(lot_number or ""), expiration_date or None, float(unit_cost or 0),
-            str(reference or ""), str(notes or ""), created_by,
-        ))
-    return transaction_id
+    """Legacy receipt button uses the same atomic warehouse ledger."""
+    from datetime import date
+    from .warehouse import post_activity
+    return post_activity({
+        "material_id": material_id, "action": "Receive", "quantity": quantity,
+        "location": location or "UNASSIGNED", "lot": lot_number,
+        "expiration": expiration_date, "unit_cost": unit_cost,
+        "reference": reference, "reason": notes or "Inventory receipt",
+        "date": date.today().isoformat(),
+    }, created_by, str(uuid.uuid4()))
 
 
 def deactivate_packaging_item(material_id: str, updated_by: str) -> None:

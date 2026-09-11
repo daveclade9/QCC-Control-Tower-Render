@@ -196,7 +196,10 @@ from .packaging_inventory import (
 )
 
 
-PILOT_VERSION = "0.9.6.89-staging"
+from .warehouse_ui import warehouse_workspace
+from .warehouse import item_version
+
+PILOT_VERSION = "0.9.6.90-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -1878,6 +1881,7 @@ class DashboardState(rx.State):
                 "On Hand": row.get("on_hand", 0),
                 "Available": row.get("available", 0),
                 "Default Location": row.get("default_location", ""),
+                "Registry Version": item_version(row),
                 "Reorder Point": row.get("reorder_point", 0),
                 "Safety Stock": row.get("safety_stock", 0),
                 "Unit Cost": row.get("unit_cost", 0),
@@ -20822,6 +20826,7 @@ def packaging_inventory_workspace() -> rx.Component:
                 rx.tabs.trigger("Provisional BOMs", value="boms"),
                 rx.tabs.trigger("Count History", value="counts"),
                 rx.tabs.trigger("Suppliers", value="suppliers"),
+                rx.tabs.trigger("Warehouse Activity & CSV", value="warehouse"),
                 class_name="qcc-tabs",
                 width="100%",
             ),
@@ -20985,6 +20990,7 @@ def packaging_inventory_workspace() -> rx.Component:
                     width="100%", spacing="3",
                 ), value="suppliers",
             ),
+            rx.tabs.content(warehouse_workspace(), value="warehouse"),
             value=DashboardState.materials_view,
             on_change=DashboardState.change_materials_view,
             width="100%",
