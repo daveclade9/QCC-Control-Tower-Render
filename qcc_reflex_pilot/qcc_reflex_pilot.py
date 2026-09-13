@@ -10,10 +10,11 @@ import math
 import re
 from html import escape
 from calendar import month_name
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
 from typing import Any, TypedDict
 from urllib.parse import parse_qs, quote_plus
+from zoneinfo import ZoneInfo
 
 import reflex as rx
 import pandas as pd
@@ -199,12 +200,29 @@ from .packaging_inventory import (
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 
-PILOT_VERSION = "0.9.6.91-staging"
+PILOT_VERSION = "0.9.6.92-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
 SURFACE = "#ffffff"
 BACKGROUND = "#f4f7fa"
+
+
+def format_snapshot_upload_eastern(value: Any) -> str:
+    """Format a stored snapshot publication time for the QCC Eastern-time UI."""
+    if value is None or str(value).strip() in {"", "Demo", "None", "NaT"}:
+        return "—"
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except ValueError:
+            return "—"
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    eastern = parsed.astimezone(ZoneInfo("America/New_York"))
+    return eastern.strftime("%b %d, %Y · %I:%M %p ET").replace(" 0", " ")
 
 QA_ANALYTE_CATEGORIES = [
     "All Categories", "Cannabinoids", "Terpenes", "Mycotoxins",
@@ -1050,6 +1068,7 @@ class DashboardState(rx.State):
     transfer_rows_metric: str = "0"
     latest_shipment: str = "—"
     snapshot_date: str = "—"
+    snapshot_uploaded_at: str = "—"
     snapshot_packages: str = "0"
     snapshot_skus: str = "0"
     snapshot_detail: str = "0"
@@ -4376,6 +4395,9 @@ class DashboardState(rx.State):
         self.transfer_rows_metric = f"{int(metrics.get('transfer_rows', 0)):,}"
         self.latest_shipment = metrics.get("latest_shipment") or "—"
         self.snapshot_date = snapshot.get("business_date") or "—"
+        self.snapshot_uploaded_at = format_snapshot_upload_eastern(
+            snapshot.get("published_at")
+        )
         self.snapshot_packages = f"{int(snapshot.get('package_count', 0)):,}"
         self.snapshot_skus = f"{int(snapshot.get('sku_count', 0)):,}"
         self.snapshot_detail = f"{int(snapshot.get('detail_count', 0)):,}"
@@ -4737,6 +4759,9 @@ class DashboardState(rx.State):
         self.transfer_rows_metric = f"{int(metrics.get('transfer_rows', 0)):,}"
         self.latest_shipment = metrics.get("latest_shipment") or "—"
         self.snapshot_date = snapshot.get("business_date") or "—"
+        self.snapshot_uploaded_at = format_snapshot_upload_eastern(
+            snapshot.get("published_at")
+        )
         self.snapshot_packages = f"{int(snapshot.get('package_count', 0)):,}"
         self.snapshot_skus = f"{int(snapshot.get('sku_count', 0)):,}"
         self.snapshot_detail = f"{int(snapshot.get('detail_count', 0)):,}"
@@ -18401,6 +18426,28 @@ def cultivation_bulk_composition_card() -> rx.Component:
     )
 
 
+def inventory_snapshot_stat_card() -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.text("Inventory Snapshot", size="1", color=MUTED, weight="bold"),
+            rx.heading(DashboardState.snapshot_date, size="5", color=DARK),
+            rx.text(
+                "Last upload: " + DashboardState.snapshot_uploaded_at,
+                size="1",
+                color=MUTED,
+                white_space="nowrap",
+            ),
+            spacing="1",
+            align="start",
+        ),
+        width="100%",
+        min_height="92px",
+        padding="0.8rem 1.1rem",
+        border_top="4px solid #0f766e",
+        box_shadow="0 5px 16px rgba(15, 23, 42, 0.06)",
+    )
+
+
 def cultivation_subcategory_summary_row(
     label: str,
     metrics: rx.Var,
@@ -25619,7 +25666,7 @@ def protected_dashboard() -> rx.Component:
             ),
             rx.vstack(
                 rx.grid(
-                    snapshot_stat_card("Inventory Snapshot", DashboardState.snapshot_date, "#0f766e"),
+                    inventory_snapshot_stat_card(),
                     snapshot_stat_card("Packages", DashboardState.snapshot_packages, "#2563eb"),
                     snapshot_stat_card("SKUs", DashboardState.snapshot_skus, "#7c3aed"),
                     rx.box(
