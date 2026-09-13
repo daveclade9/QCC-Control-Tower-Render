@@ -1210,6 +1210,24 @@ body {
 .qcc-all-inventory-grid .gridjs-th:nth-child(11),
 .qcc-all-inventory-grid .gridjs-td:nth-child(11) { width: 270px !important; }
 
+/* Source Harvest is the tenth All Inventory column. Let long harvest names
+   wrap, and allow only this grid's affected rows to grow beyond 48px. */
+.qcc-all-inventory-grid .gridjs-tbody .gridjs-tr {
+  height: auto !important;
+}
+
+.qcc-all-inventory-grid .gridjs-td:nth-child(10) {
+  height: auto !important;
+  min-height: 48px;
+  max-height: none !important;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: break-word;
+  word-break: normal;
+  line-height: 1.3;
+}
+
 .qcc-cultivation-outlook-table th > div,
 .qcc-cultivation-outlook-table th > span {
   width: 100%;

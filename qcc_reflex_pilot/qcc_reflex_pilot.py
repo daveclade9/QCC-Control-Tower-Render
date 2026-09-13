@@ -200,7 +200,7 @@ from .packaging_inventory import (
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 
-PILOT_VERSION = "0.9.6.92-staging"
+PILOT_VERSION = "0.9.6.93-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
