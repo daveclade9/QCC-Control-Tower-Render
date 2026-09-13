@@ -60,6 +60,13 @@ class WarehouseState(rx.State):
             self.message = str(error)
 
     @rx.event
+    async def enter_section(self, section: str):
+        self.view = {"registry_import": "CSV Preview", "locations": "Locations", "inventory_activity": "Activity"}[section]
+        self.page, self.search, self.message = 0, "", ""
+        yield
+        await self.refresh()
+
+    @rx.event
     def set_view(self, value: str):
         self.view, self.page, self.search = value, 0, ""
 
@@ -183,7 +190,7 @@ class WarehouseState(rx.State):
             self.changes = [[r["material_id"],r["action"],c["field"],str(c["before"]),str(c["after"])] for r in self._preview["rows"] for c in r["changes"]]
             self.warnings = "\n".join(self._preview["errors"] + self._preview["warnings"])
             self.ready = not self._preview["errors"]
-            self.view, self.page = "CSV Preview", 0
+            self.view, self.page, self.search = "CSV Preview", 0, ""
             self.message = f"{len(self._preview['rows'])} items reviewed; {len(self.changes)} field changes. Quantities are ignored. Nothing saved yet."
         except Exception as error:
             self.message = str(error)
@@ -202,35 +209,70 @@ class WarehouseState(rx.State):
             self.message = str(error)
 
 
-def warehouse_workspace():
+def warehouse_workspace(section: str):
+    """Three focused panels share the existing authenticated warehouse state."""
     state = WarehouseState
     def field(label, key, location=False):
         values = state.location if location else state.activity
         event = state.location_field if location else state.activity_field
         return rx.vstack(rx.text(label, size="2"), rx.input(value=values[key], on_change=lambda value: event(key,value), width="100%"), spacing="1")
-    return rx.vstack(
-        rx.heading("Warehouse Activity & Registry Updates", size="5"),
-        rx.text("Receive adds stock. Issue consumes stock. Transfer moves stock without changing the total. Physical Count adjusts the selected location and lot to the counted quantity. Default Location does not move stock."),
-        rx.button("Refresh Warehouse Records", on_click=state.refresh),
-        rx.callout(state.message, icon="info"),
-        rx.heading("Locations", size="4"),
+    if section == "locations":
+        title = "Locations"
+        description = "Define storage locations and review stock by location. Default Location is only a suggestion; use Inventory Activity to move stock."
+        views = ["Locations", "Balances"]
+        controls = [
         rx.grid(*[field(label,key,True) for label,key in [("Unique code / scan code","code"),("Name","name"),("Warehouse","warehouse"),("Zone","zone"),("Rack","rack"),("Shelf / Bin","bin")]], columns=rx.breakpoints(initial="1",md="3"), width="100%"),
         rx.select(["ACTIVE","INACTIVE"], value=state.location["status"], on_change=lambda v: state.location_field("status",v)),
         rx.hstack(rx.button("Load Location for Editing",on_click=state.load_location),rx.button("Save Location",on_click=state.save_location)),
-        rx.heading("Record Inventory Activity",size="4"),
+        ]
+    elif section == "inventory_activity":
+        title = "Inventory Activity"
+        description = "Receive adds stock. Issue consumes it. Transfer moves stock without changing the total. Physical Count records the actual count for one location and lot. Preview before confirming."
+        views = ["Activity", "Balances"]
+        reverse = state.activity["action"] == "Reverse Activity"
+        controls = [
         rx.select(service.ACTIVITIES,value=state.activity["action"],on_change=lambda v: state.activity_field("action",v)),
-        rx.grid(*[field(label,key) for label,key in [("Material ID (scan or type)","material_id"),("Source / receiving location (scan or type)","location"),("Destination (transfers only)","destination"),("Quantity / actual counted quantity","quantity"),("Supplier lot","lot"),("Expiration YYYY-MM-DD","expiration"),("Activity date YYYY-MM-DD (blank = today)","date"),("Unit cost","unit_cost"),("PO / production reference","reference"),("Reason / note (required)","reason"),("Original Activity ID (reversal only)","reversal_of")]],columns=rx.breakpoints(initial="1",md="3"),width="100%"),
+        rx.grid(
+            field("Material ID (scan or type)","material_id"),
+            rx.cond(reverse, field("Original Activity ID","reversal_of")),
+            rx.cond(~reverse, field("Source / receiving location (scan or type)","location")),
+            rx.cond(state.activity["action"] == "Transfer Location", field("Destination location","destination")),
+            rx.cond(~reverse, field(rx.cond(state.activity["action"] == "Physical Count", "Actual quantity counted", "Quantity"),"quantity")),
+            rx.cond(~reverse, field("Supplier lot","lot")),
+            rx.cond(~reverse, field("Expiration YYYY-MM-DD","expiration")),
+            field("Activity date YYYY-MM-DD (blank = today)","date"),
+            rx.cond(~reverse, field("Unit cost","unit_cost")),
+            field("PO / production reference","reference"),
+            field("Reason / note (required)","reason"),
+            columns=rx.breakpoints(initial="1",md="3"),width="100%"),
         rx.button("Preview Activity",on_click=state.preview_activity),
         rx.cond(state.confirmation != "",rx.vstack(rx.text(state.confirmation),rx.button("Confirm & Record Activity",on_click=state.confirm_activity))),
-        rx.heading("Update Registry from CSV",size="4"),
-        rx.text("Metadata only. Blank fields preserve existing values. Missing items are not deleted. New items start at zero. Review changes before applying; use inventory activity for all quantity changes."),
+        rx.text("Activity history shows the latest 500 records. Older records remain in the database."),
+        ]
+    elif section == "registry_import":
+        title = "Registry Import"
+        description = "Update item details—not quantities. Blank fields preserve existing values, missing items are not deleted, and new items start at zero."
+        views = ["CSV Preview", "Import History"]
+        controls = [
+        rx.text("1. Select your CSV.  2. Preview and review the changes.  3. Apply reviewed updates."),
         rx.upload(rx.text("Select or drop one registry CSV"),id="warehouse_csv",accept={"text/csv":[".csv"]},max_files=1),
+        rx.foreach(rx.selected_files("warehouse_csv"), lambda name: rx.text(name)),
         rx.hstack(rx.button("Preview CSV",on_click=state.upload(rx.upload_files(upload_id="warehouse_csv"))),rx.button("Apply Reviewed Updates",on_click=state.apply_csv,disabled=~state.ready)),
         rx.text(state.warnings,white_space="pre-wrap"),
-        rx.select(["Balances","Locations","Activity","Import History","CSV Preview"],value=state.view,on_change=state.set_view),
+        rx.text("Import history shows the latest 100 files. Older records remain in the database."),
+        ]
+    else:
+        raise ValueError(f"Unknown warehouse section: {section}")
+    return rx.vstack(
+        rx.heading(title, size="5"),
+        rx.text(description),
+        rx.button("Refresh Records", on_click=state.refresh),
+        rx.cond(state.message != "", rx.callout(state.message, icon="info")),
+        *controls,
+        rx.separator(),
+        rx.select(views,value=state.view,on_change=state.set_view),
         rx.input(placeholder="Search material, location, reference or activity ID",value=state.search,on_change=state.set_search,width="100%"),
-        rx.text("Activity shows the latest 500 records; import history shows the latest 100. Older records are retained in the database."),
         rx.box(rx.table.root(rx.table.header(rx.table.row(rx.foreach(state.headers,lambda h:rx.table.column_header_cell(h,white_space="normal",min_width="120px")))),rx.table.body(rx.foreach(state.visible_rows,lambda row:rx.table.row(rx.foreach(row,lambda cell:rx.table.cell(cell,white_space="normal"))))),width="100%"),width="100%",overflow_x="auto"),
         rx.hstack(rx.select(["10","25","50"],value=state.size,on_change=state.set_size),rx.button("Previous",on_click=state.previous),rx.text(state.row_summary),rx.button("Next",on_click=state.next)),
-        width="100%",spacing="3",on_mount=state.refresh,
+        width="100%",spacing="3",on_mount=state.enter_section(section),
     )

@@ -199,7 +199,7 @@ from .packaging_inventory import (
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 
-PILOT_VERSION = "0.9.6.90-staging"
+PILOT_VERSION = "0.9.6.91-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -20826,7 +20826,9 @@ def packaging_inventory_workspace() -> rx.Component:
                 rx.tabs.trigger("Provisional BOMs", value="boms"),
                 rx.tabs.trigger("Count History", value="counts"),
                 rx.tabs.trigger("Suppliers", value="suppliers"),
-                rx.tabs.trigger("Warehouse Activity & CSV", value="warehouse"),
+                rx.tabs.trigger("Registry Import", value="registry_import"),
+                rx.tabs.trigger("Locations", value="locations"),
+                rx.tabs.trigger("Inventory Activity", value="inventory_activity"),
                 class_name="qcc-tabs",
                 width="100%",
             ),
@@ -20990,7 +20992,9 @@ def packaging_inventory_workspace() -> rx.Component:
                     width="100%", spacing="3",
                 ), value="suppliers",
             ),
-            rx.tabs.content(warehouse_workspace(), value="warehouse"),
+            rx.tabs.content(warehouse_workspace("registry_import"), value="registry_import"),
+            rx.tabs.content(warehouse_workspace("locations"), value="locations"),
+            rx.tabs.content(warehouse_workspace("inventory_activity"), value="inventory_activity"),
             value=DashboardState.materials_view,
             on_change=DashboardState.change_materials_view,
             width="100%",

@@ -1,6 +1,6 @@
-# Packaging warehouse workflow — 0.9.6.90
+# Packaging warehouse workflow — 0.9.6.91
 
-Open Materials & Procurement → Warehouse Activity & CSV. Refresh Warehouse Records first.
+Materials & Procurement has three focused subtabs: Registry Import, Locations, and Inventory Activity. Each opens its relevant table and refreshes records. Forms and CSV previews are retained when switching tabs, but table search and pagination reset. Inventory Registry, Suppliers and the other existing subtabs remain unchanged.
 
 ## Registry updates
 
