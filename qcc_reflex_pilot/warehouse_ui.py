@@ -254,10 +254,48 @@ def warehouse_workspace(section: str):
         description = "Update item details—not quantities. Blank fields preserve existing values, missing items are not deleted, and new items start at zero."
         views = ["CSV Preview", "Import History"]
         controls = [
-        rx.text("1. Select your CSV.  2. Preview and review the changes.  3. Apply reviewed updates."),
-        rx.upload(rx.text("Select or drop one registry CSV"),id="warehouse_csv",accept={"text/csv":[".csv"]},max_files=1),
-        rx.foreach(rx.selected_files("warehouse_csv"), lambda name: rx.text(name)),
-        rx.hstack(rx.button("Preview CSV",on_click=state.upload(rx.upload_files(upload_id="warehouse_csv"))),rx.button("Apply Reviewed Updates",on_click=state.apply_csv,disabled=~state.ready)),
+        rx.flex(
+            rx.badge("1", radius="full", color_scheme="teal", size="2"),
+            rx.text("Choose the updated registry CSV", weight="bold"),
+            rx.badge("2", radius="full", color_scheme="teal", size="2"),
+            rx.text("Preview and review every change", weight="bold"),
+            rx.badge("3", radius="full", color_scheme="teal", size="2"),
+            rx.text("Apply the reviewed updates", weight="bold"),
+            gap="2", align="center", wrap="wrap", width="100%",
+        ),
+        rx.upload(
+            rx.vstack(
+                rx.box(
+                    rx.icon("cloud-upload", size=42, color="#0f8f92"),
+                    background="#e6f7f6", border_radius="999px", padding="1rem",
+                ),
+                rx.heading("Drop the packaging registry CSV here", size="4", color="#111827"),
+                rx.text("or click anywhere in this box to browse your computer", color="#64748b"),
+                rx.button(
+                    rx.icon("folder-open", size=18),
+                    "Choose CSV File",
+                    background="#14969b", color="white", size="3",
+                ),
+                rx.text("CSV files only • One file at a time • Maximum 5 MB", size="2", color="#64748b"),
+                spacing="3", align="center", justify="center", width="100%",
+            ),
+            id="warehouse_csv", accept={"text/csv":[".csv"]}, max_files=1,
+            border="3px dashed #14969b", border_radius="14px", padding="2.25rem",
+            background="#f6fffe", width="100%", min_height="250px",
+            cursor="pointer", _hover={"background":"#ebfbfa", "border_color":"#0f777a"},
+        ),
+        rx.flex(
+            rx.icon("file-check", size=20, color="#14969b"),
+            rx.text("Selected file:", weight="bold"),
+            rx.foreach(rx.selected_files("warehouse_csv"), lambda name: rx.badge(name, color_scheme="teal", size="2")),
+            rx.button("Clear", variant="ghost", size="2", on_click=rx.clear_selected_files("warehouse_csv")),
+            gap="2", align="center", wrap="wrap", width="100%",
+        ),
+        rx.hstack(
+            rx.button(rx.icon("scan-search", size=18), "Preview CSV Changes", on_click=state.upload(rx.upload_files(upload_id="warehouse_csv")), size="3"),
+            rx.button(rx.icon("database", size=18), "Apply Reviewed Updates", on_click=state.apply_csv, disabled=~state.ready, size="3", background="#14969b", color="white"),
+            wrap="wrap",
+        ),
         rx.text(state.warnings,white_space="pre-wrap"),
         rx.text("Import history shows the latest 100 files. Older records remain in the database."),
         ]
