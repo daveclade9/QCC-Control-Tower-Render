@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 import json
+import os
 import re
 from typing import Any
 from uuid import uuid4
@@ -38,6 +39,12 @@ DEFAULT_PROGRAM_NAME = "Main F1-F5 Rotation"
 DEFAULT_FUTURE_CROPS = 26
 OVERHEAD_LIGHTING_TYPES = ("HPS", "LED", "MH", "Other")
 SUPPLEMENTAL_LIGHTING_TYPES = ("None", "Undercanopy", "Intercanopy", "Other")
+DEFAULT_PROVISIONAL_STRAINS = ("Hood Candy", "Jelly Cake")
+
+
+def cultivation_tenant_id() -> str:
+    """Return the current tenant key, ready for the multi-tenant platform."""
+    return os.getenv("QCC_TENANT_ID", "qcc").strip() or "qcc"
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -349,6 +356,18 @@ def schedule_conflicts(rows: list[dict[str, Any]]) -> list[str]:
 
 def _ensure_schema(cursor: Any) -> None:
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS qcc_cultivation_provisional_strains (
+            tenant_id TEXT NOT NULL,
+            strain_key TEXT NOT NULL,
+            strain_name TEXT NOT NULL,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            updated_by TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (tenant_id, strain_key))
+    """)
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS qcc_cultivation_cycle_programs (
             program_id TEXT PRIMARY KEY, name TEXT NOT NULL, code_prefix TEXT NOT NULL,
             cadence_days INTEGER NOT NULL, rooting_days INTEGER NOT NULL,
@@ -453,6 +472,17 @@ def load_registry() -> dict[str, list[dict[str, Any]]]:
         "rooms": default_room_rows(),
         "benches": default_bench_rows(),
         "schedule": default_schedule(),
+        "provisional_strains": [
+            {
+                "tenant_id": cultivation_tenant_id(),
+                "strain_key": re.sub(
+                    r"[^a-z0-9]+", "-", name.casefold()
+                ).strip("-"),
+                "strain_name": name,
+                "active": True,
+            }
+            for name in DEFAULT_PROVISIONAL_STRAINS
+        ],
         "historical_yields": [],
         "voided_historical_yields": [],
         "historical_yield_revisions": [],
@@ -463,6 +493,33 @@ def load_registry() -> dict[str, list[dict[str, Any]]]:
     with psycopg.connect(database_url(), connect_timeout=15) as connection:
         with connection.cursor() as cursor:
             _ensure_schema(cursor)
+            tenant_id = cultivation_tenant_id()
+            cursor.execute(
+                "SELECT COUNT(*) FROM qcc_cultivation_provisional_strains "
+                "WHERE tenant_id=%s",
+                (tenant_id,),
+            )
+            if int(cursor.fetchone()[0]) == 0:
+                for strain_name in DEFAULT_PROVISIONAL_STRAINS:
+                    strain_key = re.sub(
+                        r"[^a-z0-9]+", "-", strain_name.casefold()
+                    ).strip("-")
+                    cursor.execute(
+                        "INSERT INTO qcc_cultivation_provisional_strains "
+                        "(tenant_id,strain_key,strain_name,active,created_by,"
+                        "created_at,updated_by,updated_at) "
+                        "VALUES (%s,%s,%s,TRUE,%s,%s,%s,%s) "
+                        "ON CONFLICT (tenant_id,strain_key) DO NOTHING",
+                        (
+                            tenant_id,
+                            strain_key,
+                            strain_name,
+                            "System seed",
+                            now,
+                            "System seed",
+                            now,
+                        ),
+                    )
             cursor.execute("SELECT COUNT(*) FROM qcc_cultivation_cycle_programs")
             if int(cursor.fetchone()[0]) == 0:
                 program = default_cycle_program()
@@ -498,6 +555,14 @@ def load_registry() -> dict[str, list[dict[str, Any]]]:
             benches = _fetch_dicts(cursor)
             cursor.execute("SELECT * FROM qcc_cultivation_schedule ORDER BY clone_cut_date,crop")
             schedule = _fetch_dicts(cursor)
+            cursor.execute(
+                "SELECT tenant_id,strain_key,strain_name,active,created_by,"
+                "created_at,updated_by,updated_at "
+                "FROM qcc_cultivation_provisional_strains "
+                "WHERE tenant_id=%s AND active=TRUE ORDER BY strain_name",
+                (tenant_id,),
+            )
+            provisional_strains = _fetch_dicts(cursor)
             cursor.execute("SELECT * FROM qcc_cultivation_historical_yields WHERE is_void=FALSE ORDER BY harvest_date DESC,crop,strain")
             yields = _fetch_dicts(cursor)
             cursor.execute("SELECT * FROM qcc_cultivation_historical_yields WHERE is_void=TRUE ORDER BY updated_at DESC")
@@ -516,11 +581,64 @@ def load_registry() -> dict[str, list[dict[str, Any]]]:
     for bench in benches:
         bench.update(calculate_bench_metrics(bench.get("length_ft"), bench.get("width_ft"), bench.get("default_density")))
         bench["total_supplemental_watts"] = calculate_lighting_total(bench.get("supplemental_rows"), bench.get("watts_per_row"), bench.get("supplemental_watts_override"))
-    for row in schedule + yields + voided_yields + yield_revisions:
+    for row in (
+        schedule
+        + provisional_strains
+        + yields
+        + voided_yields
+        + yield_revisions
+    ):
         for key, value in list(row.items()):
             if isinstance(value, (date, datetime)):
                 row[key] = value.isoformat()
-    return {"programs": programs, "rooms": rooms, "benches": benches, "schedule": schedule, "historical_yields": yields, "voided_historical_yields": voided_yields, "historical_yield_revisions": yield_revisions}
+    return {
+        "programs": programs,
+        "rooms": rooms,
+        "benches": benches,
+        "schedule": schedule,
+        "provisional_strains": provisional_strains,
+        "historical_yields": yields,
+        "voided_historical_yields": voided_yields,
+        "historical_yield_revisions": yield_revisions,
+    }
+
+
+def save_provisional_strain(strain_name: str, updated_by: str) -> str:
+    """Create or reactivate a tenant-owned provisional cultivation strain."""
+    name = " ".join(str(strain_name or "").strip().split())
+    strain_key = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+    if not name or not strain_key:
+        raise ValueError("Enter a strain name first.")
+    if psycopg is None or not database_url():
+        raise RuntimeError(
+            "A live Supabase connection is required to save provisional strains."
+        )
+    tenant_id = cultivation_tenant_id()
+    now = datetime.now().astimezone().isoformat()
+    actor = str(updated_by or "QCC Admin")
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        with connection.cursor() as cursor:
+            _ensure_schema(cursor)
+            cursor.execute(
+                "INSERT INTO qcc_cultivation_provisional_strains "
+                "(tenant_id,strain_key,strain_name,active,created_by,created_at,"
+                "updated_by,updated_at) "
+                "VALUES (%s,%s,%s,TRUE,%s,%s,%s,%s) "
+                "ON CONFLICT (tenant_id,strain_key) DO UPDATE SET "
+                "strain_name=EXCLUDED.strain_name,active=TRUE,"
+                "updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at",
+                (
+                    tenant_id,
+                    strain_key,
+                    name,
+                    actor,
+                    now,
+                    actor,
+                    now,
+                ),
+            )
+        connection.commit()
+    return name
 
 
 def save_cycle_program(record: dict[str, Any], updated_by: str) -> str:

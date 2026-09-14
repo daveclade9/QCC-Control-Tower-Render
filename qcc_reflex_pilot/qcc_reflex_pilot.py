@@ -169,6 +169,7 @@ from .cultivation_registry import (
     save_bench,
     save_cycle_program,
     save_historical_yield,
+    save_provisional_strain,
     restore_historical_yield,
     save_room,
     save_schedule_rows,
@@ -200,7 +201,7 @@ from .packaging_inventory import (
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 
-PILOT_VERSION = "0.9.6.94-staging"
+PILOT_VERSION = "0.9.6.95-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -6600,9 +6601,22 @@ class DashboardState(rx.State):
     def _registry_payload(self) -> dict[str, list[dict[str, Any]]]:
         if not self._cultivation_registry:
             self._cultivation_registry = load_registry()
+            self._sync_cultivation_provisional_strains(
+                self._cultivation_registry
+            )
             self.cultivation_registry_loaded = True
             self.cultivation_registry_revision += 1
         return self._cultivation_registry
+
+    def _sync_cultivation_provisional_strains(
+        self, registry: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        self.cultivation_provisional_strains = [
+            str(row.get("strain_name", "")).strip()
+            for row in registry.get("provisional_strains", [])
+            if bool(row.get("active", True))
+            and str(row.get("strain_name", "")).strip()
+        ]
 
     def _current_clone_period(self) -> dict[str, str]:
         """Return the explicitly selected or date-current schedule crop."""
@@ -7107,6 +7121,9 @@ class DashboardState(rx.State):
         self.cultivation_registry_error = ""
         try:
             self._cultivation_registry = load_registry()
+            self._sync_cultivation_provisional_strains(
+                self._cultivation_registry
+            )
             self.cultivation_registry_loaded = True
             self.cultivation_registry_revision += 1
             period = self._current_clone_period()
@@ -8208,6 +8225,13 @@ class DashboardState(rx.State):
 
     @rx.event
     def add_cultivation_provisional_strain(self):
+        if not self._require_active_session() or self.auth_role != "Admin":
+            self.cultivation_new_strain_error = (
+                "Administrator access is required to add a durable "
+                "provisional strain."
+            )
+            self.cultivation_new_strain_message = ""
+            return
         label = " ".join(self.cultivation_new_strain_name.strip().split())
         if not label:
             self.cultivation_new_strain_error = "Enter a strain name first."
@@ -8219,16 +8243,30 @@ class DashboardState(rx.State):
         if normalized_strain(label) in existing:
             self.cultivation_new_strain_error = f"{label} is already available."
             return
-        self.cultivation_provisional_strains = [
-            *self.cultivation_provisional_strains,
-            label,
-        ]
-        self.cultivation_new_strain_name = ""
-        self.cultivation_new_strain_error = ""
-        self.cultivation_new_strain_message = (
-            f"{label} is now available in Clone Planning and exact bench assignment. "
-            "Until it has harvest history, projected yield uses the selected room average."
-        )
+        try:
+            saved_label = save_provisional_strain(
+                label,
+                self.auth_name or self.auth_email or "QCC Admin",
+            )
+            self._cultivation_registry = load_registry()
+            self._sync_cultivation_provisional_strains(
+                self._cultivation_registry
+            )
+            self.cultivation_registry_loaded = True
+            self.cultivation_registry_revision += 1
+            self.cultivation_new_strain_name = ""
+            self.cultivation_new_strain_error = ""
+            self.cultivation_new_strain_message = (
+                f"{saved_label} is saved for this organization and is now "
+                "available to every user in Clone Planning and exact bench "
+                "assignment. Until it has harvest history, projected yield "
+                "uses the selected room average."
+            )
+        except Exception as error:
+            self.cultivation_new_strain_error = (
+                "The provisional strain could not be saved: " + str(error)
+            )
+            self.cultivation_new_strain_message = ""
 
     @rx.event
     def change_cultivation_clone_plan_demand_model(self, value: str):
@@ -22934,7 +22972,10 @@ def cultivation_new_strain_control() -> rx.Component:
                     align="center",
                 ),
                 rx.text(
-                    "Add a cultivar that has not harvested or shipped yet. It becomes available in planning and exact bench assignment; its orange Two-Week Demand cell remains editable until calculated velocity exists.",
+                    "Admins can add a cultivar that has not harvested or shipped yet. "
+                    "It is saved for the organization and becomes available to every "
+                    "user in planning and exact bench assignment; its orange Two-Week "
+                    "Demand cell remains editable until calculated velocity exists.",
                     size="1",
                     color=MUTED,
                 ),
@@ -22945,12 +22986,14 @@ def cultivation_new_strain_control() -> rx.Component:
                 on_change=DashboardState.change_cultivation_new_strain_name,
                 placeholder="Example: Hood Candy",
                 width=rx.breakpoints(initial="100%", md="290px"),
+                disabled=~DashboardState.is_administrator,
             ),
             rx.button(
                 "Add Provisional Strain",
                 on_click=DashboardState.add_cultivation_provisional_strain,
                 color_scheme="purple",
                 white_space="nowrap",
+                disabled=~DashboardState.is_administrator,
             ),
             align="center",
             wrap="wrap",
