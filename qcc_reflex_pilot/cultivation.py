@@ -339,7 +339,9 @@ def recommend_clone_trays(
 ) -> CloneRecommendation:
     """Round a clone requirement to the nearest practical full tray count."""
     target = max(0, int(target_plants))
-    overage = min(30, max(25, int(requested_overage_percent)))
+    # The room-plan default remains 25–30%, but an execution plan may require
+    # a higher or lower strain-specific safety allowance.
+    overage = min(100, max(0, int(requested_overage_percent)))
     if target == 0:
         return {
             "target_plants": 0,

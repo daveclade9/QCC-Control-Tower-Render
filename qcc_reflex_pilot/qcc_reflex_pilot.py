@@ -200,7 +200,7 @@ from .packaging_inventory import (
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 
-PILOT_VERSION = "0.9.6.93-staging"
+PILOT_VERSION = "0.9.6.94-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -972,6 +972,7 @@ class DashboardState(rx.State):
     ).isoformat()
     cultivation_plant_density: float = 0.75
     cultivation_overage_percent: int = 30
+    cultivation_strain_overage_percentages: dict[str, int] = {}
     cultivation_post_harvest_days: int = DEFAULT_POST_HARVEST_DAYS
     cultivation_layout_editing: bool = False
     cultivation_bench_plans: list[BenchPlan] = room_bench_plans("Flower Room 1")
@@ -9021,6 +9022,15 @@ class DashboardState(rx.State):
                     or self.cultivation_overage_percent
                 )),
             )
+            saved_strain_overages = settings.get(
+                "saved_strain_overage_percentages", {}
+            )
+            self.cultivation_strain_overage_percentages = {
+                normalized_strain(strain): min(
+                    100, max(0, int(float(value or 0)))
+                )
+                for strain, value in dict(saved_strain_overages or {}).items()
+            }
             self.cultivation_post_harvest_days = max(
                 0,
                 int(
@@ -9030,6 +9040,8 @@ class DashboardState(rx.State):
                     ) or self.cultivation_post_harvest_days
                 ),
             )
+        else:
+            self.cultivation_strain_overage_percentages = {}
         defaults = {
             str(row.get("bench", "")): dict(row)
             for row in self._registered_room_bench_plans(
@@ -9088,6 +9100,9 @@ class DashboardState(rx.State):
                     **dict(bench),
                     "saved_plant_density": self.cultivation_plant_density,
                     "saved_overage_percent": self.cultivation_overage_percent,
+                    "saved_strain_overage_percentages": dict(
+                        self.cultivation_strain_overage_percentages
+                    ),
                     "saved_post_harvest_days": self.cultivation_post_harvest_days,
                 }
                 for bench in self.cultivation_bench_plans
@@ -9242,6 +9257,32 @@ class DashboardState(rx.State):
     def change_cultivation_overage(self, value: str):
         digits = re.sub(r"[^0-9]", "", str(value))
         self.cultivation_overage_percent = min(30, max(25, int(digits or 30)))
+
+    @rx.event
+    def change_cultivation_strain_overage(
+        self, strain: str, value: str
+    ):
+        """Override clone safety overage for one strain in the room plan."""
+        key = normalized_strain(strain)
+        updated = dict(self.cultivation_strain_overage_percentages)
+        if not str(value).strip():
+            updated.pop(key, None)
+            selected = self.cultivation_overage_percent
+        else:
+            try:
+                selected = min(100, max(0, int(round(float(value)))))
+            except (TypeError, ValueError):
+                self.cultivation_error = (
+                    "Strain safety overage must be a number from 0% to 100%."
+                )
+                return
+            updated[key] = selected
+        self.cultivation_strain_overage_percentages = updated
+        self.cultivation_error = ""
+        self.cultivation_message = (
+            f"{strain} clone safety overage is {selected}%. "
+            "Print and save the clone plan to retain this adjustment."
+        )
 
     @rx.event
     def change_cultivation_plant_density(self, value: str):
@@ -10681,11 +10722,15 @@ class DashboardState(rx.State):
             bucket["target_plants"] += int(row["target_plants"])
         summary: list[dict[str, Any]] = []
         for bucket in grouped.values():
+            strain = str(bucket["strain"])
+            strain_key = normalized_strain(strain)
+            overage_percent = self.cultivation_strain_overage_percentages.get(
+                strain_key, self.cultivation_overage_percent
+            )
             recommendation = recommend_clone_trays(
-                int(bucket["target_plants"]), self.cultivation_overage_percent
+                int(bucket["target_plants"]), overage_percent
             )
             square_feet = round(float(bucket["square_feet"]), 1)
-            strain = str(bucket["strain"])
             ordered_benches = sorted(
                 bucket["benches"],
                 key=lambda value: bench_order.get(str(value), 999),
@@ -10703,6 +10748,11 @@ class DashboardState(rx.State):
                 "trays": recommendation["trays"],
                 "domes": recommendation["trays"],
                 "recommended_clones": recommendation["recommended_clones"],
+                "requested_overage_percent": recommendation[
+                    "requested_overage_percent"
+                ],
+                "custom_overage": strain_key
+                in self.cultivation_strain_overage_percentages,
                 "actual_overage_percent": recommendation["actual_overage_percent"],
                 "projected_yield_lbs": estimated_yield_pounds(
                     square_feet, strain, self.cultivation_flower_room
@@ -21561,6 +21611,54 @@ def cultivation_summary_table_row(row: rx.Var) -> rx.Component:
         rx.table.cell(row["square_feet"].to_string(), text_align="right"),
         rx.table.cell(row["plant_density"], text_align="right"),
         rx.table.cell(row["target_plants"].to_string(), text_align="right"),
+        rx.table.cell(
+            row["requested_overage_percent"].to_string() + "%",
+            text_align="right",
+        ),
+        rx.table.cell(row["recommended_clones"].to_string(), text_align="right"),
+        rx.table.cell(row["domes"].to_string(), text_align="right"),
+        rx.table.cell(
+            row["actual_overage_percent"].to_string() + "%",
+            text_align="right",
+        ),
+    )
+
+
+def cultivation_editable_summary_table_row(row: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(row["strain"], font_weight="600", min_width="160px"),
+        rx.table.cell(row["benches"], min_width="140px"),
+        rx.table.cell(row["square_feet"].to_string(), text_align="right"),
+        rx.table.cell(row["plant_density"], text_align="right"),
+        rx.table.cell(row["target_plants"].to_string(), text_align="right"),
+        rx.table.cell(
+            rx.hstack(
+                rx.input(
+                    type="number",
+                    min="0",
+                    max="100",
+                    step="1",
+                    value=row["requested_overage_percent"],
+                    on_change=lambda value: (
+                        DashboardState.change_cultivation_strain_overage(
+                            row["strain"], value
+                        )
+                    ),
+                    width="76px",
+                    size="1",
+                ),
+                rx.text("%", size="1", color=MUTED),
+                rx.cond(
+                    row["custom_overage"],
+                    rx.badge("Custom", color_scheme="purple", size="1"),
+                    rx.fragment(),
+                ),
+                gap="1",
+                align="center",
+                justify="end",
+            ),
+            min_width="150px",
+        ),
         rx.table.cell(row["recommended_clones"].to_string(), text_align="right"),
         rx.table.cell(row["domes"].to_string(), text_align="right"),
         rx.table.cell(
@@ -21690,7 +21788,7 @@ def cultivation_clone_dome_print_document() -> rx.Component:
                     size="2",
                 ),
                 rx.badge(
-                    "Safety Overage: "
+                    "Default Safety Overage: "
                     + DashboardState.cultivation_overage_percent.to_string()
                     + "%",
                     color_scheme="purple",
@@ -21712,6 +21810,7 @@ def cultivation_clone_dome_print_document() -> rx.Component:
                         rx.table.column_header_cell("Canopy sq ft", text_align="right"),
                         rx.table.column_header_cell("Plants / sq ft", text_align="right"),
                         rx.table.column_header_cell("Target Plants", text_align="right"),
+                        rx.table.column_header_cell("Safety Overage", text_align="right"),
                         rx.table.column_header_cell("Clone Cuts", text_align="right"),
                         rx.table.column_header_cell("32-Clone Trays / Domes", text_align="right"),
                         rx.table.column_header_cell("Actual Overage", text_align="right"),
@@ -23916,6 +24015,7 @@ def cultivation_clone_allocation_panel() -> rx.Component:
                                     rx.table.column_header_cell("Canopy sq ft", text_align="right"),
                                     rx.table.column_header_cell("Plants / sq ft", text_align="right"),
                                     rx.table.column_header_cell("Target Plants", text_align="right"),
+                                    rx.table.column_header_cell("Safety Overage", text_align="right"),
                                     rx.table.column_header_cell("Clone Cuts", text_align="right"),
                                     rx.table.column_header_cell("32-Clone Trays / Domes", text_align="right"),
                                     rx.table.column_header_cell("Actual Overage", text_align="right"),
@@ -23924,11 +24024,11 @@ def cultivation_clone_allocation_panel() -> rx.Component:
                             rx.table.body(
                                 rx.foreach(
                                     DashboardState.cultivation_strain_summary_rows,
-                                    cultivation_summary_table_row,
+                                    cultivation_editable_summary_table_row,
                                 )
                             ),
                             width="100%",
-                            min_width="1120px",
+                            min_width="1270px",
                             variant="surface",
                         ),
                         width="100%",

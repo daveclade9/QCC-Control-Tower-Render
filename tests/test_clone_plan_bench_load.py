@@ -56,3 +56,47 @@ def test_loading_plan_keeps_a_previously_saved_exact_bench_map():
 
     assert state.cultivation_bench_plans[0]["strain_1"] == "J1"
     assert "saved room bench map is loaded" in state.cultivation_message
+
+
+def test_strain_specific_overage_changes_only_that_clone_recommendation():
+    state = _state_with_approved_plan()
+    room_map = state._registered_room_bench_plans("Flower Room 1")
+    room_map[0].update({"strain_1": "Diamond Bar", "percent_1": 100.0})
+    room_map[1].update({"strain_1": "Fig Bar", "percent_1": 100.0})
+    state.cultivation_bench_plans = room_map
+
+    baseline = {
+        row["strain"]: row["recommended_clones"]
+        for row in state.cultivation_strain_summary_rows
+    }
+    state.change_cultivation_strain_overage("Diamond Bar", "60")
+    adjusted = {
+        row["strain"]: row
+        for row in state.cultivation_strain_summary_rows
+    }
+
+    assert adjusted["Diamond Bar"]["requested_overage_percent"] == 60
+    assert adjusted["Diamond Bar"]["custom_overage"] is True
+    assert adjusted["Diamond Bar"]["recommended_clones"] > baseline["Diamond Bar"]
+    assert adjusted["Fig Bar"]["recommended_clones"] == baseline["Fig Bar"]
+
+
+def test_loading_saved_room_map_restores_strain_specific_overage():
+    state = _state_with_approved_plan()
+    exact_map = state._registered_room_bench_plans("Flower Room 1")
+    exact_map[0].update({
+        "strain_1": "Diamond Bar",
+        "percent_1": 100.0,
+        "saved_strain_overage_percentages": {"diamond bar": 55},
+    })
+    state.cultivation_clone_plan_history[0]["bench_assignments"] = exact_map
+
+    state.load_approved_clone_plan_to_allocation("F1.11-approved")
+
+    assert state.cultivation_strain_overage_percentages == {"diamond bar": 55}
+    diamond_bar = next(
+        row
+        for row in state.cultivation_strain_summary_rows
+        if row["strain"] == "Diamond Bar"
+    )
+    assert diamond_bar["requested_overage_percent"] == 55

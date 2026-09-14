@@ -50,9 +50,10 @@ def test_clone_recommendation_rounds_to_complete_32_clone_trays():
     assert result["actual_overage_percent"] == 28.0
 
 
-def test_clone_recommendation_clamps_safety_range():
-    assert recommend_clone_trays(100, 20)["requested_overage_percent"] == 25
-    assert recommend_clone_trays(100, 35)["requested_overage_percent"] == 30
+def test_clone_recommendation_supports_strain_specific_safety_overage():
+    assert recommend_clone_trays(100, -5)["requested_overage_percent"] == 0
+    assert recommend_clone_trays(100, 35)["requested_overage_percent"] == 35
+    assert recommend_clone_trays(100, 125)["requested_overage_percent"] == 100
 
 
 def test_clone_planner_normalizes_known_sales_strain_aliases():
