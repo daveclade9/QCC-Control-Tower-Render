@@ -5349,6 +5349,22 @@ def build_inventory_views(
         for flag, frame in view_frames.items():
             all_inventory[flag] = package_tags.isin(tag_set(frame))
 
+        # Keep the review explanation on the shared package collection so the
+        # Needs Review view can display it without retaining a second copy of
+        # every flagged package in the Reflex session.
+        review_reason_by_tag: dict[str, str] = {}
+        if (
+            not needs_review_display.empty
+            and "Review Reason" in needs_review_display.columns
+        ):
+            review_reason_by_tag = dict(zip(
+                needs_review_display["Metrc Tag"].fillna("").astype(str),
+                needs_review_display["Review Reason"].fillna("").astype(str),
+            ))
+        all_inventory["Review Reason"] = (
+            package_tags.map(review_reason_by_tag).fillna("")
+        )
+
         available_by_tag: dict[str, float] = {}
         if (
             not potential_wip_display.empty

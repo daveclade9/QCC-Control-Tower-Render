@@ -379,8 +379,13 @@ class InventoryNavigationCacheTest(unittest.TestCase):
         columns = DashboardState._inventory_columns_for_view(
             SimpleNamespace(inventory_weight_unit="Pounds"), "review"
         )
+        self.assertEqual(
+            columns[columns.index("SKU Type") + 1],
+            "Reason for Review",
+        )
         rows = [[
-            "Unassigned", "Unknown Strain", "Not Packaged SKU", 0,
+            "Unassigned", "Unknown Strain", "Not Packaged SKU",
+            "Production stage unclear", 0,
             3.25, 17, "Needs Review", "NotSubmitted", "tag-review",
         ]]
 
@@ -390,6 +395,9 @@ class InventoryNavigationCacheTest(unittest.TestCase):
 
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0]["strain"], "Unknown Strain")
+        self.assertEqual(
+            cards[0]["review_reason"], "Production stage unclear"
+        )
         self.assertEqual(cards[0]["qa_status"], "NotSubmitted")
         self.assertEqual(cards[0]["metrc_tag"], "tag-review")
 

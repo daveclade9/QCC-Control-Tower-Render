@@ -208,7 +208,7 @@ from .metrc_imports import (
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 
-PILOT_VERSION = "0.9.6.101-staging"
+PILOT_VERSION = "0.9.6.102-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -12512,6 +12512,8 @@ class DashboardState(rx.State):
             f"Total Weight ({unit})", "Age (Days)", "Location",
             "QA Status", "Metrc Tag",
         ]
+        if view_name == "review":
+            columns.insert(columns.index("Unit Count"), "Reason for Review")
         if view_name in {"wip", "aging_bulk"}:
             columns[columns.index("SKU Type")] = "Bulk Type"
             columns[columns.index("Unit Count")] = "Inventory Class"
@@ -13560,6 +13562,11 @@ class DashboardState(rx.State):
                         if classified_row
                         else [str(row.get("SKU Type", "") or "")]
                     ),
+                    *(
+                        [str(row.get("Review Reason", "") or "")]
+                        if selected_view == "review"
+                        else []
+                    ),
                 ])
                 group = groups.setdefault(key, {
                     "classified": classified_row,
@@ -13634,6 +13641,11 @@ class DashboardState(rx.State):
                         )
                         else [
                             str(row.get("SKU Type", "") or ""),
+                            *(
+                                [str(row.get("Review Reason", "") or "")]
+                                if selected_view == "review"
+                                else []
+                            ),
                             round(self._unit_count(row), 2),
                         ]
                     ),
@@ -14198,6 +14210,9 @@ class DashboardState(rx.State):
                 ),
                 "strain": str(record.get("Strain", "") or "Unassigned Strain"),
                 "product_type": str(type_value or "Unclassified"),
+                "review_reason": str(
+                    record.get("Reason for Review", "") or ""
+                ),
                 "amount_label": amount_label,
                 "amount": str(amount_value if amount_value != "" else "—"),
                 "weight": str(record.get(weight_column, "") or "—"),
@@ -15204,6 +15219,7 @@ READABLE_COLUMN_WIDTHS = {
     "Calculated Weight": 175,
     "Material Type": 185,
     "Review Reason": 440,
+    "Reason for Review": 440,
     "Quantity": 120,
     "Unit": 95,
     "Available Weight (g)": 175,
@@ -18407,6 +18423,16 @@ def inventory_mobile_card(row: rx.Var) -> rx.Component:
             ),
             rx.text(
                 row["product_type"], size="2", weight="bold", color="#334155"
+            ),
+            rx.cond(
+                row["review_reason"] != "",
+                rx.callout(
+                    row["review_reason"],
+                    icon="triangle_alert",
+                    color_scheme="orange",
+                    size="1",
+                    width="100%",
+                ),
             ),
             rx.grid(
                 inventory_mobile_detail(row["amount_label"], row["amount"]),
