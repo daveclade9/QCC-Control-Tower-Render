@@ -64,6 +64,14 @@ class SalesMenuTests(unittest.TestCase):
         self.assertEqual(buyer["customer_id"], "DEMO-CUSTOMER")
         self.assertEqual(len(products), 93)
         self.assertTrue(all(row["available_cases"] == 25 for row in products))
+        self.assertTrue(
+            all(
+                row["available_units"]
+                == row["available_cases"] * row["units_per_case"]
+                for row in products
+            )
+        )
+        self.assertTrue(all(row["available_units_display"] for row in products))
 
     def test_order_persists_even_when_email_is_not_configured(self):
         with patch.dict(

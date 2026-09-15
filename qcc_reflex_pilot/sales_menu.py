@@ -60,6 +60,8 @@ class MenuProductRow(TypedDict):
     unit_price: float
     units_per_case: int
     available_cases: int
+    available_units: int
+    available_units_display: str
     notes: str
     cart_cases: int
     sold_out: bool
@@ -651,6 +653,10 @@ def load_customer_menu_products(customer: dict[str, Any]) -> list[dict[str, Any]
         rows = sales_menu_seed_products()
         for row in rows:
             row["available_cases"] = 25
+            row["available_units"] = row["available_cases"] * int(
+                row.get("units_per_case", 0) or 0
+            )
+            row["available_units_display"] = f"{row['available_units']:,}"
             row["base_unit_price"] = row["unit_price"]
             row["case_price"] = round(
                 row["unit_price"] * row["units_per_case"], 2
@@ -688,6 +694,10 @@ def load_customer_menu_products(customer: dict[str, Any]) -> list[dict[str, Any]
         )
         record["units_per_case"] = int(record.get("units_per_case", 0) or 0)
         record["available_cases"] = int(record.get("available_cases", 0) or 0)
+        record["available_units"] = (
+            record["available_cases"] * record["units_per_case"]
+        )
+        record["available_units_display"] = f"{record['available_units']:,}"
         record["case_price"] = round(
             record["unit_price"] * record["units_per_case"], 2
         )
@@ -2421,7 +2431,20 @@ def _product_list_row(product: rx.Var[MenuProductRow]) -> rx.Component:
         ),
         rx.table.cell(rx.text(product["units_per_case"], weight="bold")),
         rx.table.cell(rx.text("$", product["unit_price"], weight="bold")),
-        rx.table.cell(rx.text(product["available_cases"], " cases", weight="bold")),
+        rx.table.cell(
+            rx.vstack(
+                rx.text(product["available_cases"], " cases", weight="bold"),
+                rx.text(
+                    product["available_units_display"],
+                    " total units",
+                    size="1",
+                    color="#756d62",
+                    weight="medium",
+                ),
+                spacing="1",
+                align="start",
+            )
+        ),
         rx.table.cell(
             rx.input(
                 type="number", min="0", max=product["available_cases"], step="1",
@@ -2451,7 +2474,7 @@ def _product_size_group(group: rx.Var[MenuSizeGroup]) -> rx.Component:
                         rx.table.column_header_cell("Potency"),
                         rx.table.column_header_cell("Units / Case"),
                         rx.table.column_header_cell("Unit Price"),
-                        rx.table.column_header_cell("Available"),
+                        rx.table.column_header_cell("Available Inventory"),
                         rx.table.column_header_cell("Order Cases"),
                     )
                 ),
