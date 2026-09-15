@@ -2057,11 +2057,12 @@ class MenuAdminState(rx.State):
         self.review_product_id = ""
 
     @rx.event
-    def save_product_review(self):
+    def save_product_review(self, publish: bool):
         self.error = ""
         self.message = ""
         try:
             employee = self._employee()
+            self.review_product_is_active = bool(publish)
             save_menu_product_review(
                 self.review_product_id,
                 brand=self.review_product_brand,
@@ -2072,10 +2073,10 @@ class MenuAdminState(rx.State):
                 unit_price=float(self.review_product_unit_price or 0),
                 units_per_case=int(float(self.review_product_units_per_case or 0)),
                 notes=self.review_product_notes,
-                is_active=self.review_product_is_active,
+                is_active=bool(publish),
                 updated_by=str(employee.get("full_name") or employee.get("user_email")),
             )
-            publication = "published" if self.review_product_is_active else "kept unpublished"
+            publication = "published" if publish else "kept unpublished"
             self.review_product_id = ""
             self._apply_payload(load_menu_admin_data())
             self.message = f"The menu SKU was reviewed and {publication}."
@@ -3149,20 +3150,17 @@ def _admin_product_review_editor() -> rx.Component:
                         ),
                     ),
                     rx.box(
-                        rx.text("Buyer menu status", size="1", weight="bold"),
-                        rx.hstack(
-                            rx.switch(
-                                checked=MenuAdminState.review_product_is_active,
-                                on_change=MenuAdminState.set_review_product_is_active,
+                        rx.text("Current buyer menu status", size="1", weight="bold"),
+                        rx.badge(
+                            rx.cond(
+                                MenuAdminState.review_product_is_active,
+                                "Published", "Unpublished",
                             ),
-                            rx.text(
-                                rx.cond(
-                                    MenuAdminState.review_product_is_active,
-                                    "Publish to buyers", "Keep unpublished",
-                                ),
-                                weight="bold",
+                            color_scheme=rx.cond(
+                                MenuAdminState.review_product_is_active,
+                                "green", "gray",
                             ),
-                            spacing="2", min_height="32px", align="center",
+                            size="2",
                         ),
                     ),
                     columns=rx.breakpoints(initial="1", md="2", xl="4"),
@@ -3179,9 +3177,15 @@ def _admin_product_review_editor() -> rx.Component:
                 ),
                 rx.hstack(
                     rx.button(
-                        "Save SKU Review",
-                        on_click=MenuAdminState.save_product_review,
+                        "Save & Publish SKU",
+                        on_click=MenuAdminState.save_product_review(True),
                         color_scheme="teal",
+                    ),
+                    rx.button(
+                        "Save Unpublished",
+                        on_click=MenuAdminState.save_product_review(False),
+                        color_scheme="gray",
+                        variant="outline",
                     ),
                     rx.button(
                         "Cancel",
