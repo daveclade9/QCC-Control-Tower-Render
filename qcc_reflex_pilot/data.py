@@ -36,6 +36,7 @@ from .rules import (
     infer_brand,
     infer_strain,
     normalize_strain_name,
+    possible_master_data_spelling_reasons,
     prepare_transfer_analysis,
 )
 from .retailer_directory import CLADE9_LOCATIONS
@@ -5233,6 +5234,25 @@ def build_inventory_views(
         data[column] = pd.to_numeric(data.get(column), errors="coerce")
     data["qcc_owned"] = data["qcc_owned"].fillna(0).astype(bool)
     data["needs_review"] = data["needs_review"].fillna(0).astype(bool)
+    if "review_reason" not in data.columns:
+        data["review_reason"] = ""
+    spelling_reasons = data.apply(
+        lambda row: possible_master_data_spelling_reasons(row.to_dict()),
+        axis=1,
+    )
+    for index, reasons in spelling_reasons.items():
+        if not reasons:
+            continue
+        existing_value = data.at[index, "review_reason"]
+        existing_text = "" if pd.isna(existing_value) else str(existing_value)
+        existing = [
+            reason.strip()
+            for reason in existing_text.split(";")
+            if reason.strip()
+        ]
+        combined = list(dict.fromkeys([*existing, *reasons]))
+        data.at[index, "review_reason"] = "; ".join(combined)
+        data.at[index, "needs_review"] = True
     for column in [
         "is_finished_retail_sku", "include_in_cpg", "is_retention_sample",
     ]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 import pandas as pd
@@ -160,6 +161,81 @@ CLADE9_COMPATIBLE_BULK_STRAINS = {
     "Hood Candy", "Jelly Cake", "South Central Purps", "Lip Smackerz",
     "Pine Tar", "LA Piff",
 }
+
+
+MASTER_DATA_SPELLING_VALUES: dict[str, tuple[str, ...]] = {
+    "Brand": ("Clade9", "Craft Kings", "Royal Smalls", "Locals Only"),
+    "Strain": tuple(sorted(
+        set(CLADE9_STRAIN_PATTERNS)
+        | set(CRAFT_KINGS_STRAIN_PATTERNS)
+        | set(BLEND_PATTERNS)
+    )),
+    "SKU Type": tuple(sorted(
+        set(SKU_WEIGHT_GRAMS)
+        | {"Edibles", "Other Packaged SKU", "Not Packaged SKU"}
+    )),
+    "Location": (
+        "Vault Approved for Sale",
+        "Vault Pending Testing",
+        "WIP Quarantine Room 1",
+    ),
+}
+
+
+def _spelling_key(value: Any) -> str:
+    """Normalize punctuation and spacing without changing the source value."""
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def possible_master_data_spelling_reasons(row: dict[str, Any]) -> list[str]:
+    """Return conservative typo suggestions for configured master-data fields.
+
+    Suggestions never mutate operational data. Numeric differences are not
+    treated as spelling mistakes so a legitimate new package size or room is
+    not silently steered toward an existing value.
+    """
+    field_keys = {
+        "Brand": ("Brand", "brand"),
+        "Strain": ("Strain", "strain"),
+        "SKU Type": ("SKU Type", "sku_type"),
+        "Location": ("Location", "location"),
+    }
+    reasons: list[str] = []
+    for field, keys in field_keys.items():
+        value = next((row.get(key) for key in keys if row.get(key) is not None), "")
+        original = "" if pd.isna(value) else str(value).strip()
+        original = re.sub(r"\s+", " ", original)
+        if (
+            len(_spelling_key(original)) < 4
+            or "needs review" in original.lower()
+            or original.lower() in {"unknown", "unassigned", "none", "nan"}
+        ):
+            continue
+
+        original_key = _spelling_key(original)
+        candidates = MASTER_DATA_SPELLING_VALUES[field]
+        candidate_keys = {_spelling_key(candidate): candidate for candidate in candidates}
+        if original_key in candidate_keys:
+            continue
+
+        source_digits = re.findall(r"\d+", original_key)
+        best_candidate = ""
+        best_score = 0.0
+        for candidate_key, candidate in candidate_keys.items():
+            # A different number normally represents a real SKU size or room,
+            # not a typo. Let an administrator add it to master data instead.
+            if re.findall(r"\d+", candidate_key) != source_digits:
+                continue
+            score = SequenceMatcher(None, original_key, candidate_key).ratio()
+            if score > best_score:
+                best_candidate = candidate
+                best_score = score
+        if best_candidate and best_score >= 0.88:
+            reasons.append(
+                f"Possible misspelling: {field} '{original}' may be "
+                f"'{best_candidate}'"
+            )
+    return reasons
 
 
 def compatible_inventory_brand(row: dict[str, Any]) -> str:

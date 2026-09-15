@@ -3,6 +3,7 @@ import unittest
 from qcc_reflex_pilot.rules import (
     CLADE9_COMPATIBLE_BULK_STRAINS,
     compatible_inventory_brand,
+    possible_master_data_spelling_reasons,
 )
 
 
@@ -98,6 +99,26 @@ class CompatibleBrandRulesTest(unittest.TestCase):
         )
         self.assertEqual(
             compatible_inventory_brand(row), "Unallocated QCC Brand"
+        )
+
+    def test_close_unknown_strain_is_suggested_without_mutation(self):
+        row = {"Strain": "Diamond Barr"}
+        self.assertEqual(
+            possible_master_data_spelling_reasons(row),
+            ["Possible misspelling: Strain 'Diamond Barr' may be 'Diamond Bar'"],
+        )
+        self.assertEqual(row["Strain"], "Diamond Barr")
+
+    def test_legitimate_new_strain_is_not_flagged(self):
+        self.assertEqual(
+            possible_master_data_spelling_reasons({"Strain": "Ice Cream Cake"}),
+            [],
+        )
+
+    def test_new_numeric_sku_size_is_not_treated_as_a_typo(self):
+        self.assertEqual(
+            possible_master_data_spelling_reasons({"SKU Type": "2g Flower"}),
+            [],
         )
 
 
