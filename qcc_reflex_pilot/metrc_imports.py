@@ -323,3 +323,33 @@ def load_metrc_import_status() -> list[dict[str, str]]:
                 latest = "No import found"
             rows.append({"Data Set": source_type, "Latest Import": latest})
     return rows
+
+
+def load_metrc_import_history(limit: int = 25) -> list[dict[str, Any]]:
+    """Load recent tenant-owned import runs across every migrated data family."""
+    url = _require_database()
+    safe_limit = max(1, min(int(limit or 25), 100))
+    with psycopg.connect(url, connect_timeout=20) as connection:
+        _ensure_import_audit(connection)
+        rows = connection.execute(
+            """
+            SELECT source_type, filename, status, source_rows, stored_rows,
+                   inserted_rows, updated_rows, imported_by, imported_at, details
+            FROM qcc_metrc_import_runs
+            WHERE tenant_id = %s
+            ORDER BY imported_at DESC
+            LIMIT %s
+            """,
+            (TENANT_ID, safe_limit),
+        ).fetchall()
+        connection.commit()
+    return [
+        {
+            "Data Set": row[0], "File": row[1], "Status": row[2],
+            "Source Rows": int(row[3] or 0), "Stored Rows": int(row[4] or 0),
+            "Inserted": int(row[5] or 0), "Updated": int(row[6] or 0),
+            "Imported By": row[7] or "—", "Imported At": str(row[8] or "—"),
+            "Details": row[9] or "",
+        }
+        for row in rows
+    ]

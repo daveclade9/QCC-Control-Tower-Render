@@ -198,6 +198,7 @@ from .packaging_inventory import (
 )
 from .metrc_imports import (
     import_transfer_history_bytes,
+    load_metrc_import_history,
     load_metrc_import_status,
     record_metrc_import_run,
 )
@@ -206,7 +207,7 @@ from .metrc_imports import (
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 
-PILOT_VERSION = "0.9.6.96-staging"
+PILOT_VERSION = "0.9.6.97-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -1271,6 +1272,14 @@ class DashboardState(rx.State):
         self.metrc_import_status = [
             [str(row.get("Data Set", "")), str(row.get("Latest Import", ""))]
             for row in rows
+        ]
+        history = load_metrc_import_history(limit=25)
+        columns = [
+            "Data Set", "File", "Status", "Source Rows", "Stored Rows",
+            "Inserted", "Updated", "Imported By", "Imported At", "Details",
+        ]
+        self.metrc_import_results = [
+            [row.get(column, "") for column in columns] for row in history
         ]
 
     @rx.event
@@ -21555,12 +21564,19 @@ def metrc_import_center() -> rx.Component:
             rx.cond(
                 DashboardState.metrc_import_results.length() > 0,
                 rx.vstack(
-                    rx.heading("Latest Import Result", size="3"),
+                    rx.heading("Recent Import Results", size="3"),
+                    rx.text(
+                        "The 25 most recent transfer, lab, and plant imports remain "
+                        "visible together and reload from shared audit history.",
+                        size="1",
+                        color=MUTED,
+                    ),
                     readable_grid(
                         DashboardState.metrc_import_results,
                         [
-                            "File", "Status", "Source Rows", "Stored Rows",
-                            "Inserted", "Updated", "Details",
+                            "Data Set", "File", "Status", "Source Rows",
+                            "Stored Rows", "Inserted", "Updated", "Imported By",
+                            "Imported At", "Details",
                         ],
                         "240px",
                     ),
