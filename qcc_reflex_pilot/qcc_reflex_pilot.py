@@ -196,12 +196,17 @@ from .packaging_inventory import (
     save_packaging_item,
     save_packaging_supplier,
 )
+from .metrc_imports import (
+    import_transfer_history_bytes,
+    load_metrc_import_status,
+    record_metrc_import_run,
+)
 
 
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 
-PILOT_VERSION = "0.9.6.95-staging"
+PILOT_VERSION = "0.9.6.96-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -601,6 +606,11 @@ class DashboardState(rx.State):
     admin_selected_primary_email: str = ""
     admin_selected_login_emails: str = ""
     admin_additional_email: str = ""
+    metrc_importing: bool = False
+    metrc_import_message: str = ""
+    metrc_import_error: str = ""
+    metrc_import_results: list[list[Any]] = []
+    metrc_import_status: list[list[str]] = []
 
     loading: bool = False
     sales_background_loading: bool = False
@@ -1252,8 +1262,187 @@ class DashboardState(rx.State):
             return
         try:
             self._refresh_team_directory()
+            self._refresh_metrc_import_status()
         except Exception as error:
             self.admin_error = f"Team & Access could not be loaded: {error}"
+
+    def _refresh_metrc_import_status(self) -> None:
+        rows = load_metrc_import_status()
+        self.metrc_import_status = [
+            [str(row.get("Data Set", "")), str(row.get("Latest Import", ""))]
+            for row in rows
+        ]
+
+    @rx.event
+    def refresh_metrc_import_center(self):
+        self.metrc_import_error = ""
+        if not self._require_active_session() or self.auth_role != "Admin":
+            self.metrc_import_error = "Administrator access is required."
+            return
+        try:
+            self._refresh_metrc_import_status()
+        except Exception as error:
+            self.metrc_import_error = f"Metrc import status could not be loaded: {error}"
+
+    @rx.event
+    async def import_admin_transfer_files(self, files: list[rx.UploadFile]):
+        self.metrc_import_error = ""
+        self.metrc_import_message = ""
+        self.metrc_import_results = []
+        if not self._require_active_session() or self.auth_role != "Admin":
+            self.metrc_import_error = "Administrator access is required."
+            return
+        if not files:
+            self.metrc_import_error = "Choose at least one Metrc Transfers Report CSV."
+            return
+        self.metrc_importing = True
+        yield
+        results: list[dict[str, Any]] = []
+        for file in files:
+            try:
+                file_bytes = await file.read()
+                results.append(await rx.run_in_thread(
+                    lambda name=file.name, payload=file_bytes: import_transfer_history_bytes(
+                        name,
+                        payload,
+                        imported_by=self.auth_name or self.auth_email,
+                    )
+                ))
+            except Exception as error:
+                results.append({
+                    "File": file.name, "Status": "Error", "Source Rows": 0,
+                    "Stored Rows": 0, "Inserted": 0, "Updated": 0,
+                    "Details": str(error),
+                })
+        columns = [
+            "File", "Status", "Source Rows", "Stored Rows", "Inserted",
+            "Updated", "Details",
+        ]
+        self.metrc_import_results = [
+            [row.get(column, "") for column in columns] for row in results
+        ]
+        try:
+            self._refresh_metrc_import_status()
+            self.metrc_import_message = (
+                "Transfer history import finished. Duplicate files were skipped safely."
+            )
+        except Exception as error:
+            self.metrc_import_error = f"Transfers imported, but status refresh failed: {error}"
+        self.metrc_importing = False
+        yield rx.clear_selected_files("admin_metrc_transfer_upload")
+
+    @rx.event
+    async def import_admin_lab_files(self, files: list[rx.UploadFile]):
+        self.metrc_import_error = ""
+        self.metrc_import_message = ""
+        self.metrc_import_results = []
+        if not self._require_active_session() or self.auth_role != "Admin":
+            self.metrc_import_error = "Administrator access is required."
+            return
+        if not files:
+            self.metrc_import_error = "Choose at least one Metrc LabResultsReport CSV."
+            return
+        self.metrc_importing = True
+        yield
+        results: list[dict[str, Any]] = []
+        for file in files:
+            try:
+                file_bytes = await file.read()
+                result = await rx.run_in_thread(
+                    lambda name=file.name, payload=file_bytes: import_lab_results_bytes(
+                        name, payload
+                    )
+                )
+                results.append(result)
+                await rx.run_in_thread(
+                    lambda name=file.name, payload=file_bytes, row=result: record_metrc_import_run(
+                        source_type="Lab Results", adapter="Metrc File Upload",
+                        filename=name,
+                        file_hash=__import__("hashlib").sha256(payload).hexdigest(),
+                        source_rows=int(row.get("Source Rows", 0) or 0),
+                        stored_rows=int(row.get("Stored Rows", 0) or 0),
+                        inserted_rows=int(row.get("Inserted", 0) or 0),
+                        updated_rows=int(row.get("Updated", 0) or 0),
+                        status=str(row.get("Status", "")),
+                        details=str(row.get("Details", "")),
+                        imported_by=self.auth_name or self.auth_email,
+                    )
+                )
+            except Exception as error:
+                results.append({
+                    "File": file.name, "Status": "Error", "Source Rows": 0,
+                    "Stored Rows": 0, "Inserted": 0, "Updated": 0,
+                    "Details": str(error),
+                })
+        columns = [
+            "File", "Status", "Source Rows", "Stored Rows", "Inserted",
+            "Updated", "Details",
+        ]
+        self.metrc_import_results = [
+            [row.get(column, "") for column in columns] for row in results
+        ]
+        try:
+            self._refresh_metrc_import_status()
+            self.metrc_import_message = "Metrc lab-result import finished."
+        except Exception as error:
+            self.metrc_import_error = f"Lab results imported, but status refresh failed: {error}"
+        self.metrc_importing = False
+        yield rx.clear_selected_files("admin_metrc_lab_upload")
+
+    @rx.event
+    async def import_admin_plant_files(self, files: list[rx.UploadFile]):
+        self.metrc_import_error = ""
+        self.metrc_import_message = ""
+        self.metrc_import_results = []
+        if not self._require_active_session() or self.auth_role != "Admin":
+            self.metrc_import_error = "Administrator access is required."
+            return
+        if not files:
+            self.metrc_import_error = "Choose all four active Metrc plant exports."
+            return
+        self.metrc_importing = True
+        yield
+        try:
+            uploaded = [(file.name, await file.read()) for file in files]
+            snapshot = await rx.run_in_thread(lambda: parse_metrc_plant_exports(uploaded))
+            await rx.run_in_thread(
+                lambda: save_metrc_plant_snapshot(
+                    snapshot,
+                    imported_by=self.auth_name or self.auth_email or "QCC Reflex User",
+                )
+            )
+            summary = dict(snapshot.get("summary") or {})
+            source_rows = sum(
+                int(summary.get(key, 0) or 0)
+                for key in (
+                    "flowering_plants", "vegetative_plants", "active_plantings",
+                    "harvest_batches",
+                )
+            )
+            await rx.run_in_thread(
+                lambda: record_metrc_import_run(
+                    source_type="Plant & Harvest Data", adapter="Metrc File Upload",
+                    filename=", ".join(name for name, _ in uploaded),
+                    file_hash=str(snapshot.get("snapshot_id", "")),
+                    source_rows=source_rows, stored_rows=source_rows,
+                    inserted_rows=source_rows, updated_rows=0, status="Imported",
+                    details="Four-file active plant snapshot published.",
+                    imported_by=self.auth_name or self.auth_email,
+                )
+            )
+            self._cultivation_plant_snapshot = snapshot
+            self.cultivation_plant_snapshot_revision += 1
+            self.cultivation_plant_snapshot_loaded = True
+            self.metrc_import_results = [[
+                "4 active plant exports", "Imported", source_rows, source_rows,
+                source_rows, 0, "Plant snapshot published.",
+            ]]
+            self._refresh_metrc_import_status()
+            self.metrc_import_message = "Plant and harvest snapshot imported successfully."
+        except Exception as error:
+            self.metrc_import_error = f"Plant import failed: {error}"
+        self.metrc_importing = False
+        yield rx.clear_selected_files("admin_metrc_plant_upload")
 
     @rx.event
     def change_admin_selected_employee(self, employee_id: str):
@@ -21201,6 +21390,192 @@ def employee_directory_card(employee: rx.Var) -> rx.Component:
     )
 
 
+def metrc_admin_upload_card(
+    title: str,
+    description: str,
+    upload_id: str,
+    button_label: str,
+    handler: Any,
+    accept: dict[str, list[str]],
+    max_files: int,
+) -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.heading(title, size="3", color=DARK),
+            rx.text(description, size="2", color=MUTED),
+            rx.upload(
+                rx.vstack(
+                    rx.icon("cloud-upload", size=28, color=ACCENT),
+                    rx.text("Drop files here or click to select", weight="bold"),
+                    rx.button("Choose Files", variant="outline"),
+                    spacing="2",
+                    align="center",
+                ),
+                id=upload_id,
+                accept=accept,
+                multiple=True,
+                max_files=max_files,
+                border=f"2px dashed {ACCENT}",
+                border_radius="12px",
+                padding="1.5rem",
+                width="100%",
+            ),
+            rx.flex(
+                rx.foreach(rx.selected_files(upload_id), rx.badge),
+                gap="2",
+                wrap="wrap",
+                width="100%",
+            ),
+            rx.hstack(
+                rx.button(
+                    button_label,
+                    on_click=handler(rx.upload_files(upload_id=upload_id)),
+                    loading=DashboardState.metrc_importing,
+                    background=ACCENT,
+                    color="white",
+                ),
+                rx.button(
+                    "Clear Selection",
+                    on_click=rx.clear_selected_files(upload_id),
+                    variant="outline",
+                ),
+                gap="3",
+                wrap="wrap",
+            ),
+            width="100%",
+            spacing="3",
+        ),
+        width="100%",
+        border_top=f"4px solid {ACCENT}",
+    )
+
+
+def metrc_import_center() -> rx.Component:
+    csv_accept = {"text/csv": [".csv"]}
+    xlsx_accept = {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"]
+    }
+    return rx.card(
+        rx.vstack(
+            rx.flex(
+                rx.box(
+                    rx.heading("Metrc Import Center", size="5", color=DARK),
+                    rx.text(
+                        "Admin-only ingestion for the current file workflow. The same "
+                        "normalized storage contracts will accept Metrc API data later.",
+                        size="2",
+                        color=MUTED,
+                    ),
+                ),
+                rx.spacer(),
+                rx.button(
+                    "Refresh Import Status",
+                    on_click=DashboardState.refresh_metrc_import_center,
+                    variant="outline",
+                ),
+                width="100%",
+                align="center",
+                wrap="wrap",
+                gap="3",
+            ),
+            rx.callout(
+                "Active Packages inventory remains published through Streamlit during "
+                "phase 1. Its WIP, Pre-WIP, ownership, weight, and brand rules will be "
+                "extracted before that publisher moves, preventing calculation drift.",
+                icon="shield-check",
+                color_scheme="amber",
+                width="100%",
+            ),
+            rx.cond(
+                DashboardState.metrc_import_message != "",
+                rx.callout(
+                    DashboardState.metrc_import_message,
+                    icon="circle-check",
+                    color_scheme="green",
+                    width="100%",
+                ),
+            ),
+            rx.cond(
+                DashboardState.metrc_import_error != "",
+                rx.callout(
+                    DashboardState.metrc_import_error,
+                    icon="triangle-alert",
+                    color_scheme="red",
+                    width="100%",
+                ),
+            ),
+            rx.heading("Current Data Freshness", size="3"),
+            rx.cond(
+                DashboardState.metrc_import_status.length() > 0,
+                readable_grid(
+                    DashboardState.metrc_import_status,
+                    ["Data Set", "Latest Import"],
+                    "240px",
+                ),
+                rx.text(
+                    "Click Refresh Import Status to load publication timestamps.",
+                    size="2",
+                    color=MUTED,
+                ),
+            ),
+            rx.grid(
+                metrc_admin_upload_card(
+                    "Transfer History",
+                    "Upload overlapping or full-history Metrc Transfers Report CSV files. "
+                    "Existing manifest/package records update without duplication.",
+                    "admin_metrc_transfer_upload",
+                    "Import Transfer History",
+                    DashboardState.import_admin_transfer_files,
+                    csv_accept,
+                    25,
+                ),
+                metrc_admin_upload_card(
+                    "Metrc Lab Results",
+                    "Upload Cultivation and Manufacturing LabResultsReport CSV files. "
+                    "This is separate from the lab-direct preliminary workbook.",
+                    "admin_metrc_lab_upload",
+                    "Import Metrc Lab Results",
+                    DashboardState.import_admin_lab_files,
+                    csv_accept,
+                    25,
+                ),
+                metrc_admin_upload_card(
+                    "Plant & Harvest Snapshot",
+                    "Upload Harvests, Flowering, Vegetative, and Plantings—Active together.",
+                    "admin_metrc_plant_upload",
+                    "Import Plant Snapshot",
+                    DashboardState.import_admin_plant_files,
+                    xlsx_accept,
+                    4,
+                ),
+                columns=rx.breakpoints(initial="1", xl="3"),
+                gap="3",
+                width="100%",
+            ),
+            rx.cond(
+                DashboardState.metrc_import_results.length() > 0,
+                rx.vstack(
+                    rx.heading("Latest Import Result", size="3"),
+                    readable_grid(
+                        DashboardState.metrc_import_results,
+                        [
+                            "File", "Status", "Source Rows", "Stored Rows",
+                            "Inserted", "Updated", "Details",
+                        ],
+                        "240px",
+                    ),
+                    width="100%",
+                    spacing="2",
+                ),
+            ),
+            width="100%",
+            spacing="4",
+        ),
+        width="100%",
+        border_top="5px solid #7c3aed",
+    )
+
+
 def administration_panel() -> rx.Component:
     """Reflex-owned employee administration with durable multi-provider identities."""
     return rx.vstack(
@@ -21230,6 +21605,7 @@ def administration_panel() -> rx.Component:
                 width="100%",
             ),
         ),
+        metrc_import_center(),
         rx.card(
             rx.vstack(
                 rx.heading("Create Employee Account", size="4"),
