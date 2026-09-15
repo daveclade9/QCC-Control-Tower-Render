@@ -1228,6 +1228,40 @@ body {
   line-height: 1.3;
 }
 
+/* Needs Review explanations can contain several semicolon-separated flags.
+   Give that column a readable width and allow only these rows to grow. */
+.qcc-needs-review-grid .gridjs-table {
+  width: 2240px !important;
+  min-width: 2240px !important;
+}
+
+.qcc-needs-review-grid .gridjs-tbody .gridjs-tr {
+  height: auto !important;
+  max-height: none !important;
+}
+
+.qcc-needs-review-grid .gridjs-td {
+  height: auto !important;
+  min-height: 48px;
+  max-height: none !important;
+}
+
+.qcc-needs-review-grid .gridjs-th:nth-child(4),
+.qcc-needs-review-grid .gridjs-td:nth-child(4) {
+  width: 440px !important;
+  min-width: 440px !important;
+  max-width: 440px !important;
+}
+
+.qcc-needs-review-grid .gridjs-td:nth-child(4) {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  overflow-wrap: break-word;
+  word-break: normal;
+  line-height: 1.35;
+}
+
 .qcc-cultivation-outlook-table th > div,
 .qcc-cultivation-outlook-table th > span {
   width: 100%;

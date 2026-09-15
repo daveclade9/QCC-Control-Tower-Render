@@ -208,7 +208,7 @@ from .metrc_imports import (
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 
-PILOT_VERSION = "0.9.6.102-staging"
+PILOT_VERSION = "0.9.6.103-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -15042,22 +15042,34 @@ def inventory_data_grid(data: rx.Var) -> rx.Component:
             width=rx.cond(
                 DashboardState.inventory_view_name == "all",
                 "2160px",
-                "1900px",
+                rx.cond(
+                    DashboardState.inventory_view_name == "review",
+                    "2240px",
+                    "1900px",
+                ),
             ),
             min_width=rx.cond(
                 DashboardState.inventory_view_name == "all",
                 "2160px",
-                "1900px",
+                rx.cond(
+                    DashboardState.inventory_view_name == "review",
+                    "2240px",
+                    "1900px",
+                ),
             ),
         ),
         class_name=rx.cond(
             DashboardState.inventory_view_name == "all",
             "qcc-inventory-grid qcc-all-inventory-grid qcc-bulk-classification-grid",
             rx.cond(
-                (DashboardState.inventory_view_name == "wip")
-                | (DashboardState.inventory_view_name == "aging_bulk"),
-                "qcc-inventory-grid qcc-bulk-classification-grid",
-                "qcc-inventory-grid",
+                DashboardState.inventory_view_name == "review",
+                "qcc-inventory-grid qcc-needs-review-grid",
+                rx.cond(
+                    (DashboardState.inventory_view_name == "wip")
+                    | (DashboardState.inventory_view_name == "aging_bulk"),
+                    "qcc-inventory-grid qcc-bulk-classification-grid",
+                    "qcc-inventory-grid",
+                ),
             ),
         ),
         width="100%",
