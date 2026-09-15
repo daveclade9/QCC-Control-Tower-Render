@@ -590,6 +590,123 @@ def load_published_sales_snapshot() -> tuple[dict[str, Any], pd.DataFrame]:
     return metadata, analysis
 
 
+def publish_reflex_sales_snapshot_from_transfers(
+    published_by: str = "QCC Reflex Import Center",
+) -> dict[str, Any]:
+    """Build the compact Reflex Sales snapshot from current transfer records."""
+    url = database_url()
+    if not url or psycopg is None:
+        raise RuntimeError("Supabase database access is not configured.")
+    transfers = load_transfer_rows()
+    analysis = prepare_transfer_analysis(transfers)
+    if analysis.empty:
+        raise ValueError("There is no transfer history available to publish.")
+    source = analysis.copy()
+    for column in SALES_ANALYSIS_COLUMNS:
+        if column not in source:
+            source[column] = pd.NA
+    important = (
+        source["is_demand"].fillna(False).astype(bool)
+        | source["is_open_shipment"].fillna(False).astype(bool)
+        | source["is_shipment_exception"].fillna(False).astype(bool)
+    )
+    recent = source.sort_values(
+        "created_at", ascending=False, na_position="last"
+    ).head(2000)
+    snapshot_frame = pd.concat([source.loc[important], recent], ignore_index=True)
+    snapshot_frame = snapshot_frame.drop_duplicates(
+        subset=["manifest", "package_tag", "item", "created_at"]
+    )[SALES_ANALYSIS_COLUMNS].reset_index(drop=True)
+    records_json = snapshot_frame.to_json(
+        orient="records", date_format="iso", date_unit="ms"
+    )
+    payload = json.dumps(
+        {
+            "schema_version": SALES_SNAPSHOT_SCHEMA_VERSION,
+            "columns": SALES_ANALYSIS_COLUMNS,
+            "records": json.loads(records_json),
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    compressed = gzip.compress(payload, compresslevel=6)
+    snapshot_id = "QCC-SALES-" + hashlib.sha256(payload).hexdigest()[:20].upper()
+    created = pd.to_datetime(snapshot_frame["created_at"], errors="coerce", utc=True)
+    latest_transfer = (
+        created.max().to_pydatetime() if created.notna().any() else None
+    )
+    with psycopg.connect(url, connect_timeout=20) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reflex_sales_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                schema_version TEXT NOT NULL,
+                source_row_count INTEGER NOT NULL,
+                source_latest_transfer TIMESTAMPTZ,
+                payload_gzip BYTEA NOT NULL,
+                published_at TIMESTAMPTZ NOT NULL,
+                published_by TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO reflex_sales_snapshots (
+                snapshot_id, schema_version, source_row_count,
+                source_latest_transfer, payload_gzip, published_at, published_by
+            ) VALUES (%s, %s, %s, %s, %s, NOW(), %s)
+            ON CONFLICT(snapshot_id) DO UPDATE SET
+                schema_version=EXCLUDED.schema_version,
+                source_row_count=EXCLUDED.source_row_count,
+                source_latest_transfer=EXCLUDED.source_latest_transfer,
+                payload_gzip=EXCLUDED.payload_gzip,
+                published_at=EXCLUDED.published_at,
+                published_by=EXCLUDED.published_by
+            """,
+            (
+                snapshot_id, SALES_SNAPSHOT_SCHEMA_VERSION, len(snapshot_frame),
+                latest_transfer, compressed, str(published_by or "QCC Reflex Import Center"),
+            ),
+        )
+        connection.execute(
+            """
+            DELETE FROM reflex_sales_snapshots
+            WHERE snapshot_id NOT IN (
+                SELECT snapshot_id FROM reflex_sales_snapshots
+                ORDER BY published_at DESC LIMIT 3
+            )
+            """
+        )
+        connection.commit()
+    return {
+        "snapshot_id": snapshot_id,
+        "source_row_count": len(snapshot_frame),
+        "source_latest_transfer": latest_transfer,
+    }
+
+
+def refresh_reflex_sales_snapshot_if_stale() -> bool:
+    """Publish current transfers when their latest import is newer than Sales."""
+    status = safe_query_frame(
+        "SELECT "
+        "(SELECT MAX(imported_at) FROM transfer_import_log) AS transfer_imported_at, "
+        "(SELECT MAX(published_at) FROM reflex_sales_snapshots) AS sales_published_at"
+    )
+    if status.empty:
+        return False
+    transfer_imported = pd.to_datetime(
+        status.iloc[0].get("transfer_imported_at"), errors="coerce", utc=True
+    )
+    sales_published = pd.to_datetime(
+        status.iloc[0].get("sales_published_at"), errors="coerce", utc=True
+    )
+    if pd.isna(transfer_imported):
+        return False
+    if pd.isna(sales_published) or transfer_imported > sales_published:
+        publish_reflex_sales_snapshot_from_transfers()
+        return True
+    return False
+
+
 def _initialize_qa_database_once() -> None:
     """Create the shared QA tables used by Streamlit and Reflex."""
     url = database_url()
@@ -5747,6 +5864,7 @@ def get_sales_dashboard_data(force_refresh: bool = False) -> dict[str, Any]:
         age = now - float(_SALES_DASHBOARD_CACHE.get("loaded_at", 0.0))
         if payload is not None and not force_refresh and age < SALES_CACHE_SECONDS:
             return payload
+        refresh_reflex_sales_snapshot_if_stale()
         payload = build_dashboard_data(include_sales=True)
         _SALES_DASHBOARD_CACHE["payload"] = payload
         _SALES_DASHBOARD_CACHE["loaded_at"] = time.monotonic()

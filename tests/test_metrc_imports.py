@@ -5,6 +5,7 @@ import hashlib
 import pandas as pd
 import pytest
 
+from qcc_reflex_pilot import data as dashboard_data
 from qcc_reflex_pilot.metrc_imports import (
     TRANSFER_DB_COLUMNS,
     normalize_transfer_history,
@@ -81,3 +82,39 @@ def test_failed_import_is_retained_as_rejected_audit(monkeypatch) -> None:
     assert captured["stored_rows"] == 0
     assert captured["file_hash"] == hashlib.sha256(b"").hexdigest()
     assert captured["imported_by"] == "Test Admin"
+
+
+def test_stale_sales_snapshot_is_republished(monkeypatch) -> None:
+    monkeypatch.setattr(
+        dashboard_data,
+        "safe_query_frame",
+        lambda *args, **kwargs: pd.DataFrame([{
+            "transfer_imported_at": "2026-09-15T05:06:56Z",
+            "sales_published_at": "2026-09-14T01:00:00Z",
+        }]),
+    )
+    published = []
+    monkeypatch.setattr(
+        dashboard_data,
+        "publish_reflex_sales_snapshot_from_transfers",
+        lambda: published.append(True),
+    )
+    assert dashboard_data.refresh_reflex_sales_snapshot_if_stale() is True
+    assert published == [True]
+
+
+def test_current_sales_snapshot_is_not_republished(monkeypatch) -> None:
+    monkeypatch.setattr(
+        dashboard_data,
+        "safe_query_frame",
+        lambda *args, **kwargs: pd.DataFrame([{
+            "transfer_imported_at": "2026-09-14T01:00:00Z",
+            "sales_published_at": "2026-09-15T05:06:56Z",
+        }]),
+    )
+    monkeypatch.setattr(
+        dashboard_data,
+        "publish_reflex_sales_snapshot_from_transfers",
+        lambda: pytest.fail("A current snapshot must not be republished"),
+    )
+    assert dashboard_data.refresh_reflex_sales_snapshot_if_stale() is False
