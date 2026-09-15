@@ -200,6 +200,7 @@ from .metrc_imports import (
     import_transfer_history_bytes,
     load_metrc_import_history,
     load_metrc_import_status,
+    record_failed_metrc_import,
     record_metrc_import_run,
 )
 
@@ -207,7 +208,7 @@ from .metrc_imports import (
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 
-PILOT_VERSION = "0.9.6.97-staging"
+PILOT_VERSION = "0.9.6.98-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -1308,6 +1309,7 @@ class DashboardState(rx.State):
         yield
         results: list[dict[str, Any]] = []
         for file in files:
+            file_bytes = b""
             try:
                 file_bytes = await file.read()
                 results.append(await rx.run_in_thread(
@@ -1318,6 +1320,16 @@ class DashboardState(rx.State):
                     )
                 ))
             except Exception as error:
+                try:
+                    await rx.run_in_thread(
+                        lambda name=file.name, payload=file_bytes, detail=str(error): record_failed_metrc_import(
+                            source_type="Transfer History", filename=name,
+                            file_bytes=payload, details=detail,
+                            imported_by=self.auth_name or self.auth_email,
+                        )
+                    )
+                except Exception:
+                    pass
                 results.append({
                     "File": file.name, "Status": "Error", "Source Rows": 0,
                     "Stored Rows": 0, "Inserted": 0, "Updated": 0,
@@ -1332,8 +1344,13 @@ class DashboardState(rx.State):
         ]
         try:
             self._refresh_metrc_import_status()
+            sales_payload = await rx.run_in_thread(
+                lambda: get_sales_dashboard_data(force_refresh=True)
+            )
+            self._apply_sales_payload(sales_payload)
             self.metrc_import_message = (
-                "Transfer history import finished. Duplicate files were skipped safely."
+                "Transfer history import finished and Reflex demand metrics were refreshed. "
+                "Duplicate files were skipped safely."
             )
         except Exception as error:
             self.metrc_import_error = f"Transfers imported, but status refresh failed: {error}"
@@ -1355,6 +1372,7 @@ class DashboardState(rx.State):
         yield
         results: list[dict[str, Any]] = []
         for file in files:
+            file_bytes = b""
             try:
                 file_bytes = await file.read()
                 result = await rx.run_in_thread(
@@ -1378,6 +1396,16 @@ class DashboardState(rx.State):
                     )
                 )
             except Exception as error:
+                try:
+                    await rx.run_in_thread(
+                        lambda name=file.name, payload=file_bytes, detail=str(error): record_failed_metrc_import(
+                            source_type="Lab Results", filename=name,
+                            file_bytes=payload, details=detail,
+                            imported_by=self.auth_name or self.auth_email,
+                        )
+                    )
+                except Exception:
+                    pass
                 results.append({
                     "File": file.name, "Status": "Error", "Source Rows": 0,
                     "Stored Rows": 0, "Inserted": 0, "Updated": 0,
@@ -1411,6 +1439,7 @@ class DashboardState(rx.State):
             return
         self.metrc_importing = True
         yield
+        uploaded: list[tuple[str, bytes]] = []
         try:
             uploaded = [(file.name, await file.read()) for file in files]
             snapshot = await rx.run_in_thread(lambda: parse_metrc_plant_exports(uploaded))
@@ -1449,6 +1478,20 @@ class DashboardState(rx.State):
             self._refresh_metrc_import_status()
             self.metrc_import_message = "Plant and harvest snapshot imported successfully."
         except Exception as error:
+            try:
+                combined = b"".join(payload for _, payload in uploaded)
+                await rx.run_in_thread(
+                    lambda payload=combined, detail=str(error): record_failed_metrc_import(
+                        source_type="Plant & Harvest Data",
+                        filename=", ".join(file.name for file in files),
+                        file_bytes=payload,
+                        details=detail,
+                        imported_by=self.auth_name or self.auth_email,
+                    )
+                )
+                self._refresh_metrc_import_status()
+            except Exception:
+                pass
             self.metrc_import_error = f"Plant import failed: {error}"
         self.metrc_importing = False
         yield rx.clear_selected_files("admin_metrc_plant_upload")

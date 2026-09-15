@@ -8,6 +8,7 @@ import pytest
 from qcc_reflex_pilot.metrc_imports import (
     TRANSFER_DB_COLUMNS,
     normalize_transfer_history,
+    record_failed_metrc_import,
 )
 
 
@@ -58,3 +59,25 @@ def test_normalize_transfer_history_keeps_last_duplicate() -> None:
 def test_normalize_transfer_history_explains_wrong_report_type() -> None:
     with pytest.raises(ValueError, match="Missing required transfer columns"):
         normalize_transfer_history(pd.DataFrame({"Lab License No.": ["L1"]}), "labs.csv", "hash")
+
+
+def test_failed_import_is_retained_as_rejected_audit(monkeypatch) -> None:
+    captured = {}
+
+    def capture(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "qcc_reflex_pilot.metrc_imports.record_metrc_import_run", capture
+    )
+    record_failed_metrc_import(
+        source_type="Transfer History",
+        filename="empty.csv",
+        file_bytes=b"",
+        details="No rows contained required identifiers.",
+        imported_by="Test Admin",
+    )
+    assert captured["status"] == "Rejected"
+    assert captured["stored_rows"] == 0
+    assert captured["file_hash"] == hashlib.sha256(b"").hexdigest()
+    assert captured["imported_by"] == "Test Admin"

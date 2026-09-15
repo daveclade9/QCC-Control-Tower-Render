@@ -220,6 +220,26 @@ def record_metrc_import_run(
         connection.commit()
 
 
+def record_failed_metrc_import(
+    *, source_type: str, filename: str, file_bytes: bytes, details: str,
+    imported_by: str = "",
+) -> None:
+    """Retain rejected and empty uploads without publishing operational rows."""
+    record_metrc_import_run(
+        source_type=source_type,
+        adapter="Metrc File Upload",
+        filename=filename,
+        file_hash=hashlib.sha256(file_bytes).hexdigest(),
+        source_rows=0,
+        stored_rows=0,
+        inserted_rows=0,
+        updated_rows=0,
+        status="Rejected",
+        details=details,
+        imported_by=imported_by,
+    )
+
+
 def import_transfer_history_bytes(
     filename: str, file_bytes: bytes, *, imported_by: str = ""
 ) -> dict[str, Any]:
