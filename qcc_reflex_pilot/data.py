@@ -5241,18 +5241,24 @@ def build_inventory_views(
         axis=1,
     )
     for index, reasons in spelling_reasons.items():
-        if not reasons:
-            continue
         existing_value = data.at[index, "review_reason"]
         existing_text = "" if pd.isna(existing_value) else str(existing_value)
-        existing = [
+        prior_reasons = [
             reason.strip()
             for reason in existing_text.split(";")
             if reason.strip()
         ]
+        existing = [
+            reason
+            for reason in prior_reasons
+            if not reason.lower().startswith("possible misspelling:")
+        ]
+        had_spelling_reason = len(existing) != len(prior_reasons)
+        if not reasons and not had_spelling_reason:
+            continue
         combined = list(dict.fromkeys([*existing, *reasons]))
         data.at[index, "review_reason"] = "; ".join(combined)
-        data.at[index, "needs_review"] = True
+        data.at[index, "needs_review"] = bool(combined)
     for column in [
         "is_finished_retail_sku", "include_in_cpg", "is_retention_sample",
     ]:

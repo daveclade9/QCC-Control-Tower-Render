@@ -115,6 +115,35 @@ class CompatibleBrandRulesTest(unittest.TestCase):
             [],
         )
 
+    def test_material_designations_are_not_treated_as_misspellings(self):
+        values = [
+            "Lemon Cherry Gelato Trim",
+            "Diamond Bar Bulk",
+            "Bulk Blue Dream",
+            "Fig Bar Tops",
+            "Diamond Dust MT Smalls",
+            "J1 Shake",
+            "Hood Candy Fresh Frozen",
+            "LA Piff Mids",
+        ]
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    possible_master_data_spelling_reasons({"Strain": value}),
+                    [],
+                )
+
+    def test_misspelled_base_strain_with_designation_is_still_flagged(self):
+        self.assertEqual(
+            possible_master_data_spelling_reasons(
+                {"Strain": "Diamond Barr Trim"}
+            ),
+            [
+                "Possible misspelling: Strain 'Diamond Barr Trim' may be "
+                "'Diamond Bar'"
+            ],
+        )
+
     def test_new_numeric_sku_size_is_not_treated_as_a_typo(self):
         self.assertEqual(
             possible_master_data_spelling_reasons({"SKU Type": "2g Flower"}),

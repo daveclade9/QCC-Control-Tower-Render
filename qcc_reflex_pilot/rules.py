@@ -187,6 +187,34 @@ def _spelling_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
 
+STRAIN_DESIGNATION_PATTERN = (
+    r"(?:mt\s+smalls?|smalls?|trim|shake|tops?|mids?|fresh\s+frozen|"
+    r"bulk(?:\s+flower)?|flower\s+bulk|flower)"
+)
+
+
+def _strain_without_material_designations(value: Any) -> str:
+    """Remove leading/trailing material grades while preserving the cultivar."""
+    text = re.sub(r"[-_/()]+", " ", str(value or "").strip())
+    text = re.sub(r"\s+", " ", text).strip()
+    previous = None
+    while text and text != previous:
+        previous = text
+        text = re.sub(
+            rf"^{STRAIN_DESIGNATION_PATTERN}\s+",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
+        text = re.sub(
+            rf"\s+{STRAIN_DESIGNATION_PATTERN}$",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
+    return text
+
+
 def possible_master_data_spelling_reasons(row: dict[str, Any]) -> list[str]:
     """Return conservative typo suggestions for configured master-data fields.
 
@@ -212,7 +240,12 @@ def possible_master_data_spelling_reasons(row: dict[str, Any]) -> list[str]:
         ):
             continue
 
-        original_key = _spelling_key(original)
+        comparison_value = (
+            _strain_without_material_designations(original)
+            if field == "Strain"
+            else original
+        )
+        original_key = _spelling_key(comparison_value)
         candidates = MASTER_DATA_SPELLING_VALUES[field]
         candidate_keys = {_spelling_key(candidate): candidate for candidate in candidates}
         if original_key in candidate_keys:
