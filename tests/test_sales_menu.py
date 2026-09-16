@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from qcc_reflex_pilot.sales_menu import (
+    BuyerMenuState,
     MenuAdminState,
     ORDER_STATUS_APPROVED,
     ORDER_STATUS_PENDING,
@@ -14,6 +15,7 @@ from qcc_reflex_pilot.sales_menu import (
     authenticate_menu_customer,
     load_customer_menu_products,
     match_menu_inventory,
+    refresh_customer_menu_products,
     sales_menu_seed_products,
     save_menu_product_review,
     send_order_email,
@@ -72,6 +74,46 @@ class SalesMenuTests(unittest.TestCase):
             )
         )
         self.assertTrue(all(row["available_units_display"] for row in products))
+
+    def test_customer_menu_refreshes_metrc_before_loading_products(self):
+        customer = {"customer_id": "BUYER-1"}
+        current = [{"product_id": "MENU-1", "available_cases": 51}]
+        with patch(
+            "qcc_reflex_pilot.sales_menu.ensure_sales_menu_schema", return_value=True
+        ), patch(
+            "qcc_reflex_pilot.sales_menu.refresh_menu_inventory_from_metrc"
+        ) as refresh, patch(
+            "qcc_reflex_pilot.sales_menu.load_customer_menu_products",
+            return_value=current,
+        ), patch(
+            "qcc_reflex_pilot.sales_menu._availability_checked_label",
+            return_value="Sep 15, 2026 2:30 PM ET",
+        ):
+            products, checked_at = refresh_customer_menu_products(
+                customer, refresh_source="buyer sign-in"
+            )
+        self.assertEqual(products, current)
+        self.assertEqual(checked_at, "Sep 15, 2026 2:30 PM ET")
+        refresh.assert_called_once_with(
+            updated_by="Buyer menu availability check (buyer sign-in)"
+        )
+
+    def test_buyer_refresh_clamps_stale_cart_to_current_cases(self):
+        state = BuyerMenuState(_reflex_internal_init=True)
+        state.customer = {"customer_id": "BUYER-1"}
+        state.cart = {"MENU-1": 53, "MENU-SOLD-OUT": 2}
+        products = [
+            {"product_id": "MENU-1", "available_cases": 51},
+            {"product_id": "MENU-SOLD-OUT", "available_cases": 0},
+        ]
+        with patch(
+            "qcc_reflex_pilot.sales_menu.refresh_customer_menu_products",
+            return_value=(products, "Sep 15, 2026 2:30 PM ET"),
+        ):
+            state._refresh_availability("brand selection: Clade9")
+        self.assertEqual(state.products, products)
+        self.assertEqual(state.cart, {"MENU-1": 51})
+        self.assertEqual(state.availability_checked_at, "Sep 15, 2026 2:30 PM ET")
 
     def test_order_persists_even_when_email_is_not_configured(self):
         with patch.dict(

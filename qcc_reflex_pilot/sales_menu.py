@@ -16,6 +16,7 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, TypedDict
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 import reflex as rx
 
@@ -43,6 +44,7 @@ ORDER_STATUS_PENDING = "Pending Sales Approval"
 ORDER_STATUS_APPROVED = "Approved"
 ORDER_STATUS_DECLINED = "Declined"
 MENU_EMAIL_TO_DEFAULT = "dave@clade9.com"
+EASTERN_TIME = ZoneInfo("America/New_York")
 
 _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_READY = False
@@ -703,6 +705,31 @@ def load_customer_menu_products(customer: dict[str, Any]) -> list[dict[str, Any]
         )
         result.append(record)
     return result
+
+
+def _availability_checked_label() -> str:
+    checked = datetime.now(EASTERN_TIME)
+    hour = checked.hour % 12 or 12
+    return (
+        f"{checked.strftime('%b')} {checked.day}, {checked.year} "
+        f"{hour}:{checked.strftime('%M %p')} ET"
+    )
+
+
+def refresh_customer_menu_products(
+    customer: dict[str, Any], *, refresh_source: str
+) -> tuple[list[dict[str, Any]], str]:
+    """Synchronize Metrc and return current buyer-facing availability.
+
+    Manual overrides remain authoritative because the shared Metrc refresh
+    intentionally preserves them.
+    """
+    customer_id = str(customer.get("customer_id", "") or "")
+    if customer_id != "DEMO-CUSTOMER" and ensure_sales_menu_schema():
+        refresh_menu_inventory_from_metrc(
+            updated_by=f"Buyer menu availability check ({refresh_source})"
+        )
+    return load_customer_menu_products(customer), _availability_checked_label()
 
 
 def _order_summary(order_id: str) -> dict[str, Any]:
@@ -1555,6 +1582,7 @@ class BuyerMenuState(rx.State):
     order_error: str = ""
     submitting: bool = False
     selected_menu_brand: str = ""
+    availability_checked_at: str = ""
 
     @rx.event
     def set_access_code(self, value: str): self.access_code = value
@@ -1573,15 +1601,38 @@ class BuyerMenuState(rx.State):
     def load_public_menu(self):
         self.access_error = ""
         self.order_error = ""
+        if self.buyer_authenticated and self.customer:
+            try:
+                self._refresh_availability("page load")
+            except Exception as error:
+                self.order_error = (
+                    "The latest availability could not be checked. " + str(error)
+                )
+
+    def _refresh_availability(self, source: str) -> None:
+        products, checked_at = refresh_customer_menu_products(
+            self.customer, refresh_source=source
+        )
+        self.products = products
+        available_by_product = {
+            str(row.get("product_id", "")): int(row.get("available_cases", 0) or 0)
+            for row in products
+        }
+        self.cart = {
+            product_id: min(int(cases), available_by_product.get(product_id, 0))
+            for product_id, cases in self.cart.items()
+            if min(int(cases), available_by_product.get(product_id, 0)) > 0
+        }
+        self.availability_checked_at = checked_at
 
     @rx.event
     def verify_access_code(self):
         self.access_error = ""
         try:
             self.customer = authenticate_menu_customer(self.access_code)
-            self.products = load_customer_menu_products(self.customer)
-            self.buyer_authenticated = True
             self.cart = {}
+            self._refresh_availability("buyer sign-in")
+            self.buyer_authenticated = True
             self.selected_menu_brand = ""
         except Exception as error:
             self.access_error = str(error)
@@ -1595,11 +1646,19 @@ class BuyerMenuState(rx.State):
         self.products = []
         self.cart = {}
         self.selected_menu_brand = ""
+        self.availability_checked_at = ""
 
     @rx.event
     def select_menu_brand(self, brand: str):
         if brand not in {"Clade9", "Craft Kings", "Locals Only"}:
             return
+        try:
+            self._refresh_availability(f"brand selection: {brand}")
+            self.order_error = ""
+        except Exception as error:
+            self.order_error = (
+                "The latest availability could not be checked. " + str(error)
+            )
         self.selected_menu_brand = brand
         self.brand_filter = "All Brands"
         self.category_filter = "All Categories"
@@ -1631,6 +1690,13 @@ class BuyerMenuState(rx.State):
         self.order_message = ""
         yield
         try:
+            requested_cart = dict(self.cart)
+            self._refresh_availability("checkout")
+            if self.cart != requested_cart:
+                raise ValueError(
+                    "Availability changed while you were ordering. Your cart was "
+                    "updated; please review it before submitting again."
+                )
             result = submit_menu_order(
                 self.customer, self.cart, self.requested_delivery_date,
                 self.order_notes,
@@ -2711,6 +2777,19 @@ def _buyer_shop() -> rx.Component:
                     width=rx.breakpoints(initial="100%", md="210px"),
                 ),
                 gap="3", wrap="wrap", width="100%", class_name="qcc-menu-filter-bar",
+            ),
+            rx.cond(
+                BuyerMenuState.availability_checked_at != "",
+                rx.hstack(
+                    rx.icon("refresh-cw", size=14),
+                    rx.text(
+                        "Availability checked ",
+                        BuyerMenuState.availability_checked_at,
+                        size="1",
+                        color="#756d62",
+                    ),
+                    spacing="1", align="center", width="100%",
+                ),
             ),
             rx.heading(
                 "Click on the brand to order",
