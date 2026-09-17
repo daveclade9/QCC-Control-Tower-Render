@@ -174,6 +174,11 @@ def initialize() -> None:
                     CHECK (ordered_quantity > 0), CHECK (received_quantity >= 0)
                 )
             """)
+            for column in ("standard_shipping", "expedited_shipping", "sales_tax"):
+                conn.execute(
+                    f"ALTER TABLE qcc_purchase_orders ADD COLUMN IF NOT EXISTS {column} "
+                    "NUMERIC(14,2) NOT NULL DEFAULT 0"
+                )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS qcc_purchase_receipts (
                     receipt_id TEXT PRIMARY KEY, po_id TEXT NOT NULL,
@@ -578,6 +583,38 @@ def add_purchase_order_line(po_number: str, record: dict[str, Any], actor: str) 
     return line_id
 
 
+def update_purchase_order_charges(
+    po_number: str,
+    standard_shipping: Any,
+    expedited_shipping: Any,
+    sales_tax: Any,
+    actor: str,
+) -> None:
+    """Save PO-level freight and tax amounts as nonnegative dollar values."""
+    values = (
+        nonnegative_number(standard_shipping, "Standard shipping"),
+        nonnegative_number(expedited_shipping, "Expedited shipping"),
+        nonnegative_number(sales_tax, "Sales tax"),
+    )
+    initialize()
+    with psycopg.connect(database_url(), connect_timeout=15) as conn:
+        row = conn.execute(
+            "SELECT status FROM qcc_purchase_orders "
+            "WHERE tenant_id=%s AND facility_id=%s AND po_number=%s FOR UPDATE",
+            (DEFAULT_TENANT_ID, DEFAULT_FACILITY_ID, po_number),
+        ).fetchone()
+        if not row:
+            raise ValueError("Select a purchase order.")
+        if row[0] in {"CLOSED", "CANCELLED"}:
+            raise ValueError("Charges cannot be changed on a closed purchase order.")
+        conn.execute("""
+            UPDATE qcc_purchase_orders
+            SET standard_shipping=%s, expedited_shipping=%s, sales_tax=%s,
+                updated_by=%s, updated_at=NOW()
+            WHERE tenant_id=%s AND facility_id=%s AND po_number=%s
+        """, (*values, actor, DEFAULT_TENANT_ID, DEFAULT_FACILITY_ID, po_number))
+
+
 def purchase_orders(limit: int = 100) -> list[dict[str, Any]]:
     if not database_url():
         return []
@@ -585,7 +622,8 @@ def purchase_orders(limit: int = 100) -> list[dict[str, Any]]:
     with psycopg.connect(database_url(), connect_timeout=15, row_factory=dict_row) as conn:
         rows = conn.execute("""
             SELECT po.*, COUNT(line.line_id) AS line_count,
-                COALESCE(SUM(line.ordered_quantity*line.unit_cost),0) AS total,
+                COALESCE(SUM(line.ordered_quantity*line.unit_cost),0)
+                    + po.standard_shipping + po.expedited_shipping + po.sales_tax AS total,
                 COALESCE(SUM(line.ordered_quantity),0) AS ordered_quantity,
                 COALESCE(SUM(line.received_quantity),0) AS received_quantity
             FROM qcc_purchase_orders po LEFT JOIN qcc_purchase_order_lines line ON line.po_id=po.po_id
@@ -724,7 +762,17 @@ def purchase_order_pdf(po_number: str) -> bytes:
             f"{int(line['ordered_quantity']):,}", line["uom"],
             f"${float(line['unit_cost']):,.4f}", f"${total:,.2f}",
         ])
-    data.append(["", "", "", "", "TOTAL", f"${sum(float(x['ordered_quantity'])*float(x['unit_cost']) for x in lines):,.2f}"])
+    subtotal = sum(float(x["ordered_quantity"]) * float(x["unit_cost"]) for x in lines)
+    standard_shipping = float(header.get("standard_shipping", 0) or 0)
+    expedited_shipping = float(header.get("expedited_shipping", 0) or 0)
+    sales_tax = float(header.get("sales_tax", 0) or 0)
+    data.extend([
+        ["", "", "", "", "SUBTOTAL", f"${subtotal:,.2f}"],
+        ["", "", "", "", "STANDARD SHIPPING", f"${standard_shipping:,.2f}"],
+        ["", "", "", "", "EXPEDITED SHIPPING", f"${expedited_shipping:,.2f}"],
+        ["", "", "", "", "SALES TAX", f"${sales_tax:,.2f}"],
+        ["", "", "", "", "TOTAL", f"${subtotal + standard_shipping + expedited_shipping + sales_tax:,.2f}"],
+    ])
     table = Table(data, colWidths=[.9*inch, 3.0*inch, .55*inch, .55*inch, .8*inch, .9*inch], repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#111827")),
@@ -733,7 +781,7 @@ def purchase_order_pdf(po_number: str) -> bytes:
         ("GRID", (0,0), (-1,-1), .35, colors.HexColor("#CBD5E1")),
         ("VALIGN", (0,0), (-1,-1), "TOP"),
         ("ALIGN", (2,1), (-1,-1), "RIGHT"),
-        ("FONTNAME", (-2,-1), (-1,-1), "Helvetica-Bold"),
+        ("FONTNAME", (-2,-5), (-1,-1), "Helvetica-Bold"),
         ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#E6F7F6")),
         ("FONTSIZE", (0,0), (-1,-1), 8.5),
     ]))

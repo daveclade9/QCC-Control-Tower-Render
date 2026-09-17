@@ -25,7 +25,7 @@ class WarehouseState(rx.State):
     view: str = "Balances"
     search: str = ""
     location: dict[str, str] = {"code":"", "name":"", "warehouse":"", "zone":"", "rack":"", "bin":"", "status":"ACTIVE"}
-    activity: dict[str, str] = {"material_id":"", "action":"Receive", "quantity":"", "location":"UNASSIGNED", "destination":"", "lot":"", "expiration":"", "date":"", "unit_cost":"", "reference":"", "reason":"", "reversal_of":""}
+    activity: dict[str, str] = {"material_id":"", "description":"", "action":"Receive", "quantity":"", "location":"UNASSIGNED", "destination":"", "lot":"", "expiration":"", "date":"", "unit_cost":"", "reference":"", "reason":"", "reversal_of":""}
     _pending: dict = {}
     _request_id: str = ""
     confirmation: str = ""
@@ -135,6 +135,14 @@ class WarehouseState(rx.State):
     @rx.event
     def activity_field(self, key: str, value: str):
         self.activity[key] = value
+        if key == "material_id":
+            material_id = value.strip().upper()
+            self.activity["material_id"] = material_id
+            item = next((
+                row for row in self._items
+                if str(row.get("material_id", "")).strip().upper() == material_id
+            ), None)
+            self.activity["description"] = str((item or {}).get("item", ""))
         self._pending, self.confirmation = {}, ""
 
     @rx.event
@@ -151,6 +159,8 @@ class WarehouseState(rx.State):
             item = next((r for r in self._items if r["material_id"] == form["material_id"]), None)
             if not item:
                 raise ValueError("Scan or enter a registered Material ID.")
+            self.activity["description"] = str(item.get("item", ""))
+            form["description"] = self.activity["description"]
             balance = sum(r["quantity"] for r in self._snapshot["balances"] if r["material_id"] == form["material_id"] and r["location"] == form["location"] and r["lot"] == form["lot"].strip() and r["expiration"] == form["expiration"].strip())
             form["expected"] = str(balance)
             if form["action"] == "Reverse Activity":
@@ -212,10 +222,17 @@ class WarehouseState(rx.State):
 def warehouse_workspace(section: str):
     """Three focused panels share the existing authenticated warehouse state."""
     state = WarehouseState
-    def field(label, key, location=False):
+    def field(label, key, location=False, read_only=False):
         values = state.location if location else state.activity
         event = state.location_field if location else state.activity_field
-        return rx.vstack(rx.text(label, size="2"), rx.input(value=values[key], on_change=lambda value: event(key,value), width="100%"), spacing="1")
+        return rx.vstack(
+            rx.text(label, size="2"),
+            rx.input(
+                value=values[key], on_change=lambda value: event(key,value),
+                read_only=read_only, width="100%",
+            ),
+            spacing="1",
+        )
     if section == "locations":
         title = "Locations"
         description = "Define storage locations and review stock by location. Default Location is only a suggestion; use Inventory Activity to move stock."
@@ -234,6 +251,7 @@ def warehouse_workspace(section: str):
         rx.select(service.ACTIVITIES,value=state.activity["action"],on_change=lambda v: state.activity_field("action",v)),
         rx.grid(
             field("Material ID (scan or type)","material_id"),
+            field("Description","description",read_only=True),
             rx.cond(reverse, field("Original Activity ID","reversal_of")),
             rx.cond(~reverse, field("Source / receiving location (scan or type)","location")),
             rx.cond(state.activity["action"] == "Transfer Location", field("Destination location","destination")),

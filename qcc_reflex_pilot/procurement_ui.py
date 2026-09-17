@@ -41,6 +41,13 @@ class ProcurementState(rx.State):
         "inventory_domain": "PACKAGING", "item_id": "", "description": "",
         "quantity": "", "uom": "EACH", "unit_cost": "0", "notes": "",
     }
+    po_charges: dict[str, str] = {
+        "standard_shipping": "0", "expedited_shipping": "0", "sales_tax": "0",
+    }
+    po_supplier_options: list[str] = []
+    _po_suppliers: list[dict[str, Any]] = []
+    _po_packaging_items: list[dict[str, Any]] = []
+    _po_supply_items: list[dict[str, Any]] = []
     receipt: dict[str, str] = {
         "line_id": "", "quantity": "", "location": "UNASSIGNED",
         "lot_number": "", "notes": "",
@@ -128,6 +135,12 @@ class ProcurementState(rx.State):
         ] for row in orders]
         if self.po_number:
             detail = await rx.run_in_thread(lambda: service.purchase_order_detail(self.po_number))
+            header = detail["header"]
+            self.po_charges = {
+                "standard_shipping": str(header.get("standard_shipping", 0) or 0),
+                "expedited_shipping": str(header.get("expedited_shipping", 0) or 0),
+                "sales_tax": str(header.get("sales_tax", 0) or 0),
+            }
             lines = detail["lines"]
             self.po_line_options = [str(row["line_id"]) for row in lines]
             self.po_line_rows = [[
@@ -140,6 +153,16 @@ class ProcurementState(rx.State):
         else:
             self.po_line_options, self.po_line_rows = [], []
 
+    async def _load_po_references(self) -> None:
+        self._po_suppliers = await rx.run_in_thread(service.packaging_suppliers)
+        self._po_packaging_items = await rx.run_in_thread(service.packaging_items)
+        self._po_supply_items = await rx.run_in_thread(service.supply_items)
+        self.po_supplier_options = sorted({
+            str(row.get("supplier", ""))
+            for row in self._po_suppliers
+            if row.get("supplier") and str(row.get("status", "ACTIVE")) == "ACTIVE"
+        })
+
     @rx.event
     async def enter(self, section: str):
         self._clear_status()
@@ -150,6 +173,7 @@ class ProcurementState(rx.State):
             elif section == "counts":
                 await self._load_counts()
             elif section == "purchasing":
+                await self._load_po_references()
                 await self._load_pos()
         except Exception as error:
             self.error = str(error)
@@ -296,8 +320,40 @@ class ProcurementState(rx.State):
         self.po_header[key] = value
 
     @rx.event
+    def select_po_supplier(self, value: str):
+        self.po_header["supplier"] = value
+        supplier = next((
+            row for row in self._po_suppliers
+            if str(row.get("supplier", "")).casefold() == value.casefold()
+        ), None)
+        if supplier:
+            self.po_header["contact_name"] = str(supplier.get("contact_name", ""))
+            self.po_header["contact_email"] = str(supplier.get("contact_email", ""))
+
+    @rx.event
     def set_po_line(self, key: str, value: str):
         self.po_line[key] = value
+        if key in {"inventory_domain", "item_id"}:
+            item_id = self.po_line["item_id"].strip().upper()
+            self.po_line["item_id"] = item_id
+            records = (
+                self._po_packaging_items
+                if self.po_line["inventory_domain"] == "PACKAGING"
+                else self._po_supply_items
+            )
+            id_key = "material_id" if self.po_line["inventory_domain"] == "PACKAGING" else "item_id"
+            description_key = "item" if self.po_line["inventory_domain"] == "PACKAGING" else "description"
+            item = next((
+                row for row in records
+                if str(row.get(id_key, "")).strip().upper() == item_id
+            ), None)
+            if item:
+                self.po_line["description"] = str(item.get(description_key, ""))
+                self.po_line["uom"] = str(item.get("uom", "EACH") or "EACH")
+
+    @rx.event
+    def set_po_charge(self, key: str, value: str):
+        self.po_charges[key] = value
 
     @rx.event
     def set_receipt(self, key: str, value: str):
@@ -334,6 +390,23 @@ class ProcurementState(rx.State):
             ))
             await self._load_pos()
             self.message = f"Line added to {self.po_number}."
+        except Exception as error:
+            self.error = str(error)
+
+    @rx.event
+    async def save_po_charges(self):
+        self._clear_status()
+        try:
+            actor = await self._actor()
+            await rx.run_in_thread(lambda: service.update_purchase_order_charges(
+                self.po_number,
+                self.po_charges["standard_shipping"],
+                self.po_charges["expedited_shipping"],
+                self.po_charges["sales_tax"],
+                actor,
+            ))
+            await self._load_pos()
+            self.message = f"Freight and tax saved for {self.po_number}."
         except Exception as error:
             self.error = str(error)
 
@@ -576,7 +649,17 @@ def purchasing_panel() -> rx.Component:
         rx.card(
             rx.heading("Create Purchase Order", size="3"),
             rx.grid(
-                _field("Supplier", state.po_header["supplier"], lambda v: state.set_po_header("supplier", v)),
+                rx.vstack(
+                    rx.text("Supplier", size="2", weight="bold"),
+                    rx.select(
+                        state.po_supplier_options,
+                        value=state.po_header["supplier"],
+                        on_change=state.select_po_supplier,
+                        placeholder="Select supplier",
+                        width="100%",
+                    ),
+                    spacing="1", width="100%",
+                ),
                 _field("Purchasing channel", state.po_header["purchasing_channel"], lambda v: state.set_po_header("purchasing_channel", v)),
                 _field("Required date YYYY-MM-DD", state.po_header["required_date"], lambda v: state.set_po_header("required_date", v)),
                 _field("Supplier contact", state.po_header["contact_name"], lambda v: state.set_po_header("contact_name", v)),
@@ -602,6 +685,16 @@ def purchasing_panel() -> rx.Component:
                 columns=rx.breakpoints(initial="1", md="3"), width="100%", gap="2",
             ),
             rx.button("Add PO Line", on_click=state.add_po_line),
+            rx.grid(
+                _field("Standard shipping", state.po_charges["standard_shipping"],
+                       lambda v: state.set_po_charge("standard_shipping", v)),
+                _field("Expedited shipping", state.po_charges["expedited_shipping"],
+                       lambda v: state.set_po_charge("expedited_shipping", v)),
+                _field("Sales tax", state.po_charges["sales_tax"],
+                       lambda v: state.set_po_charge("sales_tax", v)),
+                columns=rx.breakpoints(initial="1", md="3"), width="100%", gap="2",
+            ),
+            rx.button("Save Shipping & Tax", on_click=state.save_po_charges, variant="outline"),
             _table(["Line ID", "Type", "Item ID", "Description", "Ordered", "Received", "Backordered", "UOM", "Unit Cost"], state.po_line_rows),
             rx.heading("Record Partial or Full Receipt", size="3"),
             rx.select(state.po_line_options, value=state.receipt["line_id"],
