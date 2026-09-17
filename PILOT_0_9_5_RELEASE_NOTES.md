@@ -1,3 +1,16 @@
+# QCC Control Tower Reflex 0.9.6.107
+
+## 0.9.6.107 Materials & Procurement operations
+
+- Adds an 88-item facility-wide Supply Inventory registry with the source
+  workbook's safety-stock and reorder logic.
+- Adds formal Packaging and Supply count sessions, item-level count history,
+  explicit Not Counted acknowledgement, and digits-only scanner validation.
+- Adds tenant/facility-ready purchase orders, supplier PDFs, partial receiving,
+  backorder visibility, order closing, and configurable Microsoft Graph email.
+- Adds Zebra-ready 4 × 6 box labels with five separate QR values and 2.25 ×
+  1.25 quantity labels from registry, receiving, and count workflows.
+
 # QCC Control Tower Reflex 0.9.5.35
 
 ## 0.9.5.35 Authoritative mg/g Total CBG

@@ -207,8 +207,9 @@ from .metrc_imports import (
 
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
+from .procurement_ui import ProcurementState, procurement_workspace
 
-PILOT_VERSION = "0.9.6.106-staging"
+PILOT_VERSION = "0.9.6.107-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -21187,6 +21188,14 @@ def packaging_supplier_row(row: rx.Var) -> rx.Component:
                     variant="outline",
                     size="1",
                 ),
+                rx.button(
+                    "Print Label",
+                    on_click=ProcurementState.prefill_label(
+                        row["material_id"], row["item"], row["on_hand"].to_string()
+                    ),
+                    variant="outline",
+                    size="1",
+                ),
                 align="start",
                 spacing="1",
             ),
@@ -21243,6 +21252,10 @@ def packaging_inventory_workspace() -> rx.Component:
                 rx.tabs.trigger("Registry Import", value="registry_import"),
                 rx.tabs.trigger("Locations", value="locations"),
                 rx.tabs.trigger("Inventory Activity", value="inventory_activity"),
+                rx.tabs.trigger("Supply Inventory", value="supply"),
+                rx.tabs.trigger("Count Sessions", value="formal_counts"),
+                rx.tabs.trigger("Purchasing", value="purchasing"),
+                rx.tabs.trigger("Label Printing", value="labels"),
                 class_name="qcc-tabs",
                 width="100%",
             ),
@@ -21409,6 +21422,10 @@ def packaging_inventory_workspace() -> rx.Component:
             rx.tabs.content(warehouse_workspace("registry_import"), value="registry_import"),
             rx.tabs.content(warehouse_workspace("locations"), value="locations"),
             rx.tabs.content(warehouse_workspace("inventory_activity"), value="inventory_activity"),
+            rx.tabs.content(procurement_workspace("supply"), value="supply"),
+            rx.tabs.content(procurement_workspace("counts"), value="formal_counts"),
+            rx.tabs.content(procurement_workspace("purchasing"), value="purchasing"),
+            rx.tabs.content(procurement_workspace("labels"), value="labels"),
             value=DashboardState.materials_view,
             on_change=DashboardState.change_materials_view,
             width="100%",
