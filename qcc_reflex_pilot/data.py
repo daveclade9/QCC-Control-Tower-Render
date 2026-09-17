@@ -5422,7 +5422,7 @@ def build_inventory_views(
     }
 
 
-def load_operational_context() -> dict[str, Any]:
+def load_operational_context(force_refresh: bool = False) -> dict[str, Any]:
     """Build the shared Inventory/Production context at most once at a time."""
     with _OPERATIONAL_BUILD_LOCK:
         with _OPERATIONAL_CONTEXT_LOCK:
@@ -5433,7 +5433,7 @@ def load_operational_context() -> dict[str, Any]:
                 _OPERATIONAL_CONTEXT.get("payload")
                 if context_age < OPERATIONAL_CACHE_SECONDS else None
             )
-        if cached:
+        if cached and not force_refresh:
             return cached
 
         # Inventory and Production are independent. Each worker now reuses a
@@ -5461,7 +5461,11 @@ def load_operational_context() -> dict[str, Any]:
         return payload
 
 
-def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
+def build_dashboard_data(
+    include_sales: bool = True,
+    *,
+    force_operational_refresh: bool = False,
+) -> dict[str, Any]:
     """Build either the fast operational shell or the complete Sales payload."""
     sales_snapshot: dict[str, Any] = {}
     sales_error = ""
@@ -5488,7 +5492,9 @@ def build_dashboard_data(include_sales: bool = True) -> dict[str, Any]:
                 sales_error = ""
             except Exception as error:
                 sales_error = f"Sales transfer fallback could not be read: {error}"
-    operational_context = load_operational_context()
+    operational_context = load_operational_context(
+        force_refresh=force_operational_refresh,
+    )
     snapshot = operational_context["snapshot"]
     inventory_skus = operational_context["inventory_skus"]
     inventory_packages = operational_context["inventory_packages"]
@@ -5892,7 +5898,10 @@ def get_dashboard_data(force_refresh: bool = False) -> dict[str, Any]:
         age = now - float(_DASHBOARD_CACHE.get("loaded_at", 0.0))
         if payload is not None and not force_refresh and age < OPERATIONAL_CACHE_SECONDS:
             return payload
-        payload = build_dashboard_data(include_sales=False)
+        payload = build_dashboard_data(
+            include_sales=False,
+            force_operational_refresh=force_refresh,
+        )
         _DASHBOARD_CACHE["payload"] = payload
         _DASHBOARD_CACHE["loaded_at"] = time.monotonic()
         return payload
