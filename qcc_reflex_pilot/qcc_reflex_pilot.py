@@ -209,7 +209,7 @@ from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 from .procurement_ui import ProcurementState, procurement_workspace
 
-PILOT_VERSION = "0.9.6.110-staging"
+PILOT_VERSION = "0.9.6.111-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -25028,24 +25028,10 @@ def cultivation_historical_yield_entry_panel() -> rx.Component:
         rx.vstack(
             rx.heading("Historical Yield Entry", size="4", color=DARK),
             rx.text("Enter room totals or strain-level results. Actual Fresh Frozen canopy overrides the planned plant proportion without changing the physical bench registry.", size="2", color=MUTED),
-            rx.hstack(
-                rx.cond(
-                    DashboardState.cultivation_historical_yield_options.length() > 0,
-                    rx.hstack(
-                    rx.text("Edit existing yield", size="1", weight="bold", color=MUTED),
-                    rx.select(
-                        DashboardState.cultivation_historical_yield_options,
-                        placeholder="Select crop, room, strain, and harvest date",
-                        on_change=DashboardState.load_historical_yield_editor,
-                        width="min(100%, 620px)",
-                    ),
-                    gap="3", align="center",
-                    ),
-                ),
-                gap="3",
-                align="center",
-                wrap="wrap",
-                width="100%",
+            rx.text(
+                "Enter a new yield below. To correct a saved yield, use its Edit button in Saved Yield Records.",
+                size="1",
+                color=MUTED,
             ),
             rx.callout(
                 "For strain-specific room performance, select the flower room and enter the strain. Leave Strain blank only when saving a room-total result.",
