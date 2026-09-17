@@ -209,7 +209,7 @@ from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 from .procurement_ui import ProcurementState, procurement_workspace
 
-PILOT_VERSION = "0.9.6.111-staging"
+PILOT_VERSION = "0.9.6.112-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -11643,23 +11643,37 @@ class DashboardState(rx.State):
     def cultivation_history_cycle_rows(self) -> list[dict[str, Any]]:
         return historical_cycle_rows()
 
-    @rx.var(cache=True)
-    def cultivation_history_harvest_table_data(self) -> list[list[Any]]:
-        _ = self.cultivation_registry_revision
-        bundled = historical_harvest_table_data(
-            self.cultivation_history_room_filter
+    @staticmethod
+    def _historical_yield_source_rows(
+        records: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Prefer a room total; otherwise sum the crop's strain records."""
+        room_total = next(
+            (
+                row for row in records
+                if str(row.get("record_scope", "") or "") == "Room Total"
+                or not str(row.get("strain", "") or "").strip()
+            ),
+            None,
         )
+        return [room_total] if room_total else records
+
+    @classmethod
+    def _merged_historical_harvest_table_data(
+        cls,
+        records: list[dict[str, Any]],
+        room_filter: str = "All Flower Rooms",
+    ) -> list[list[Any]]:
+        """Merge saved yield entries into the bundled individual harvests."""
+        bundled = historical_harvest_table_data(room_filter)
         by_crop = {
             str(row[0]).strip().casefold(): list(row)
             for row in bundled
         }
         groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-        for record in self._registry_payload().get("historical_yields", []):
+        for record in records:
             room = str(record.get("room", "") or "")
-            if (
-                self.cultivation_history_room_filter != "All Flower Rooms"
-                and room != self.cultivation_history_room_filter
-            ):
+            if room_filter != "All Flower Rooms" and room != room_filter:
                 continue
             key = (
                 str(record.get("crop", "") or "").strip(),
@@ -11668,16 +11682,8 @@ class DashboardState(rx.State):
             )
             if key[0] and key[2]:
                 groups.setdefault(key, []).append(record)
-        for (crop, _room, harvest_date), records in groups.items():
-            room_total = next(
-                (
-                    row for row in records
-                    if str(row.get("record_scope", "") or "") == "Room Total"
-                    or not str(row.get("strain", "") or "").strip()
-                ),
-                None,
-            )
-            source_rows = [room_total] if room_total else records
+        for (crop, _room, harvest_date), crop_records in groups.items():
+            source_rows = cls._historical_yield_source_rows(crop_records)
             canopy = 0.0
             wet = 0.0
             dry = 0.0
@@ -11716,6 +11722,14 @@ class DashboardState(rx.State):
         )
 
     @rx.var(cache=True)
+    def cultivation_history_harvest_table_data(self) -> list[list[Any]]:
+        _ = self.cultivation_registry_revision
+        return self._merged_historical_harvest_table_data(
+            self._registry_payload().get("historical_yields", []),
+            self.cultivation_history_room_filter,
+        )
+
+    @rx.var(cache=True)
     def cultivation_history_room_table_data(self) -> list[list[Any]]:
         return historical_room_table_data(
             self.cultivation_history_room_filter
@@ -11723,7 +11737,125 @@ class DashboardState(rx.State):
 
     @rx.var(cache=True)
     def cultivation_history_cycle_table_data(self) -> list[list[Any]]:
-        return historical_cycle_table_data()
+        _ = self.cultivation_registry_revision
+        records = self._registry_payload().get("historical_yields", [])
+        rows = [list(row) for row in historical_cycle_table_data()]
+        base_by_cycle = {
+            str(row[0]).strip().casefold(): row
+            for row in rows
+        }
+
+        manual_cycle_numbers = {
+            match.group(2)
+            for record in records
+            if (
+                match := re.match(
+                    r"^\s*F\s*(\d+)\.(\d+)\s*$",
+                    str(record.get("crop", "") or ""),
+                    re.IGNORECASE,
+                )
+            )
+        }
+        if not manual_cycle_numbers:
+            return rows
+
+        merged_harvests = self._merged_historical_harvest_table_data(
+            records,
+            "All Flower Rooms",
+        )
+        classification_groups: dict[
+            tuple[str, str, str], list[dict[str, Any]]
+        ] = {}
+        for record in records:
+            crop = str(record.get("crop", "") or "").strip()
+            match = re.match(
+                r"^\s*F\s*(\d+)\.(\d+)\s*$",
+                crop,
+                re.IGNORECASE,
+            )
+            if not match or match.group(2) not in manual_cycle_numbers:
+                continue
+            key = (
+                crop.casefold(),
+                str(record.get("room", "") or ""),
+                str(record.get("harvest_date", "") or ""),
+            )
+            classification_groups.setdefault(key, []).append(record)
+
+        classification_by_cycle: dict[str, dict[str, float | int]] = {}
+        for (crop, _room, _harvest_date), crop_records in classification_groups.items():
+            match = re.match(r"^f\s*(\d+)\.(\d+)$", crop, re.IGNORECASE)
+            if not match:
+                continue
+            cycle_number = match.group(2)
+            source_rows = self._historical_yield_source_rows(crop_records)
+            ab = sum(float(row.get("ab_flower_lbs", 0) or 0) for row in source_rows)
+            c_flower = sum(float(row.get("c_flower_lbs", 0) or 0) for row in source_rows)
+            values = classification_by_cycle.setdefault(
+                cycle_number,
+                {"ab": 0.0, "c": 0.0, "rooms": 0},
+            )
+            values["ab"] = float(values["ab"]) + ab
+            values["c"] = float(values["c"]) + c_flower
+            if ab > 0 or c_flower > 0:
+                values["rooms"] = int(values["rooms"]) + 1
+
+        dynamic_rows: dict[str, list[Any]] = {}
+        expected_rooms = 5
+        for cycle_number in manual_cycle_numbers:
+            cycle_harvests = []
+            for row in merged_harvests:
+                match = re.match(
+                    r"^\s*F\s*(\d+)\.(\d+)\s*$",
+                    str(row[0]),
+                    re.IGNORECASE,
+                )
+                if match and match.group(2) == cycle_number:
+                    cycle_harvests.append(row)
+            if not cycle_harvests:
+                continue
+            canopy = sum(float(row[3] or 0) for row in cycle_harvests)
+            dry = sum(float(row[5] or 0) for row in cycle_harvests)
+            room_count = len({str(row[0]).strip().casefold() for row in cycle_harvests})
+            classification = classification_by_cycle.get(
+                cycle_number,
+                {"ab": 0.0, "c": 0.0, "rooms": 0},
+            )
+            classified_rooms = int(classification["rooms"])
+            notes = []
+            if room_count < expected_rooms:
+                notes.append(
+                    f"Partial cycle: {room_count} of {expected_rooms} rooms recorded."
+                )
+            else:
+                notes.append("Complete cycle: all 5 rooms recorded.")
+            if classified_rooms < room_count:
+                notes.append(
+                    f"AB/C entered for {classified_rooms} of {room_count} rooms."
+                )
+            label = f"Cycle {int(cycle_number)}"
+            dynamic_rows[label.casefold()] = [
+                label,
+                round(canopy, 1),
+                round(dry, 2),
+                round(float(classification["ab"]), 2),
+                round(float(classification["c"]), 2),
+                room_count,
+                round(dry * 453.59237 / canopy, 2) if canopy else 0,
+                " ".join(notes),
+            ]
+
+        output = []
+        for row in rows:
+            key = str(row[0]).strip().casefold()
+            output.append(dynamic_rows.pop(key, row))
+        output.extend(
+            row for _key, row in sorted(
+                dynamic_rows.items(),
+                key=lambda item: int(str(item[1][0]).split()[-1]),
+            )
+        )
+        return output
 
     @rx.var(cache=True)
     def cultivation_history_strain_rows(self) -> list[dict[str, Any]]:

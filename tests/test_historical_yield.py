@@ -249,6 +249,74 @@ def test_saved_yields_feed_historical_harvest_table_without_double_counting() ->
     assert row[3] == 1250
 
 
+def test_saved_yields_create_complete_cycle_eight_rollup() -> None:
+    state = DashboardState(_reflex_internal_init=True)
+    state._cultivation_registry = {
+        "programs": [], "rooms": default_room_rows(), "benches": [],
+        "schedule": [], "voided_historical_yields": [],
+        "historical_yield_revisions": [],
+        "historical_yields": [
+            {
+                "harvest_id": "f4-8", "crop": "F4.8",
+                "room": "Flower Room 4", "strain": "",
+                "record_scope": "Room Total", "harvest_date": "2026-07-13",
+                "planted_canopy_sqft": 1200, "dry_flower_lbs": 100,
+                "ab_flower_lbs": 70, "c_flower_lbs": 20,
+            },
+            {
+                "harvest_id": "f5-8", "crop": "F5.8",
+                "room": "Flower Room 5", "strain": "",
+                "record_scope": "Room Total", "harvest_date": "2026-07-27",
+                "planted_canopy_sqft": 1000, "dry_flower_lbs": 80,
+                "ab_flower_lbs": 55, "c_flower_lbs": 15,
+            },
+        ],
+    }
+    state.cultivation_registry_loaded = True
+    state.cultivation_registry_revision += 1
+
+    cycle = next(
+        row for row in state.cultivation_history_cycle_table_data
+        if row[0] == "Cycle 8"
+    )
+
+    assert cycle[1] == 5562.5
+    assert cycle[2] == 876.95
+    assert cycle[3] == 125
+    assert cycle[4] == 35
+    assert cycle[5] == 5
+    assert "Complete cycle" in cycle[7]
+    assert "AB/C entered for 2 of 5 rooms" in cycle[7]
+
+
+def test_saved_yields_flag_partial_future_cycle() -> None:
+    state = DashboardState(_reflex_internal_init=True)
+    state._cultivation_registry = {
+        "programs": [], "rooms": default_room_rows(), "benches": [],
+        "schedule": [], "voided_historical_yields": [],
+        "historical_yield_revisions": [],
+        "historical_yields": [
+            {
+                "harvest_id": "f1-9", "crop": "F1.9",
+                "room": "Flower Room 1", "strain": "",
+                "record_scope": "Room Total", "harvest_date": "2026-08-10",
+                "planted_canopy_sqft": 1100, "dry_flower_lbs": 90,
+                "ab_flower_lbs": 65, "c_flower_lbs": 18,
+            },
+        ],
+    }
+    state.cultivation_registry_loaded = True
+    state.cultivation_registry_revision += 1
+
+    cycle = next(
+        row for row in state.cultivation_history_cycle_table_data
+        if row[0] == "Cycle 9"
+    )
+
+    assert cycle[5] == 1
+    assert "Partial cycle: 1 of 5 rooms recorded" in cycle[7]
+
+
 class HistoricalYieldRegistryTests(unittest.TestCase):
     def test_editor_label_hides_technical_record_id(self):
         test_historical_yield_editor_label_hides_technical_record_id()
@@ -270,6 +338,12 @@ class HistoricalYieldRegistryTests(unittest.TestCase):
 
     def test_saved_yields_feed_historical_table_once(self):
         test_saved_yields_feed_historical_harvest_table_without_double_counting()
+
+    def test_saved_yields_create_cycle_rollup(self):
+        test_saved_yields_create_complete_cycle_eight_rollup()
+
+    def test_saved_yields_flag_partial_cycle(self):
+        test_saved_yields_flag_partial_future_cycle()
 
 
 def test_combined_cycle_table_uses_workbook_class_pounds() -> None:
