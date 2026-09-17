@@ -15,7 +15,7 @@ class ProcurementState(rx.State):
     error: str = ""
     supply_search: str = ""
     supply_category: str = "ALL CATEGORIES"
-    supply_rows: list[list[str]] = []
+    supply_rows: list[dict[str, str]] = []
     supply_adjustment: dict[str, str] = {"item_id": "", "quantity": "", "notes": ""}
 
     count_domain: str = "PACKAGING"
@@ -76,14 +76,19 @@ class ProcurementState(rx.State):
             ).casefold()]
         if category != "ALL CATEGORIES":
             records = [row for row in records if row.get("category") == category]
-        self.supply_rows = [[
-            str(row.get("item_id", "")), str(row.get("description", "")),
-            str(row.get("category", "")), str(row.get("purchasing_channel", "")),
-            str(row.get("supplier", "")), str(row.get("pack_description", "")),
-            str(row.get("uom", "")), f"{int(row.get('on_hand', 0) or 0):,}",
-            f"{int(row.get('safety_stock', 0) or 0):,}",
-            f"{int(row.get('reorder_quantity', 0) or 0):,}", str(row.get("status", "")),
-        ] for row in records]
+        self.supply_rows = [{
+            "item_id": str(row.get("item_id", "")),
+            "description": str(row.get("description", "")),
+            "category": str(row.get("category", "")),
+            "purchasing_channel": str(row.get("purchasing_channel", "")),
+            "supplier": str(row.get("supplier", "")),
+            "pack_description": str(row.get("pack_description", "")),
+            "uom": str(row.get("uom", "")),
+            "on_hand": str(int(row.get("on_hand", 0) or 0)),
+            "safety_stock": f"{int(row.get('safety_stock', 0) or 0):,}",
+            "reorder_quantity": f"{int(row.get('reorder_quantity', 0) or 0):,}",
+            "status": str(row.get("status", "")),
+        } for row in records]
 
     async def _load_counts(self) -> None:
         sessions = await rx.run_in_thread(service.count_sessions)
@@ -182,6 +187,22 @@ class ProcurementState(rx.State):
             await self._load_supply()
             self.message = f"Supply adjustment saved: {transaction}"
             self.supply_adjustment = {"item_id": "", "quantity": "", "notes": ""}
+        except Exception as error:
+            self.error = str(error)
+
+    @rx.event
+    async def save_supply_on_hand(self, item_id: str, value: str):
+        self._clear_status()
+        try:
+            actor = await self._actor()
+            transaction = await rx.run_in_thread(
+                lambda: service.set_supply_on_hand(item_id, value, actor)
+            )
+            await self._load_supply()
+            self.message = (
+                f"{item_id} On Hand updated."
+                if transaction else f"{item_id} On Hand was already {value}."
+            )
         except Exception as error:
             self.error = str(error)
 
@@ -461,8 +482,39 @@ def supply_inventory_panel() -> rx.Component:
             rx.button("Save Adjustment", on_click=state.save_supply_adjustment),
             width="100%",
         ),
-        _table(["Item ID", "Supply Item", "Category", "Purchasing Channel", "Supplier",
-                "Pack", "UOM", "On Hand", "Safety Stock", "Qty to Order", "Status"], state.supply_rows),
+        rx.box(
+            rx.table.root(
+                rx.table.header(rx.table.row(*[
+                    rx.table.column_header_cell(header, white_space="normal")
+                    for header in [
+                        "Item ID", "Supply Item", "Category", "Purchasing Channel",
+                        "Supplier", "Pack", "UOM", "On Hand", "Safety Stock",
+                        "Qty to Order", "Status",
+                    ]
+                ])),
+                rx.table.body(rx.foreach(state.supply_rows, lambda row: rx.table.row(
+                    rx.table.cell(row["item_id"]),
+                    rx.table.cell(row["description"], white_space="normal"),
+                    rx.table.cell(row["category"], white_space="normal"),
+                    rx.table.cell(row["purchasing_channel"], white_space="normal"),
+                    rx.table.cell(row["supplier"], white_space="normal"),
+                    rx.table.cell(row["pack_description"], white_space="normal"),
+                    rx.table.cell(row["uom"]),
+                    rx.table.cell(rx.input(
+                        default_value=row["on_hand"],
+                        type="number", min="0", step="1", width="92px",
+                        on_blur=lambda value: state.save_supply_on_hand(
+                            row["item_id"], value,
+                        ),
+                    )),
+                    rx.table.cell(row["safety_stock"], text_align="right"),
+                    rx.table.cell(row["reorder_quantity"], text_align="right"),
+                    rx.table.cell(row["status"]),
+                ))),
+                width="100%", variant="surface", size="1",
+            ),
+            width="100%", overflow_x="auto",
+        ),
         on_mount=lambda: state.enter("supply"), width="100%", spacing="3",
     )
 

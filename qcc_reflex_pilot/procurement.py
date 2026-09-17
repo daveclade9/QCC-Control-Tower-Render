@@ -282,6 +282,42 @@ def adjust_supply_item(item_id: str, quantity_delta: Any, actor: str, notes: str
     return transaction_id
 
 
+def set_supply_on_hand(item_id: str, on_hand: Any, actor: str) -> str:
+    """Set the visible supply balance and record the calculated difference."""
+    initialize()
+    item_id = _upper(item_id)
+    target = whole_number(on_hand, "On Hand")
+    transaction_id = str(uuid.uuid4())
+    with psycopg.connect(database_url(), connect_timeout=15) as conn:
+        item = conn.execute(
+            "SELECT opening_on_hand FROM qcc_supply_items "
+            "WHERE tenant_id=%s AND facility_id=%s AND item_id=%s",
+            (DEFAULT_TENANT_ID, DEFAULT_FACILITY_ID, item_id),
+        ).fetchone()
+        if not item:
+            raise ValueError("Select a registered supply item.")
+        current_delta = conn.execute(
+            "SELECT COALESCE(SUM(quantity_delta),0) "
+            "FROM qcc_supply_inventory_transactions "
+            "WHERE tenant_id=%s AND facility_id=%s AND item_id=%s",
+            (DEFAULT_TENANT_ID, DEFAULT_FACILITY_ID, item_id),
+        ).fetchone()[0]
+        delta = target - (int(item[0]) + int(current_delta or 0))
+        if delta == 0:
+            return ""
+        conn.execute("""
+            INSERT INTO qcc_supply_inventory_transactions (
+                transaction_id,tenant_id,facility_id,item_id,transaction_type,
+                quantity_delta,reference,notes,occurred_on,created_by
+            ) VALUES (%s,%s,%s,%s,'DIRECT ON HAND EDIT',%s,'',
+                      'On Hand edited in Supply Inventory',CURRENT_DATE,%s)
+        """, (
+            transaction_id, DEFAULT_TENANT_ID, DEFAULT_FACILITY_ID,
+            item_id, delta, actor,
+        ))
+    return transaction_id
+
+
 def _packaging_count_rows() -> list[dict[str, Any]]:
     from .warehouse import warehouse_snapshot
     items = [row for row in packaging_items() if row.get("status") == "ACTIVE"]

@@ -32,6 +32,15 @@ class ProcurementTests(unittest.TestCase):
                     whole_number(value)
 
 
+    def test_on_hand_field_accepts_only_nonnegative_whole_numbers(self):
+        self.assertEqual(whole_number("0", "On Hand"), 0)
+        self.assertEqual(whole_number("125", "On Hand"), 125)
+        for value in ("-1", "12.5", "ABC"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "On Hand must contain digits only"):
+                    whole_number(value, "On Hand")
+
+
     def test_source_reorder_formula_is_preserved(self):
         self.assertEqual(reorder_quantity(on_hand=3, safety_stock=5, order_multiple=12), 24)
         self.assertEqual(reorder_quantity(on_hand=8, safety_stock=5, order_multiple=12), 0)
