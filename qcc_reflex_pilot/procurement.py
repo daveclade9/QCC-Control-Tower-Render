@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from xml.sax.saxutils import escape
 from datetime import date, datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -179,6 +180,32 @@ def initialize() -> None:
                     f"ALTER TABLE qcc_purchase_orders ADD COLUMN IF NOT EXISTS {column} "
                     "NUMERIC(14,2) NOT NULL DEFAULT 0"
                 )
+            for column in (
+                "contact_phone", "supplier_address_line_1",
+                "supplier_address_line_2", "supplier_city", "supplier_state",
+                "supplier_postal_code", "supplier_country", "inactive_reason",
+                "inactive_by",
+            ):
+                conn.execute(
+                    f"ALTER TABLE qcc_purchase_orders ADD COLUMN IF NOT EXISTS {column} "
+                    "TEXT NOT NULL DEFAULT ''"
+                )
+            conn.execute(
+                "ALTER TABLE qcc_purchase_orders ADD COLUMN IF NOT EXISTS "
+                "inactive_at TIMESTAMPTZ"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS qcc_purchase_order_status_history (
+                    event_id TEXT PRIMARY KEY,
+                    po_id TEXT NOT NULL
+                        REFERENCES qcc_purchase_orders(po_id) ON DELETE CASCADE,
+                    prior_status TEXT NOT NULL,
+                    new_status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    changed_by TEXT NOT NULL,
+                    changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS qcc_purchase_receipts (
                     receipt_id TEXT PRIMARY KEY, po_id TEXT NOT NULL,
@@ -211,6 +238,7 @@ def initialize() -> None:
                 "qcc_supply_items", "qcc_supply_inventory_transactions",
                 "qcc_inventory_count_sessions", "qcc_inventory_count_lines",
                 "qcc_purchase_orders", "qcc_purchase_order_lines", "qcc_purchase_receipts",
+                "qcc_purchase_order_status_history",
             ):
                 conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         _SCHEMA_READY = True
@@ -526,16 +554,39 @@ def create_purchase_order(record: dict[str, Any], actor: str) -> str:
     required = str(record.get("required_date", "") or "").strip()
     if required:
         date.fromisoformat(required)
+    supplier_master = next(
+        (
+            row for row in packaging_suppliers()
+            if _upper(row.get("supplier")) == supplier
+        ),
+        {},
+    )
+    contact_name = _upper(
+        record.get("contact_name") or supplier_master.get("contact_name")
+    )
+    contact_email = str(
+        record.get("contact_email") or supplier_master.get("contact_email") or ""
+    ).strip().lower()
     with psycopg.connect(database_url(), connect_timeout=15) as conn:
         po_number = _next_po_number(conn, date.today().year)
         conn.execute("""
             INSERT INTO qcc_purchase_orders (
                 po_id,tenant_id,facility_id,po_number,supplier,purchasing_channel,
-                required_date,contact_name,contact_email,notes,created_by,updated_by
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                required_date,contact_name,contact_email,contact_phone,
+                supplier_address_line_1,supplier_address_line_2,supplier_city,
+                supplier_state,supplier_postal_code,supplier_country,
+                notes,created_by,updated_by
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (str(uuid.uuid4()), DEFAULT_TENANT_ID, DEFAULT_FACILITY_ID, po_number,
               supplier, _upper(record.get("purchasing_channel")), required or None,
-              _upper(record.get("contact_name")), str(record.get("contact_email", "") or "").strip().lower(),
+              contact_name, contact_email,
+              str(supplier_master.get("contact_phone", "") or "").strip(),
+              _upper(supplier_master.get("address_line_1")),
+              _upper(supplier_master.get("address_line_2")),
+              _upper(supplier_master.get("city")),
+              _upper(supplier_master.get("state")),
+              _upper(supplier_master.get("postal_code")),
+              _upper(supplier_master.get("country"), "US"),
               str(record.get("notes", "") or "").strip(), actor, actor))
     return po_number
 
@@ -648,6 +699,91 @@ def purchase_order_detail(po_number: str) -> dict[str, Any]:
     return {"header": dict(header), "lines": [dict(row) for row in lines]}
 
 
+def purchase_order_status_history(po_number: str) -> list[dict[str, Any]]:
+    """Return the complete status audit trail for one purchase order."""
+    if not po_number:
+        return []
+    initialize()
+    with psycopg.connect(database_url(), connect_timeout=15, row_factory=dict_row) as conn:
+        rows = conn.execute("""
+            SELECT history.prior_status, history.new_status, history.reason,
+                   history.changed_by, history.changed_at
+            FROM qcc_purchase_order_status_history history
+            JOIN qcc_purchase_orders po ON po.po_id=history.po_id
+            WHERE po.tenant_id=%s AND po.po_number=%s
+            ORDER BY history.changed_at DESC
+        """, (DEFAULT_TENANT_ID, po_number)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_purchase_order_active(
+    po_number: str,
+    *,
+    active: bool,
+    reason: str,
+    actor: str,
+) -> str:
+    """Cancel or reactivate a PO with a required, durable audit reason."""
+    reason_text = str(reason or "").strip()
+    if not reason_text:
+        raise ValueError("A reason is required to change purchase-order activity.")
+    initialize()
+    with psycopg.connect(database_url(), connect_timeout=15) as conn:
+        row = conn.execute(
+            "SELECT po_id,status FROM qcc_purchase_orders "
+            "WHERE tenant_id=%s AND facility_id=%s AND po_number=%s FOR UPDATE",
+            (DEFAULT_TENANT_ID, DEFAULT_FACILITY_ID, po_number),
+        ).fetchone()
+        if not row:
+            raise ValueError("Select a purchase order.")
+        po_id, prior_status = str(row[0]), str(row[1])
+        if active:
+            if prior_status != "CANCELLED":
+                raise ValueError("Only an inactive purchase order can be reactivated.")
+            previous = conn.execute(
+                "SELECT prior_status FROM qcc_purchase_order_status_history "
+                "WHERE po_id=%s AND new_status='CANCELLED' "
+                "ORDER BY changed_at DESC LIMIT 1",
+                (po_id,),
+            ).fetchone()
+            new_status = (
+                str(previous[0])
+                if previous and str(previous[0]) in {
+                    "DRAFT", "SENT", "PARTIALLY RECEIVED"
+                }
+                else "DRAFT"
+            )
+            conn.execute(
+                "UPDATE qcc_purchase_orders SET status=%s,inactive_reason='',"
+                "inactive_by='',inactive_at=NULL,updated_by=%s,updated_at=NOW() "
+                "WHERE po_id=%s",
+                (new_status, actor, po_id),
+            )
+        else:
+            if prior_status == "CANCELLED":
+                raise ValueError("This purchase order is already inactive.")
+            if prior_status in {"RECEIVED", "CLOSED"}:
+                raise ValueError(
+                    "A received or closed purchase order cannot be made inactive."
+                )
+            new_status = "CANCELLED"
+            conn.execute(
+                "UPDATE qcc_purchase_orders SET status='CANCELLED',"
+                "inactive_reason=%s,inactive_by=%s,inactive_at=NOW(),"
+                "updated_by=%s,updated_at=NOW() WHERE po_id=%s",
+                (reason_text, actor, actor, po_id),
+            )
+        conn.execute("""
+            INSERT INTO qcc_purchase_order_status_history (
+                event_id,po_id,prior_status,new_status,reason,changed_by
+            ) VALUES (%s,%s,%s,%s,%s,%s)
+        """, (
+            str(uuid.uuid4()), po_id, prior_status, new_status,
+            reason_text, actor,
+        ))
+    return new_status
+
+
 def receive_purchase_order_line(
     po_number: str, line_id: str, quantity: Any, actor: str,
     location: str = "UNASSIGNED", lot_number: str = "", notes: str = "",
@@ -668,6 +804,8 @@ def receive_purchase_order_line(
         ).fetchone()
         if not po or not line:
             raise ValueError("Purchase-order line was not found.")
+        if str(po["status"]) in {"CANCELLED", "CLOSED"}:
+            raise ValueError("Inactive or closed purchase orders cannot receive inventory.")
         remaining = int(line["ordered_quantity"]) - int(line["received_quantity"])
         if received > remaining:
             raise ValueError(f"Only {remaining} remains open on this line.")
@@ -730,36 +868,158 @@ def purchase_order_pdf(po_number: str) -> bytes:
     try:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import letter
-        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import inch
-        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+        from reportlab.platypus import (
+            Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+        )
     except ImportError as error:  # pragma: no cover
         raise RuntimeError("PDF support is not installed.") from error
     detail = purchase_order_detail(po_number)
     header, lines = detail["header"], detail["lines"]
+    if not lines:
+        raise ValueError("Add at least one line before downloading the purchase order.")
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=.55*inch, leftMargin=.55*inch,
                             topMargin=.45*inch, bottomMargin=.45*inch)
     styles = getSampleStyleSheet()
+    supplier_master = next(
+        (
+            row for row in packaging_suppliers()
+            if _upper(row.get("supplier")) == _upper(header.get("supplier"))
+        ),
+        {},
+    )
+    supplier = {
+        "name": _upper(header.get("supplier")),
+        "address_1": _upper(
+            header.get("supplier_address_line_1")
+            or supplier_master.get("address_line_1")
+        ),
+        "address_2": _upper(
+            header.get("supplier_address_line_2")
+            or supplier_master.get("address_line_2")
+        ),
+        "city": _upper(header.get("supplier_city") or supplier_master.get("city")),
+        "state": _upper(header.get("supplier_state") or supplier_master.get("state")),
+        "postal_code": _upper(
+            header.get("supplier_postal_code")
+            or supplier_master.get("postal_code")
+        ),
+        "country": _upper(
+            header.get("supplier_country")
+            or supplier_master.get("country"),
+            "US",
+        ),
+        "phone": _upper(
+            header.get("contact_phone") or supplier_master.get("contact_phone")
+        ),
+        "email": _upper(
+            header.get("contact_email") or supplier_master.get("contact_email")
+        ),
+    }
+    address_style = ParagraphStyle(
+        "PO Address",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor("#111827"),
+    )
+    title_style = ParagraphStyle(
+        "PO Title",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=24,
+        leading=28,
+        alignment=2,
+        textColor=colors.HexColor("#111827"),
+    )
+    logo_path = (
+        Path(__file__).resolve().parent.parent
+        / "assets" / "sales-menu" / "qcc-group.png"
+    )
+    logo = Image(str(logo_path), width=.68*inch, height=.86*inch)
+    qcc_block = (
+        "<b>THE QCC GROUP</b><br/>"
+        "1355 WEST FRONT STREET, BUILDING 33, DOOR #3<br/>"
+        "PLAINFIELD, NJ 07063 U.S.A.<br/>"
+        "PHONE: (908) 635-9255<br/>"
+        "EMAIL: PURCHASING@QCCNJ.COM"
+    )
+    state_postal = " ".join(
+        value for value in (supplier["state"], supplier["postal_code"]) if value
+    )
+    supplier_location = ", ".join(
+        value for value in (supplier["city"], state_postal) if value
+    )
+    supplier_country = supplier["country"]
+    if supplier_country in {"US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA"}:
+        supplier_country = "U.S.A."
+    supplier_lines = [f"<b>{escape(supplier['name'])}</b>"]
+    supplier_lines.extend(
+        escape(value)
+        for value in (supplier["address_1"], supplier["address_2"])
+        if value
+    )
+    if supplier_location:
+        supplier_lines.append(
+            escape(
+                supplier_location
+                + (f" {supplier_country}" if supplier_country else "")
+            )
+        )
+    if supplier["phone"]:
+        supplier_lines.append("PHONE: " + escape(supplier["phone"]))
+    if supplier["email"]:
+        supplier_lines.append("EMAIL: " + escape(supplier["email"]))
+
+    header_table = Table(
+        [[logo, Paragraph("PURCHASE ORDER", title_style)]],
+        colWidths=[1.0*inch, 6.35*inch],
+    )
+    header_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+    ]))
+    party_table = Table(
+        [[
+            Paragraph(qcc_block, address_style),
+            Paragraph("<br/>".join(supplier_lines), address_style),
+        ]],
+        colWidths=[3.65*inch, 3.70*inch],
+    )
+    party_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOX", (0, 0), (-1, -1), .5, colors.HexColor("#CBD5E1")),
+        ("INNERGRID", (0, 0), (-1, -1), .5, colors.HexColor("#CBD5E1")),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
     story = [
-        Paragraph("THE QCC GROUP", styles["Title"]),
-        Paragraph("1355 West Front Street, Building 33<br/>Plainfield, NJ 07063<br/>"
-                  "908-635-9255 &nbsp;&nbsp; purchasing@qccnj.com", styles["Normal"]),
-        Spacer(1, 12),
+        header_table,
+        Spacer(1, 8),
+        party_table,
+        Spacer(1, 10),
         Table([
-            ["PURCHASE ORDER", po_number], ["Supplier", header["supplier"]],
-            ["Order Date", str(header["order_date"])],
-            ["Required Date", str(header.get("required_date") or "")],
-            ["Purchasing Contact", "Henry Barnett"],
+            ["PURCHASE ORDER #", _upper(po_number)],
+            ["ORDER DATE", _upper(header["order_date"])],
+            ["REQUIRED DATE", _upper(header.get("required_date") or "")],
+            ["PURCHASING CONTACT", "HENRY BARNETT"],
         ], colWidths=[1.7*inch, 5.0*inch]),
         Spacer(1, 12),
     ]
-    data = [["Item ID", "Description", "Qty", "UOM", "Unit Cost", "Line Total"]]
+    data = [["ITEM ID", "DESCRIPTION", "QTY", "UOM", "UNIT COST", "LINE TOTAL"]]
     for line in lines:
         total = float(line["ordered_quantity"]) * float(line["unit_cost"])
         data.append([
-            line["item_id"], Paragraph(str(line["description"]), styles["BodyText"]),
-            f"{int(line['ordered_quantity']):,}", line["uom"],
+            _upper(line["item_id"]),
+            Paragraph(_upper(line["description"]), styles["BodyText"]),
+            f"{int(line['ordered_quantity']):,}",
+            _upper(line["uom"]),
             f"${float(line['unit_cost']):,.4f}", f"${total:,.2f}",
         ])
     subtotal = sum(float(x["ordered_quantity"]) * float(x["unit_cost"]) for x in lines)
@@ -767,11 +1027,11 @@ def purchase_order_pdf(po_number: str) -> bytes:
     expedited_shipping = float(header.get("expedited_shipping", 0) or 0)
     sales_tax = float(header.get("sales_tax", 0) or 0)
     data.extend([
-        ["", "", "", "", "SUBTOTAL", f"${subtotal:,.2f}"],
-        ["", "", "", "", "STANDARD SHIPPING", f"${standard_shipping:,.2f}"],
-        ["", "", "", "", "EXPEDITED SHIPPING", f"${expedited_shipping:,.2f}"],
-        ["", "", "", "", "SALES TAX", f"${sales_tax:,.2f}"],
-        ["", "", "", "", "TOTAL", f"${subtotal + standard_shipping + expedited_shipping + sales_tax:,.2f}"],
+        ["SUBTOTAL", "", "", "", "", f"${subtotal:,.2f}"],
+        ["STANDARD SHIPPING", "", "", "", "", f"${standard_shipping:,.2f}"],
+        ["EXPEDITED SHIPPING", "", "", "", "", f"${expedited_shipping:,.2f}"],
+        ["SALES TAX", "", "", "", "", f"${sales_tax:,.2f}"],
+        ["TOTAL", "", "", "", "", f"${subtotal + standard_shipping + expedited_shipping + sales_tax:,.2f}"],
     ])
     table = Table(data, colWidths=[.9*inch, 3.0*inch, .55*inch, .55*inch, .8*inch, .9*inch], repeatRows=1)
     table.setStyle(TableStyle([
@@ -781,11 +1041,21 @@ def purchase_order_pdf(po_number: str) -> bytes:
         ("GRID", (0,0), (-1,-1), .35, colors.HexColor("#CBD5E1")),
         ("VALIGN", (0,0), (-1,-1), "TOP"),
         ("ALIGN", (2,1), (-1,-1), "RIGHT"),
-        ("FONTNAME", (-2,-5), (-1,-1), "Helvetica-Bold"),
+        ("SPAN", (0,-5), (4,-5)),
+        ("SPAN", (0,-4), (4,-4)),
+        ("SPAN", (0,-3), (4,-3)),
+        ("SPAN", (0,-2), (4,-2)),
+        ("SPAN", (0,-1), (4,-1)),
+        ("ALIGN", (0,-5), (4,-1), "RIGHT"),
+        ("FONTNAME", (0,-5), (-1,-1), "Helvetica-Bold"),
         ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#E6F7F6")),
         ("FONTSIZE", (0,0), (-1,-1), 8.5),
     ]))
-    story.extend([table, Spacer(1, 12), Paragraph(str(header.get("notes", "") or ""), styles["Normal"])])
+    story.extend([
+        table,
+        Spacer(1, 12),
+        Paragraph(_upper(header.get("notes", "")), styles["Normal"]),
+    ])
     doc.build(story)
     return buffer.getvalue()
 
@@ -797,6 +1067,8 @@ def send_purchase_order(po_number: str) -> None:
     secret = os.getenv("QCC_MICROSOFT_CLIENT_SECRET", "").strip()
     sender = os.getenv("QCC_PURCHASING_FROM_EMAIL", "purchasing@qccnj.com").strip()
     detail = purchase_order_detail(po_number)
+    if str(detail["header"].get("status", "")).upper() in {"CANCELLED", "CLOSED"}:
+        raise ValueError("Inactive or closed purchase orders cannot be emailed.")
     recipient = str(detail["header"].get("contact_email", "") or "").strip()
     if not all((tenant, client, secret)):
         raise RuntimeError("Microsoft purchasing email is not configured in Render.")

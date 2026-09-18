@@ -1,9 +1,12 @@
 import unittest
+from unittest.mock import patch
 
 from qcc_reflex_pilot.procurement import (
     box_label_zpl,
+    purchase_order_pdf,
     quantity_label_zpl,
     reorder_quantity,
+    set_purchase_order_active,
     supply_seed_items,
     supply_seed,
     whole_number,
@@ -58,6 +61,58 @@ class ProcurementTests(unittest.TestCase):
         self.assertEqual(zpl.count("^BQN"), 2)
         self.assertIn("PKG-100", zpl)
         self.assertIn("QTY: 0", zpl)
+
+    def test_purchase_order_activity_change_requires_reason(self):
+        with self.assertRaisesRegex(ValueError, "reason is required"):
+            set_purchase_order_active(
+                "QCC-PO-2026-0001",
+                active=False,
+                reason="",
+                actor="TESTER",
+            )
+
+    @patch(
+        "qcc_reflex_pilot.procurement.packaging_suppliers",
+        return_value=[{
+            "supplier": "COVERED GROUP",
+            "address_line_1": "3401 GLENDALE BLVD, UNIT C",
+            "city": "LOS ANGELES",
+            "state": "CA",
+            "postal_code": "90036",
+            "country": "U.S.A.",
+            "contact_phone": "213-216-4730",
+            "contact_email": "brad@covered.group",
+        }],
+    )
+    @patch(
+        "qcc_reflex_pilot.procurement.purchase_order_detail",
+        return_value={
+            "header": {
+                "supplier": "COVERED GROUP",
+                "order_date": "2026-09-17",
+                "required_date": "2026-09-30",
+                "contact_email": "brad@covered.group",
+                "status": "DRAFT",
+                "standard_shipping": 10,
+                "expedited_shipping": 0,
+                "sales_tax": 5,
+                "notes": "DELIVER TO DOOR 3",
+            },
+            "lines": [{
+                "item_id": "PKG-100",
+                "description": "3.5G GLASS JAR",
+                "ordered_quantity": 120,
+                "uom": "EACH",
+                "unit_cost": 1.25,
+            }],
+        },
+    )
+    def test_purchase_order_pdf_builds_with_supplier_party_block(
+        self, _detail, _suppliers
+    ):
+        pdf = purchase_order_pdf("QCC-PO-2026-0001")
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        self.assertGreater(len(pdf), 2_000)
 
 
 if __name__ == "__main__":

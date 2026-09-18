@@ -209,7 +209,7 @@ from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 from .procurement_ui import ProcurementState, procurement_workspace
 
-PILOT_VERSION = "0.9.6.112-staging"
+PILOT_VERSION = "0.9.6.113-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"

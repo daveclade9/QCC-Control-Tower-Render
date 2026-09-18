@@ -33,6 +33,8 @@ class ProcurementState(rx.State):
     count_session_options: list[str] = []
 
     po_number: str = ""
+    po_selected_status: str = ""
+    po_status_reason: str = ""
     po_header: dict[str, str] = {
         "supplier": "", "purchasing_channel": "", "required_date": "",
         "contact_name": "", "contact_email": "", "notes": "",
@@ -54,6 +56,7 @@ class ProcurementState(rx.State):
     }
     po_rows: list[list[str]] = []
     po_line_rows: list[list[str]] = []
+    po_status_rows: list[list[str]] = []
     po_options: list[str] = []
     po_line_options: list[str] = []
 
@@ -136,6 +139,7 @@ class ProcurementState(rx.State):
         if self.po_number:
             detail = await rx.run_in_thread(lambda: service.purchase_order_detail(self.po_number))
             header = detail["header"]
+            self.po_selected_status = str(header.get("status", "") or "")
             self.po_charges = {
                 "standard_shipping": str(header.get("standard_shipping", 0) or 0),
                 "expedited_shipping": str(header.get("expedited_shipping", 0) or 0),
@@ -150,8 +154,19 @@ class ProcurementState(rx.State):
                 str(int(row.get("ordered_quantity", 0)) - int(row.get("received_quantity", 0))),
                 str(row.get("uom", "")), f"${float(row.get('unit_cost', 0) or 0):,.4f}",
             ] for row in lines]
+            status_history = await rx.run_in_thread(
+                lambda: service.purchase_order_status_history(self.po_number)
+            )
+            self.po_status_rows = [[
+                str(row.get("prior_status", "")),
+                str(row.get("new_status", "")),
+                str(row.get("reason", "")),
+                str(row.get("changed_by", "")),
+                str(row.get("changed_at", "")),
+            ] for row in status_history]
         else:
             self.po_line_options, self.po_line_rows = [], []
+            self.po_selected_status, self.po_status_rows = "", []
 
     async def _load_po_references(self) -> None:
         self._po_suppliers = await rx.run_in_thread(service.packaging_suppliers)
@@ -356,6 +371,10 @@ class ProcurementState(rx.State):
         self.po_charges[key] = value
 
     @rx.event
+    def set_po_status_reason(self, value: str):
+        self.po_status_reason = value
+
+    @rx.event
     def set_receipt(self, key: str, value: str):
         self.receipt[key] = value
 
@@ -440,6 +459,30 @@ class ProcurementState(rx.State):
             await rx.run_in_thread(lambda: service.close_purchase_order(self.po_number, actor))
             await self._load_pos()
             self.message = f"{self.po_number} closed. Any remaining quantity is retained as the backorder history."
+        except Exception as error:
+            self.error = str(error)
+
+    @rx.event
+    async def toggle_po_active(self):
+        self._clear_status()
+        try:
+            actor = await self._actor()
+            reactivate = self.po_selected_status == "CANCELLED"
+            new_status = await rx.run_in_thread(
+                lambda: service.set_purchase_order_active(
+                    self.po_number,
+                    active=reactivate,
+                    reason=self.po_status_reason,
+                    actor=actor,
+                )
+            )
+            self.po_status_reason = ""
+            await self._load_pos()
+            self.message = (
+                f"{self.po_number} reactivated as {new_status}."
+                if reactivate
+                else f"{self.po_number} made inactive."
+            )
         except Exception as error:
             self.error = str(error)
 
@@ -673,6 +716,19 @@ def purchasing_panel() -> rx.Component:
             rx.heading("Selected Purchase Order", size="3"),
             rx.select(state.po_options, value=state.po_number, on_change=state.select_po,
                       placeholder="Select purchase order", width="100%"),
+            rx.cond(
+                state.po_number != "",
+                rx.callout(
+                    "CURRENT STATUS: " + state.po_selected_status,
+                    icon="file-check-2",
+                    color_scheme=rx.cond(
+                        state.po_selected_status == "CANCELLED",
+                        "red",
+                        "teal",
+                    ),
+                    width="100%",
+                ),
+            ),
             rx.grid(
                 rx.vstack(rx.text("Item type", size="2", weight="bold"),
                           rx.select(service.COUNT_DOMAINS, value=state.po_line["inventory_domain"],
@@ -712,6 +768,38 @@ def purchasing_panel() -> rx.Component:
                 rx.button("Email PO", on_click=state.email_po, variant="outline"),
                 rx.button("Close PO", on_click=state.close_po, color_scheme="orange", variant="outline"),
                 gap="2", wrap="wrap",
+            ),
+            rx.separator(),
+            rx.heading("Purchase Order Activity", size="3"),
+            rx.text(
+                "Making a PO inactive blocks lines, receipts, shipping and tax changes, and email. The PDF and audit history remain available.",
+                size="2",
+            ),
+            _field(
+                "Required reason for cancellation or reactivation",
+                state.po_status_reason,
+                state.set_po_status_reason,
+            ),
+            rx.cond(
+                state.po_selected_status == "CANCELLED",
+                rx.button(
+                    "Reactivate PO",
+                    on_click=state.toggle_po_active,
+                    disabled=state.po_status_reason == "",
+                    color_scheme="teal",
+                ),
+                rx.button(
+                    "Make PO Inactive",
+                    on_click=state.toggle_po_active,
+                    disabled=(state.po_number == "") | (state.po_status_reason == ""),
+                    color_scheme="red",
+                    variant="outline",
+                ),
+            ),
+            rx.heading("Status Audit History", size="3"),
+            _table(
+                ["Previous Status", "New Status", "Reason", "Changed By", "Changed At"],
+                state.po_status_rows,
             ),
             width="100%", spacing="3",
         ),

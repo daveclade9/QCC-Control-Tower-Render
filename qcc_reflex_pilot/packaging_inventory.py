@@ -596,10 +596,18 @@ def packaging_suppliers() -> list[dict[str, Any]]:
     """)
     for db_row in rows.to_dict("records"):
         normalized = _supplier_defaults(db_row)
-        by_name[normalized["supplier"]] = {
-            **by_name.get(normalized["supplier"], {}),
-            **normalized,
-        }
+        existing = by_name.get(normalized["supplier"], {})
+        merged = {**existing, **normalized}
+        # Empty database fields should not erase authoritative contact details
+        # supplied by the registry seed. Populated database values still win.
+        for field in (
+            "supplies", "payment_terms", "contact_name", "contact_email",
+            "contact_phone", "address_line_1", "address_line_2", "city",
+            "state", "postal_code", "country", "website",
+        ):
+            if not normalized.get(field) and existing.get(field):
+                merged[field] = existing[field]
+        by_name[normalized["supplier"]] = merged
     return sorted(by_name.values(), key=lambda row: row["supplier"])
 
 
