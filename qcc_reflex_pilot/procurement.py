@@ -1140,16 +1140,18 @@ def box_label_zpl(
     qty = whole_number(quantity)
     values = [print_date or date.today().isoformat(), material_id, description, lot_or_po or "N/A", str(qty)]
     labels = ["DATE", "MATERIAL ID", "DESCRIPTION", "LOT / PO", "QUANTITY"]
-    commands = ["^XA", "^PW812", "^LL1218", "^CI28"]
+    # The printer still feeds 4-inch-wide stock (812 dots), but every field is
+    # rotated bottom-up so the completed 4 x 6 label is read in landscape.
+    commands = ["^XA", "^PW812", "^LL1218", "^CI28", "^FWB"]
     y = 45
     for label, value in zip(labels, values):
         safe = _zpl_text(value)
         commands.extend([
-            f"^FO40,{y}^A0N,30,28^FD{label}: {safe}^FS",
-            f"^FO590,{y-8}^BQN,2,5^FDLA,{safe}^FS",
+            f"^FO40,{y}^A0B,30,28^FD{label}: {safe}^FS",
+            f"^FO590,{y-8}^BQB,2,5^FDLA,{safe}^FS",
         ])
         y += 215
-    commands.extend(["^FO40,1135^A0N,24,22^FDQCC MATERIAL INVENTORY^FS", "^XZ"])
+    commands.extend(["^FO40,1135^A0B,24,22^FDQCC MATERIAL INVENTORY^FS", "^XZ"])
     return "\n".join(commands)
 
 

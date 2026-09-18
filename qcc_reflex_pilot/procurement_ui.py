@@ -190,6 +190,8 @@ class ProcurementState(rx.State):
             elif section == "purchasing":
                 await self._load_po_references()
                 await self._load_pos()
+            elif section == "labels":
+                await self._load_po_references()
         except Exception as error:
             self.error = str(error)
 
@@ -518,6 +520,16 @@ class ProcurementState(rx.State):
         self.label[key] = value
 
     @rx.event
+    def set_label_material_id(self, value: str):
+        material_id = str(value or "").strip().upper()
+        self.label["material_id"] = material_id
+        item = next((
+            row for row in self._po_packaging_items
+            if str(row.get("material_id", "")).strip().upper() == material_id
+        ), None)
+        self.label["description"] = str((item or {}).get("item", ""))
+
+    @rx.event
     def prefill_label(self, material_id: str, description: str, quantity: str):
         self.label = {
             "format": "4 x 6 Packaging Box", "material_id": material_id,
@@ -836,7 +848,7 @@ def label_printing_panel() -> rx.Component:
             rx.select(["4 x 6 Packaging Box", "2.25 x 1.25 Quantity"], value=state.label["format"],
                       on_change=lambda v: state.set_label("format", v), width="100%"),
             rx.grid(
-                _field("Material ID", state.label["material_id"], lambda v: state.set_label("material_id", v)),
+                _field("Material ID", state.label["material_id"], state.set_label_material_id),
                 _field("Description", state.label["description"], lambda v: state.set_label("description", v)),
                 _field("Lot / PO", state.label["lot_or_po"], lambda v: state.set_label("lot_or_po", v)),
                 _field("Whole-number quantity", state.label["quantity"], lambda v: state.set_label("quantity", v)),
@@ -846,6 +858,7 @@ def label_printing_panel() -> rx.Component:
             rx.button("Download Zebra ZPL", on_click=state.download_label, width="100%"),
             width="100%", spacing="3",
         ),
+        on_mount=lambda: state.enter("labels"),
         width="100%", spacing="3",
     )
 

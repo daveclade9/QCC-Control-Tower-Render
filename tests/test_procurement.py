@@ -51,7 +51,10 @@ class ProcurementTests(unittest.TestCase):
 
     def test_box_label_keeps_five_separate_qr_values(self):
         zpl = box_label_zpl("PKG-100", "3.5G GLASS JAR", "QCC-PO-2026-0001", "120", "2026-09-16")
-        self.assertEqual(zpl.count("^BQN"), 5)
+        self.assertEqual(zpl.count("^BQB"), 5)
+        self.assertIn("^PW812", zpl)
+        self.assertIn("^LL1218", zpl)
+        self.assertIn("^FWB", zpl)
         for value in ("2026-09-16", "PKG-100", "3.5G GLASS JAR", "QCC-PO-2026-0001", "120"):
             self.assertIn(value, zpl)
 
