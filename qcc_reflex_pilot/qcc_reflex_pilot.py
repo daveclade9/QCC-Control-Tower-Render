@@ -208,8 +208,9 @@ from .metrc_imports import (
 from .warehouse_ui import warehouse_workspace
 from .warehouse import item_version
 from .procurement_ui import ProcurementState, procurement_workspace
+from .manufacturing_work_orders_ui import manufacturing_work_orders_workspace
 
-PILOT_VERSION = "0.9.6.114-staging"
+PILOT_VERSION = "0.9.6.115-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -20743,11 +20744,21 @@ def erp_foundation_panel(
 
 
 def manufacturing_panel() -> rx.Component:
-    return erp_foundation_panel(
-        "Manufacturing",
-        "BOM recipes, production orders, yields, work in process, and material consumption.",
-        "BOM Registry",
-        "The BOM Registry will connect finished-product recipes to a shared Item Master, including packaging and supplies owned by Materials & Procurement and cannabis inputs owned by Cannabis Inventory.",
+    return rx.vstack(
+        rx.vstack(
+            rx.heading("Manufacturing", size="7", color=DARK),
+            rx.text(
+                "Configurable extraction and production work orders, reservations, consumption, substitutions, outputs, and audit history.",
+                color=MUTED,
+            ),
+            align="start",
+            spacing="1",
+            width="100%",
+        ),
+        manufacturing_work_orders_workspace(),
+        width="100%",
+        spacing="4",
+        align="start",
     )
 
 
