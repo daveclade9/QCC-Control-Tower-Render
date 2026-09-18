@@ -481,7 +481,7 @@ class ProcurementState(rx.State):
             self.message = (
                 f"{self.po_number} reactivated as {new_status}."
                 if reactivate
-                else f"{self.po_number} made inactive."
+                else f"{self.po_number} cancelled."
             )
         except Exception as error:
             self.error = str(error)
@@ -762,39 +762,39 @@ def purchasing_panel() -> rx.Component:
                 _field("Receipt notes", state.receipt["notes"], lambda v: state.set_receipt("notes", v)),
                 columns=rx.breakpoints(initial="1", md="2"), width="100%", gap="2",
             ),
+            _field(
+                "Required reason to cancel or reactivate this PO",
+                state.po_status_reason,
+                state.set_po_status_reason,
+            ),
             rx.flex(
                 rx.button("Receive & Prepare Label", on_click=state.receive_po_line),
                 rx.button("Download PO PDF", on_click=state.download_po, variant="outline"),
                 rx.button("Email PO", on_click=state.email_po, variant="outline"),
                 rx.button("Close PO", on_click=state.close_po, color_scheme="orange", variant="outline"),
+                rx.cond(
+                    state.po_selected_status == "CANCELLED",
+                    rx.button(
+                        "Reactivate PO",
+                        on_click=state.toggle_po_active,
+                        disabled=state.po_status_reason == "",
+                        color_scheme="teal",
+                    ),
+                    rx.button(
+                        "Cancel PO",
+                        on_click=state.toggle_po_active,
+                        disabled=(state.po_number == "") | (state.po_status_reason == ""),
+                        color_scheme="red",
+                        variant="outline",
+                    ),
+                ),
                 gap="2", wrap="wrap",
             ),
             rx.separator(),
             rx.heading("Purchase Order Activity", size="3"),
             rx.text(
-                "Making a PO inactive blocks lines, receipts, shipping and tax changes, and email. The PDF and audit history remain available.",
+                "Cancelling a PO blocks lines, receipts, shipping and tax changes, and email. The PDF and audit history remain available.",
                 size="2",
-            ),
-            _field(
-                "Required reason for cancellation or reactivation",
-                state.po_status_reason,
-                state.set_po_status_reason,
-            ),
-            rx.cond(
-                state.po_selected_status == "CANCELLED",
-                rx.button(
-                    "Reactivate PO",
-                    on_click=state.toggle_po_active,
-                    disabled=state.po_status_reason == "",
-                    color_scheme="teal",
-                ),
-                rx.button(
-                    "Make PO Inactive",
-                    on_click=state.toggle_po_active,
-                    disabled=(state.po_number == "") | (state.po_status_reason == ""),
-                    color_scheme="red",
-                    variant="outline",
-                ),
             ),
             rx.heading("Status Audit History", size="3"),
             _table(
