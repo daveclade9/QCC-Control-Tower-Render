@@ -185,6 +185,7 @@ from .packaging_inventory import (
     PACKAGING_CATEGORIES,
     PACKAGING_SIZE_FORMATS,
     deactivate_packaging_item,
+    delete_packaging_supplier,
     next_packaging_material_id,
     packaging_bom_recipes,
     packaging_items,
@@ -210,7 +211,7 @@ from .warehouse import item_version
 from .procurement_ui import ProcurementState, procurement_workspace
 from .manufacturing_work_orders_ui import manufacturing_work_orders_workspace
 
-PILOT_VERSION = "0.9.6.119-staging"
+PILOT_VERSION = "0.9.6.120-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -848,6 +849,8 @@ class DashboardState(rx.State):
     _packaging_supplier_registry: list[dict[str, Any]] = []
     packaging_supplier_dialog_open: bool = False
     packaging_supplier_editing: bool = False
+    packaging_supplier_delete_dialog_open: bool = False
+    packaging_supplier_delete_name: str = ""
     packaging_supplier_form_id: str = ""
     packaging_supplier_form_name: str = ""
     packaging_supplier_form_supplies: str = ""
@@ -2092,6 +2095,37 @@ class DashboardState(rx.State):
         self.packaging_supplier_editing = True
         self.packaging_supplier_dialog_open = True
         self.packaging_action_error = ""
+
+    @rx.event
+    def request_delete_packaging_supplier(self, supplier_name: str):
+        self.packaging_supplier_delete_name = str(supplier_name or "")
+        self.packaging_supplier_delete_dialog_open = True
+        self.packaging_action_error = ""
+
+    @rx.event
+    def change_packaging_supplier_delete_dialog_open(self, value: bool):
+        self.packaging_supplier_delete_dialog_open = bool(value)
+        if not value:
+            self.packaging_supplier_delete_name = ""
+
+    @rx.event
+    def confirm_delete_packaging_supplier(self):
+        self.packaging_action_loading = True
+        self.packaging_action_error = ""
+        yield
+        try:
+            supplier_name = delete_packaging_supplier(
+                self.packaging_supplier_delete_name,
+                self.auth_name or self.auth_email or "QCC Reflex User",
+            )
+            self._packaging_supplier_registry = packaging_suppliers()
+            self.packaging_supplier_delete_dialog_open = False
+            self.packaging_supplier_delete_name = ""
+            self.packaging_action_message = f"{supplier_name} was deleted."
+        except Exception as error:
+            self.packaging_action_error = f"Supplier could not be deleted: {error}"
+        finally:
+            self.packaging_action_loading = False
 
     @rx.event
     def save_packaging_supplier_form(self):
@@ -21277,6 +21311,39 @@ def packaging_supplier_dialog() -> rx.Component:
     )
 
 
+def packaging_supplier_delete_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Delete Supplier"),
+            rx.dialog.description(
+                "Delete "
+                + DashboardState.packaging_supplier_delete_name
+                + "? This is allowed only when the supplier is not assigned to a packaging item. "
+                "The deletion is retained in the audit history."
+            ),
+            rx.flex(
+                rx.button(
+                    "Cancel",
+                    on_click=lambda: DashboardState.change_packaging_supplier_delete_dialog_open(False),
+                    variant="outline",
+                ),
+                rx.button(
+                    "Delete Supplier",
+                    on_click=DashboardState.confirm_delete_packaging_supplier,
+                    loading=DashboardState.packaging_action_loading,
+                    color_scheme="red",
+                ),
+                justify="end",
+                gap="2",
+                margin_top="1rem",
+            ),
+            max_width="540px",
+        ),
+        open=DashboardState.packaging_supplier_delete_dialog_open,
+        on_open_change=DashboardState.change_packaging_supplier_delete_dialog_open,
+    )
+
+
 def packaging_coverage_badge(status: rx.Var) -> rx.Component:
     return rx.match(
         status,
@@ -21332,11 +21399,12 @@ def packaging_supplier_row(row: rx.Var) -> rx.Component:
                     size="1",
                 ),
                 rx.button(
-                    "Print Label",
-                    on_click=ProcurementState.prefill_label(
-                        row["material_id"], row["item"], row["on_hand"].to_string()
+                    "Delete Supplier",
+                    on_click=DashboardState.request_delete_packaging_supplier(
+                        row["supplier"]
                     ),
-                    variant="outline",
+                    color_scheme="red",
+                    variant="soft",
                     size="1",
                 ),
                 align="start",
@@ -21576,6 +21644,7 @@ def packaging_inventory_workspace() -> rx.Component:
         packaging_item_dialog(),
         packaging_receipt_dialog(),
         packaging_supplier_dialog(),
+        packaging_supplier_delete_dialog(),
         width="100%",
         spacing="4",
     )

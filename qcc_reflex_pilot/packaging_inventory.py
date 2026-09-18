@@ -215,6 +215,15 @@ def _initialize_packaging_database() -> None:
                 )
             """)
             connection.execute("""
+                CREATE TABLE IF NOT EXISTS qcc_packaging_supplier_deletions (
+                    supplier_name TEXT PRIMARY KEY,
+                    supplier_id TEXT NOT NULL DEFAULT '',
+                    snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    deleted_by TEXT NOT NULL,
+                    deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            connection.execute("""
                 CREATE TABLE IF NOT EXISTS qcc_packaging_item_suppliers (
                     material_id TEXT NOT NULL REFERENCES qcc_packaging_items(material_id) ON DELETE CASCADE,
                     supplier_id TEXT NOT NULL REFERENCES qcc_packaging_suppliers(supplier_id),
@@ -533,6 +542,10 @@ def save_packaging_supplier(
         raise ValueError("Supplier name is required.")
     supplier_id = str(record.get("supplier_id", "") or "").strip()
     with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        connection.execute(
+            "DELETE FROM qcc_packaging_supplier_deletions WHERE supplier_name = %s",
+            (supplier_name,),
+        )
         if not supplier_id:
             existing = connection.execute(
                 "SELECT supplier_id FROM qcc_packaging_suppliers WHERE supplier_name = %s",
@@ -583,6 +596,58 @@ def save_packaging_supplier(
     return supplier_id
 
 
+def delete_packaging_supplier(supplier_name: str, deleted_by: str) -> str:
+    """Delete an unassigned supplier while retaining an immutable audit tombstone."""
+    supplier_name = _upper(supplier_name)
+    if not supplier_name:
+        raise ValueError("Select a supplier to delete.")
+    assigned = sorted({
+        str(row.get("material_id", ""))
+        for row in packaging_items()
+        if supplier_name in {
+            _upper(row.get("vendor")),
+            _upper(row.get("secondary_vendor")),
+        }
+    })
+    if assigned:
+        preview = ", ".join(assigned[:5])
+        suffix = "" if len(assigned) <= 5 else f" and {len(assigned) - 5} more"
+        raise ValueError(
+            f"Reassign this supplier on packaging items first: {preview}{suffix}."
+        )
+    _initialize_packaging_database()
+    supplier = next(
+        (row for row in packaging_suppliers() if _upper(row.get("supplier")) == supplier_name),
+        None,
+    )
+    if not supplier:
+        raise ValueError("Supplier was not found.")
+    supplier_id = str(supplier.get("supplier_id", "") or "")
+    with psycopg.connect(database_url(), connect_timeout=15) as connection:
+        if supplier_id:
+            linked = connection.execute(
+                "SELECT 1 FROM qcc_packaging_item_suppliers WHERE supplier_id = %s LIMIT 1",
+                (supplier_id,),
+            ).fetchone()
+            if linked:
+                raise ValueError("Reassign this supplier from its packaging items before deleting it.")
+        connection.execute("""
+            INSERT INTO qcc_packaging_supplier_deletions (
+                supplier_name, supplier_id, snapshot, deleted_by
+            ) VALUES (%s, %s, %s::jsonb, %s)
+            ON CONFLICT(supplier_name) DO UPDATE SET
+                supplier_id=EXCLUDED.supplier_id,
+                snapshot=EXCLUDED.snapshot,
+                deleted_by=EXCLUDED.deleted_by,
+                deleted_at=NOW()
+        """, (supplier_name, supplier_id, json.dumps(supplier, default=str), deleted_by))
+        if supplier_id:
+            connection.execute(
+                "DELETE FROM qcc_packaging_suppliers WHERE supplier_id = %s",
+                (supplier_id,),
+            )
+    return supplier_name
+
 def packaging_suppliers() -> list[dict[str, Any]]:
     """Return workbook suppliers merged with editable secured overrides."""
     by_name = {
@@ -615,6 +680,11 @@ def packaging_suppliers() -> list[dict[str, Any]]:
             if not normalized.get(field) and existing.get(field):
                 merged[field] = existing[field]
         by_name[normalized["supplier"]] = merged
+    deleted = safe_query_frame(
+        "SELECT supplier_name FROM qcc_packaging_supplier_deletions"
+    )
+    for supplier_name in deleted.get("supplier_name", []):
+        by_name.pop(_upper(supplier_name), None)
     return sorted(by_name.values(), key=lambda row: row["supplier"])
 
 
