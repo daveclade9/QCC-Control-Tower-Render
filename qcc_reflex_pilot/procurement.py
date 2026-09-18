@@ -828,10 +828,17 @@ def receive_purchase_order_line(
         )
         # Recalculate against the now-current rows; this also handles single-line POs.
         current = conn.execute(
-            "SELECT SUM(ordered_quantity),SUM(received_quantity) FROM qcc_purchase_order_lines WHERE po_id=%s",
+            """SELECT
+                COALESCE(SUM(ordered_quantity), 0) AS ordered_total,
+                COALESCE(SUM(received_quantity), 0) AS received_total
+                FROM qcc_purchase_order_lines WHERE po_id=%s""",
             (po["po_id"],),
         ).fetchone()
-        status = "RECEIVED" if int(current[1] or 0) >= int(current[0] or 0) else "PARTIALLY RECEIVED"
+        status = (
+            "RECEIVED"
+            if int(current["received_total"]) >= int(current["ordered_total"])
+            else "PARTIALLY RECEIVED"
+        )
         conn.execute(
             "UPDATE qcc_purchase_orders SET status=%s,updated_by=%s,updated_at=NOW() WHERE po_id=%s",
             (status, actor, po["po_id"]),
