@@ -341,7 +341,11 @@ def _ensure_supplier(connection: Any, supplier_name: str, updated_by: str) -> st
         (supplier_name,),
     ).fetchone()
     if existing:
-        return str(existing[0])
+        return str(
+            existing["supplier_id"]
+            if hasattr(existing, "keys")
+            else existing[0]
+        )
     supplier_id = str(uuid.uuid4())
     connection.execute("""
         INSERT INTO qcc_packaging_suppliers (
@@ -534,7 +538,10 @@ def save_packaging_supplier(
                 "SELECT supplier_id FROM qcc_packaging_suppliers WHERE supplier_name = %s",
                 (supplier_name,),
             ).fetchone()
-            supplier_id = str(existing[0]) if existing else str(uuid.uuid4())
+            supplier_id = (
+                str(existing["supplier_id"] if hasattr(existing, "keys") else existing[0])
+                if existing else str(uuid.uuid4())
+            )
         connection.execute("""
             INSERT INTO qcc_packaging_suppliers (
                 supplier_id, supplier_name, supplies, payment_terms,

@@ -368,8 +368,15 @@ def post_activity(
             legs = activity_legs(action, number(form.get("quantity", "")), source, dest, balance)
             cost = number(form.get("unit_cost", 0) or 0)
         for loc,delta in legs:
-            found = conn.execute("SELECT active FROM qcc_packaging_locations WHERE code=%s", (loc,)).fetchone()
-            if not found or (not found[0] and delta > 0):
+            found = conn.execute(
+                "SELECT active FROM qcc_packaging_locations WHERE code=%s", (loc,)
+            ).fetchone()
+            location_active = (
+                bool(found["active"]) if found and hasattr(found, "keys")
+                else bool(found[0]) if found
+                else False
+            )
+            if not found or (not location_active and delta > 0):
                 raise ValueError(f"Location {loc or '(blank)'} is missing or inactive.")
         details = {"lot":lot,"expiration":expiry,"unit_cost":cost,
             "counted": form.get("quantity") if action == "Physical Count" else None,
