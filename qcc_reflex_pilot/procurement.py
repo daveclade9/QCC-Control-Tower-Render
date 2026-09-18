@@ -216,6 +216,9 @@ def initialize() -> None:
                     CHECK (quantity > 0)
                 )
             """)
+            conn.execute(
+                "ALTER TABLE qcc_purchase_receipts ADD COLUMN IF NOT EXISTS expiration_date DATE"
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_qcc_count_sessions ON qcc_inventory_count_sessions(tenant_id, facility_id, started_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_qcc_po ON qcc_purchase_orders(tenant_id, facility_id, created_at DESC)")
             for row in supply_seed_items():
@@ -786,11 +789,15 @@ def set_purchase_order_active(
 
 def receive_purchase_order_line(
     po_number: str, line_id: str, quantity: Any, actor: str,
-    location: str = "UNASSIGNED", lot_number: str = "", notes: str = "",
+    location: str = "UNASSIGNED", lot_number: str = "",
+    expiration_date: str = "", notes: str = "",
 ) -> str:
     received = whole_number(quantity, "Received quantity")
     if received <= 0:
         raise ValueError("Received quantity must be greater than zero.")
+    expiration_text = str(expiration_date or "").strip()
+    if expiration_text:
+        date.fromisoformat(expiration_text)
     initialize()
     receipt_id = str(uuid.uuid4())
     with psycopg.connect(database_url(), connect_timeout=15, row_factory=dict_row) as conn:
@@ -811,10 +818,10 @@ def receive_purchase_order_line(
             raise ValueError(f"Only {remaining} remains open on this line.")
         conn.execute("""
             INSERT INTO qcc_purchase_receipts (
-                receipt_id,po_id,line_id,quantity,location,lot_number,received_by,notes
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                receipt_id,po_id,line_id,quantity,location,lot_number,expiration_date,received_by,notes
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (receipt_id, po["po_id"], line_id, received,
-              _upper(location, "UNASSIGNED"), str(lot_number or "").strip(), actor, notes))
+              _upper(location, "UNASSIGNED"), str(lot_number or "").strip(), expiration_text or None, actor, notes))
         conn.execute(
             "UPDATE qcc_purchase_order_lines SET received_quantity=received_quantity+%s WHERE line_id=%s",
             (received, line_id),
@@ -837,14 +844,14 @@ def receive_purchase_order_line(
                 ) VALUES (%s,%s,%s,%s,'PO RECEIPT',%s,%s,%s,CURRENT_DATE,%s)
             """, (str(uuid.uuid4()), DEFAULT_TENANT_ID, DEFAULT_FACILITY_ID,
                   line["item_id"], received, po_number, notes, actor))
-    if line["inventory_domain"] == "PACKAGING":
-        from .warehouse import post_activity
-        post_activity({
-            "material_id": line["item_id"], "action": "Receive", "quantity": str(received),
-            "location": _upper(location, "UNASSIGNED"), "destination": "", "lot": lot_number,
-            "expiration": "", "date": date.today().isoformat(), "unit_cost": str(line["unit_cost"]),
-            "reference": po_number, "reason": notes or "Purchase-order receipt",
-        }, actor, receipt_id)
+        if line["inventory_domain"] == "PACKAGING":
+            from .warehouse import post_activity
+            post_activity({
+                "material_id": line["item_id"], "action": "Receive", "quantity": str(received),
+                "location": _upper(location, "UNASSIGNED"), "destination": "", "lot": lot_number,
+                "expiration": expiration_text, "date": date.today().isoformat(), "unit_cost": str(line["unit_cost"]),
+                "reference": po_number, "reason": notes or "Purchase-order receipt",
+            }, actor, receipt_id, _connection=conn)
     return receipt_id
 
 

@@ -52,7 +52,7 @@ class ProcurementState(rx.State):
     _po_supply_items: list[dict[str, Any]] = []
     receipt: dict[str, str] = {
         "line_id": "", "quantity": "", "location": "UNASSIGNED",
-        "lot_number": "", "notes": "",
+        "lot_number": "", "expiration_date": "", "notes": "",
     }
     po_rows: list[list[str]] = []
     po_line_rows: list[list[str]] = []
@@ -436,15 +436,22 @@ class ProcurementState(rx.State):
             actor = await self._actor()
             receipt_id = await rx.run_in_thread(lambda: service.receive_purchase_order_line(
                 self.po_number, self.receipt["line_id"], self.receipt["quantity"], actor,
-                self.receipt["location"], self.receipt["lot_number"], self.receipt["notes"],
+                self.receipt["location"], self.receipt["lot_number"],
+                self.receipt["expiration_date"], self.receipt["notes"],
             ))
             detail = await rx.run_in_thread(lambda: service.purchase_order_detail(self.po_number))
-            line = next(row for row in detail["lines"] if str(row["line_id"]) == self.receipt["line_id"])
+            line = next((row for row in detail["lines"] if str(row["line_id"]) == self.receipt["line_id"]), None)
+            if line is None:
+                raise RuntimeError("The receipt saved, but its PO line could not be reloaded for label preparation.")
             self.label = {
                 "format": "4 x 6 Packaging Box", "material_id": str(line["item_id"]),
                 "description": str(line["description"]), "lot_or_po": self.receipt["lot_number"] or self.po_number,
                 "quantity": self.receipt["quantity"], "print_date": date.today().isoformat(),
             }
+            self.receipt["quantity"] = ""
+            self.receipt["lot_number"] = ""
+            self.receipt["expiration_date"] = ""
+            self.receipt["notes"] = ""
             await self._load_pos()
             await self._load_supply()
             self.message = f"Receipt {receipt_id} saved. A box-label draft was prepared in Label Printing."
@@ -759,8 +766,18 @@ def purchasing_panel() -> rx.Component:
                 _field("Quantity received", state.receipt["quantity"], lambda v: state.set_receipt("quantity", v)),
                 _field("Receiving location", state.receipt["location"], lambda v: state.set_receipt("location", v)),
                 _field("Supplier lot", state.receipt["lot_number"], lambda v: state.set_receipt("lot_number", v)),
+                _field("Expiration date (when required)", state.receipt["expiration_date"],
+                       lambda v: state.set_receipt("expiration_date", v)),
                 _field("Receipt notes", state.receipt["notes"], lambda v: state.set_receipt("notes", v)),
                 columns=rx.breakpoints(initial="1", md="2"), width="100%", gap="2",
+            ),
+            rx.cond(
+                state.error != "",
+                rx.callout(state.error, icon="triangle-alert", color_scheme="red", width="100%"),
+            ),
+            rx.cond(
+                state.message != "",
+                rx.callout(state.message, icon="circle-check", color_scheme="green", width="100%"),
             ),
             _field(
                 "Required reason to cancel or reactivate this PO",

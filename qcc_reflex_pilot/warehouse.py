@@ -13,6 +13,7 @@ import math
 import re
 import uuid
 from collections import defaultdict
+from contextlib import nullcontext
 from datetime import date
 from functools import lru_cache
 from typing import Any
@@ -300,7 +301,9 @@ def activity_legs(action: str, quantity: float, source: str, destination: str, b
     raise ValueError("Select a supported activity.")
 
 
-def post_activity(form: dict, actor: str, request_id: str) -> str:
+def post_activity(
+    form: dict, actor: str, request_id: str, _connection: Any = None,
+) -> str:
     initialize()
     mid = str(form.get("material_id", "")).strip().upper()
     action = str(form.get("action", ""))
@@ -313,7 +316,11 @@ def post_activity(form: dict, actor: str, request_id: str) -> str:
         raise ValueError("Activity date cannot be in the future.")
     if action == "Physical Count" and occurred != date.today():
         raise ValueError("Physical Count must reflect today's stock. Use the current count.")
-    with psycopg.connect(database_url(), connect_timeout=15) as conn:
+    connection_context = (
+        nullcontext(_connection) if _connection is not None
+        else psycopg.connect(database_url(), connect_timeout=15)
+    )
+    with connection_context as conn:
         _lock(conn)
         if conn.execute("SELECT 1 FROM qcc_packaging_activity WHERE activity_id=%s", (request_id,)).fetchone():
             return request_id
