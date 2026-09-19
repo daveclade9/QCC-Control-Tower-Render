@@ -198,6 +198,7 @@ from .packaging_inventory import (
     save_packaging_supplier,
 )
 from .metrc_imports import (
+    publish_active_package_snapshot,
     import_transfer_history_bytes,
     load_metrc_import_history,
     load_metrc_import_status,
@@ -211,7 +212,7 @@ from .warehouse import item_version
 from .procurement_ui import ProcurementState, procurement_workspace
 from .manufacturing_work_orders_ui import manufacturing_work_orders_workspace
 
-PILOT_VERSION = "0.9.6.120-staging"
+PILOT_VERSION = "0.9.6.121-staging"
 ACCENT = "#14969b"
 DARK = "#111827"
 MUTED = "#64748b"
@@ -1361,6 +1362,59 @@ class DashboardState(rx.State):
             self.metrc_import_error = f"Transfers imported, but status refresh failed: {error}"
         self.metrc_importing = False
         yield rx.clear_selected_files("admin_metrc_transfer_upload")
+
+    @rx.event
+    async def import_admin_inventory_files(self, files: list[rx.UploadFile]):
+        self.metrc_import_error = ""
+        self.metrc_import_message = ""
+        self.metrc_import_results = []
+        if not self._require_active_session() or self.auth_role != "Admin":
+            self.metrc_import_error = "Administrator access is required."
+            return
+        if len(files or []) != 2:
+            self.metrc_import_error = (
+                "Choose exactly two Active Packages files: one Cultivation and "
+                "one Manufacturing export."
+            )
+            return
+        self.metrc_importing = True
+        yield
+        uploaded: list[tuple[str, bytes]] = []
+        try:
+            uploaded = [(file.name, await file.read()) for file in files]
+            result = await rx.run_in_thread(
+                lambda: publish_active_package_snapshot(
+                    uploaded,
+                    imported_by=self.auth_name or self.auth_email or "QCC Reflex User",
+                )
+            )
+            self._refresh_metrc_import_status()
+            payload = await rx.run_in_thread(
+                lambda: get_dashboard_data(force_refresh=True)
+            )
+            self._apply_payload(payload)
+            self.metrc_import_message = (
+                "Active Packages inventory published. Cannabis Inventory, Clone "
+                "Allocation, Buyer Menu availability, and dashboard views now use it."
+            )
+        except Exception as error:
+            try:
+                combined = b"".join(payload for _, payload in uploaded)
+                await rx.run_in_thread(
+                    lambda payload=combined, detail=str(error): record_failed_metrc_import(
+                        source_type="Active Packages",
+                        filename=", ".join(file.name for file in files),
+                        file_bytes=payload,
+                        details=detail,
+                        imported_by=self.auth_name or self.auth_email,
+                    )
+                )
+                self._refresh_metrc_import_status()
+            except Exception:
+                pass
+            self.metrc_import_error = f"Active Packages import failed: {error}"
+        self.metrc_importing = False
+        yield rx.clear_selected_files("admin_metrc_inventory_upload")
 
     @rx.event
     async def import_admin_lab_files(self, files: list[rx.UploadFile]):
@@ -21774,6 +21828,10 @@ def metrc_import_center() -> rx.Component:
     xlsx_accept = {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"]
     }
+    inventory_accept = {
+        "text/csv": [".csv"],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+    }
     return rx.card(
         rx.vstack(
             rx.flex(
@@ -21798,11 +21856,11 @@ def metrc_import_center() -> rx.Component:
                 gap="3",
             ),
             rx.callout(
-                "Active Packages inventory remains published through Streamlit during "
-                "phase 1. Its WIP, Pre-WIP, ownership, weight, and brand rules will be "
-                "extracted before that publisher moves, preventing calculation drift.",
+                "Publish Active Packages here before importing other daily Metrc files. "
+                "Upload the Cultivation and Manufacturing exports together; the new "
+                "snapshot becomes the shared inventory baseline across Control Tower.",
                 icon="shield-check",
-                color_scheme="amber",
+                color_scheme="blue",
                 width="100%",
             ),
             rx.cond(
@@ -21839,6 +21897,16 @@ def metrc_import_center() -> rx.Component:
             ),
             rx.grid(
                 metrc_admin_upload_card(
+                    "Active Packages — Inventory",
+                    "Upload exactly one Cultivation and one Manufacturing Active "
+                    "Packages export. Publishing preserves the prior snapshot for history.",
+                    "admin_metrc_inventory_upload",
+                    "Publish Inventory Snapshot",
+                    DashboardState.import_admin_inventory_files,
+                    inventory_accept,
+                    2,
+                ),
+                metrc_admin_upload_card(
                     "Transfer History",
                     "Upload overlapping or full-history Metrc Transfers Report CSV files. "
                     "Existing manifest/package records update without duplication.",
@@ -21867,7 +21935,7 @@ def metrc_import_center() -> rx.Component:
                     xlsx_accept,
                     4,
                 ),
-                columns=rx.breakpoints(initial="1", xl="3"),
+                columns=rx.breakpoints(initial="1", xl="2"),
                 gap="3",
                 width="100%",
             ),
@@ -21876,7 +21944,7 @@ def metrc_import_center() -> rx.Component:
                 rx.vstack(
                     rx.heading("Recent Import Results", size="3"),
                     rx.text(
-                        "The 25 most recent transfer, lab, and plant imports remain "
+                        "The 25 most recent inventory, transfer, lab, and plant imports remain "
                         "visible together and reload from shared audit history.",
                         size="1",
                         color=MUTED,
@@ -26086,7 +26154,8 @@ def cultivation_metrc_plant_panel() -> rx.Component:
                     gap="3",
                 ),
                 rx.callout(
-                    "Upload Flowering, Vegetative, Plantings—Active, and Harvests together. Each upload replaces the operational view while preserving the previous snapshot in history.",
+                    "Plant and harvest files are published from Administration → "
+                    "Metrc Import Center. This workspace displays the current saved snapshot.",
                     icon="info",
                     color_scheme="blue",
                     width="100%",
@@ -26095,93 +26164,6 @@ def cultivation_metrc_plant_panel() -> rx.Component:
                 spacing="3",
             ),
             width="100%",
-        ),
-        rx.accordion.root(
-            rx.accordion.item(
-                value="plant-import",
-                header=rx.flex(
-                    rx.box(
-                        rx.text("Import Four Active Metrc Plant Exports", weight="bold"),
-                        rx.text(
-                            "The workbook type is validated by its headers and filename before publishing.",
-                            size="1",
-                            color=MUTED,
-                        ),
-                    ),
-                    rx.spacer(),
-                    rx.icon("upload", color=ACCENT),
-                    width="100%",
-                    align="center",
-                ),
-                content=rx.vstack(
-                    rx.upload(
-                        rx.vstack(
-                            rx.icon("files", size=30, color=ACCENT),
-                            rx.text(
-                                "Drop the four Metrc .xlsx files here or click to select",
-                                weight="bold",
-                            ),
-                            rx.text(
-                                "Harvests · Flowering · Vegetative · Plantings—Active",
-                                size="1",
-                                color=MUTED,
-                            ),
-                            rx.button("Choose Four Files", variant="outline"),
-                            spacing="2",
-                            align="center",
-                        ),
-                        id="cultivation_plant_upload",
-                        accept={
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"]
-                        },
-                        multiple=True,
-                        max_files=4,
-                        border=f"2px dashed {ACCENT}",
-                        border_radius="12px",
-                        padding="2rem",
-                        width="100%",
-                    ),
-                    rx.flex(
-                        rx.foreach(
-                            rx.selected_files("cultivation_plant_upload"), rx.badge
-                        ),
-                        gap="2",
-                        wrap="wrap",
-                        width="100%",
-                    ),
-                    rx.hstack(
-                        rx.button(
-                            "Import Plant Snapshot",
-                            on_click=DashboardState.import_cultivation_plant_files(
-                                rx.upload_files(upload_id="cultivation_plant_upload")
-                            ),
-                            loading=DashboardState.cultivation_plant_importing,
-                            background=ACCENT,
-                            color="white",
-                        ),
-                        rx.button(
-                            "Clear Selection",
-                            on_click=rx.clear_selected_files("cultivation_plant_upload"),
-                            variant="outline",
-                        ),
-                        gap="3",
-                    ),
-                    rx.cond(
-                        DashboardState.cultivation_plant_source_rows.length() > 0,
-                        readable_grid(
-                            DashboardState.cultivation_plant_source_rows,
-                            ["Export", "Filename"],
-                            "250px",
-                        ),
-                    ),
-                    width="100%",
-                    spacing="3",
-                ),
-            ),
-            type="single",
-            collapsible=True,
-            width="100%",
-            variant="soft",
         ),
         rx.cond(
             DashboardState.cultivation_plant_error != "",

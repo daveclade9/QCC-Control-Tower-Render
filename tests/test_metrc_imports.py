@@ -8,9 +8,61 @@ import pytest
 from qcc_reflex_pilot import data as dashboard_data
 from qcc_reflex_pilot.metrc_imports import (
     TRANSFER_DB_COLUMNS,
+    normalize_active_package_files,
     normalize_transfer_history,
     record_failed_metrc_import,
 )
+
+
+def active_packages_csv(tag: str, item: str, category: str, status: str) -> bytes:
+    return pd.DataFrame([{
+        "Tag": tag,
+        "Source Harvest(s)": "F1.11-09.01.2026",
+        "Location": "Vault Approved for Sale",
+        "Item": item,
+        "Category": category,
+        "Item Strain": "Private Reserve",
+        "Quantity": "10",
+        "Unit Of Measure": "Each" if "Packaged" in category else "Pounds",
+        "Lab Test Status": status,
+        "Packaged Date": "2026-09-10",
+    }]).to_csv(index=False).encode()
+
+
+def test_active_packages_requires_paired_licenses() -> None:
+    cultivation = active_packages_csv(
+        "1A-CULT", "Clade9 Private Reserve 3.5g Flower EA",
+        "Bud/Flower - Packaged", "TestPassed",
+    )
+    with pytest.raises(ValueError, match="exactly two"):
+        normalize_active_package_files([
+            ("Metrc-NewJersey-C000313-ActivePackages.csv", cultivation)
+        ])
+
+
+def test_active_packages_normalizes_inventory_contract() -> None:
+    cultivation = active_packages_csv(
+        "1A-CULT", "Clade9 Private Reserve 3.5g Flower EA",
+        "Bud/Flower - Packaged", "TestPassed",
+    )
+    manufacturing = active_packages_csv(
+        "1A-MFG", "Craft Kings Hybrid Blend Infused Pre-Roll 1g",
+        "Concentrate (Each)", "TestPassed",
+    )
+    normalized, sources = normalize_active_package_files([
+        ("Metrc-NewJersey-C000313-ActivePackages.csv", cultivation),
+        ("Metrc-NewJersey-M000001-ActivePackages.csv", manufacturing),
+    ])
+    assert {source["license_type"] for source in sources} == {
+        "Cultivation", "Manufacturing"
+    }
+    flower = normalized.loc[normalized["package_tag"].eq("1A-CULT")].iloc[0]
+    assert flower["strain"] == "Private Reserve OG"
+    assert flower["production_stage"] == "Packaged Goods"
+    assert flower["include_in_cpg"]
+    infused = normalized.loc[normalized["package_tag"].eq("1A-MFG")].iloc[0]
+    assert infused["production_stage"] == "Packaged Goods"
+    assert infused["sku_type"] == "1g Infused Pre-Roll"
 
 
 def transfer_source() -> pd.DataFrame:
